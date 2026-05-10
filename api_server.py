@@ -278,14 +278,14 @@ def buscar_ml(codigo):
 
 # ─── IA: prompt + ajuste + chamada ────────────────────────────────────────────
 def _build_prompt(codigo, titles, prices):
-    tlist = "\n".join(f"- {t}" for t in titles)
-    plist = ", ".join(f"R$ {p:.2f}" for p in prices)
-    return f"""Analise a peça automotiva: {codigo}
+    tlist = "\n".join(f"- {t}" for t in titles) if titles else "(sem anúncios encontrados no ML — use seu conhecimento do código OEM)"
+    plist = ", ".join(f"R$ {p:.2f}" for p in prices) if prices else "(sem preços — sugira baseado no mercado brasileiro)"
+    return f"""Analise a peça automotiva com código OEM: {codigo}
 
 Anúncios Mercado Livre:
 {tlist}
 
-Preços: {plist}
+Preços encontrados: {plist}
 
 Retorne APENAS um JSON com esta estrutura exata (sem texto fora):
 {{
@@ -397,8 +397,6 @@ def _gemini(api_key, prompt):
 # ─── Lógica principal de busca ────────────────────────────────────────────────
 def executar_busca(codigo):
     titles, novos, usados = buscar_ml(codigo)
-    if not titles and not novos and not usados:
-        return {"erro": "Nenhum resultado encontrado no Mercado Livre"}
 
     prices    = novos or usados
     preco_ref = calcular_preco_sugerido(prices)
