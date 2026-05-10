@@ -196,8 +196,10 @@ def _buscar_navegador(urls):
         except Exception:
             return []
 
-# ─── Camada 3: PowerShell ─────────────────────────────────────────────────────
+# ─── Camada 3: PowerShell (apenas Windows) ────────────────────────────────────
 def _baixar_html_via_powershell(url, timeout_sec=25):
+    if os.name != 'nt':
+        return ""
     ps_cmd = (
         "$ProgressPreference='SilentlyContinue'; "
         "$headers=@{"
@@ -207,9 +209,9 @@ def _baixar_html_via_powershell(url, timeout_sec=25):
         "}; "
         f"(Invoke-WebRequest -UseBasicParsing -Uri '{url}' -Headers $headers -TimeoutSec {timeout_sec}).Content"
     )
-    si = subprocess.STARTUPINFO()
-    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     try:
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         r = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
             capture_output=True, text=True, timeout=timeout_sec + 10,
