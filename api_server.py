@@ -426,6 +426,8 @@ def _gemini(api_key, prompt):
 # ─── Lógica principal de busca ────────────────────────────────────────────────
 def executar_busca(codigo):
     titles, novos, usados = buscar_ml(codigo)
+    ml_achou = bool(titles or novos or usados)
+    print(f"[WRX] ML achou: titles={len(titles)} novos={len(novos)} usados={len(usados)}")
 
     prices    = novos or usados
     preco_ref = calcular_preco_sugerido(prices)
@@ -452,6 +454,8 @@ def executar_busca(codigo):
     # Adiciona preços separados
     data["precos_novos"]  = novos
     data["precos_usados"] = usados
+    data["fonte"] = "ml+ia" if ml_achou else "ia_pura"
+    data["ml_titulos_encontrados"] = len(titles)
 
     return data
 
