@@ -220,6 +220,43 @@ def _baixar_html_via_powershell(url, timeout_sec=25):
     except Exception:
         return ""
 
+# ─── Camada 3b: Playwright Python (Railway/Linux) ─────────────────────────────
+def _buscar_playwright_python(urls):
+    try:
+        import asyncio
+        from playwright.async_api import async_playwright
+
+        async def _run():
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True, args=[
+                    "--no-sandbox", "--disable-dev-shm-usage",
+                    "--disable-gpu", "--disable-setuid-sandbox"
+                ])
+                ctx = await browser.new_context(
+                    locale="pt-BR",
+                    user_agent=_UA_ML
+                )
+                page = await ctx.new_page()
+                for url in urls:
+                    try:
+                        await page.goto(url, timeout=25000, wait_until="domcontentloaded")
+                        await page.wait_for_selector(
+                            "li.ui-search-layout__item, div.ui-search-result",
+                            timeout=10000
+                        )
+                        html = await page.content()
+                        await browser.close()
+                        if _has_resultados(html):
+                            return [html]
+                    except Exception:
+                        continue
+                await browser.close()
+            return []
+
+        return asyncio.run(_run())
+    except Exception:
+        return []
+
 # ─── Camada 4: requests direto + extração JSON embarcado ─────────────────────
 def _extrair_json_ml_page(html):
     """Extrai títulos e preços do JSON embarcado que o ML inclui no HTML (SSR)."""
@@ -294,7 +331,12 @@ def buscar_ml(codigo):
                 _absorver(*_parse_html_ml(html_ps))
                 break
 
-    # Camada 4: requests + extração JSON embarcado (Railway/Linux)
+    # Camada 3b: Playwright Python (Railway/Linux)
+    if not novos and not usados:
+        for h in _buscar_playwright_python(urls_html):
+            _absorver(*_parse_html_ml(h))
+
+    # Camada 4: requests + extração JSON embarcado (Railway/Linux fallback)
     if not novos and not usados:
         for h in _buscar_requests_html(urls_html):
             _absorver(*_extrair_json_ml_page(h))
