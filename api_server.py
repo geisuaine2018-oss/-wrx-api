@@ -221,21 +221,30 @@ def _baixar_html_via_powershell(url, timeout_sec=25):
         return ""
 
 # ─── Camada 3b: Playwright Python (Railway/Linux) ─────────────────────────────
+def _chromium_exec():
+    import shutil
+    for nome in ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"]:
+        p = shutil.which(nome)
+        if p:
+            return p
+    return None
+
 def _buscar_playwright_python(urls):
     try:
         import asyncio
         from playwright.async_api import async_playwright
+        exec_path = _chromium_exec()
 
         async def _run():
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True, args=[
-                    "--no-sandbox", "--disable-dev-shm-usage",
-                    "--disable-gpu", "--disable-setuid-sandbox"
-                ])
-                ctx = await browser.new_context(
-                    locale="pt-BR",
-                    user_agent=_UA_ML
+                launch_args = dict(
+                    headless=True,
+                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu","--disable-setuid-sandbox"]
                 )
+                if exec_path:
+                    launch_args["executable_path"] = exec_path
+                browser = await p.chromium.launch(**launch_args)
+                ctx = await browser.new_context(locale="pt-BR", user_agent=_UA_ML)
                 page = await ctx.new_page()
                 for url in urls:
                     try:
@@ -595,7 +604,7 @@ if USE_FLASK:
         # Testa Playwright
         try:
             from playwright.async_api import async_playwright
-            resultado["camadas"]["playwright"] = {"instalado": True}
+            resultado["camadas"]["playwright"] = {"instalado": True, "chromium_path": _chromium_exec()}
             import asyncio
             async def _pw_test():
                 async with async_playwright() as p:
