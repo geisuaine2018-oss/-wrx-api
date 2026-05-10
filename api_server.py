@@ -218,6 +218,26 @@ def _baixar_html_via_powershell(url, timeout_sec=25):
     except Exception:
         return ""
 
+# ─── Camada 4: requests direto (funciona no Railway/Linux) ────────────────────
+def _buscar_requests_html(urls):
+    htmls = []
+    headers = {
+        "User-Agent": _UA_ML,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    }
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
+            if r.status_code == 200 and len(r.text) > 1000 and _has_resultados(r.text):
+                htmls.append(r.text)
+                break
+        except Exception:
+            continue
+    return htmls
+
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 def buscar_ml(codigo):
     titles, novos, usados = [], [], []
@@ -244,6 +264,11 @@ def buscar_ml(codigo):
             if html_ps and _has_resultados(html_ps):
                 _absorver(*_parse_html_ml(html_ps))
                 break
+
+    # Camada 4: requests direto — funciona no Railway/Linux quando PS/Node indisponíveis
+    if not novos and not usados:
+        for h in _buscar_requests_html(urls_html):
+            _absorver(*_parse_html_ml(h))
 
     novos  = sorted(set(round(p, 2) for p in novos))[:15]
     usados = sorted(set(round(p, 2) for p in usados))[:15]
