@@ -596,8 +596,31 @@ if USE_FLASK:
         try:
             from playwright.async_api import async_playwright
             resultado["camadas"]["playwright"] = {"instalado": True}
+            import asyncio
+            async def _pw_test():
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=True, args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
+                    page = await browser.new_page()
+                    await page.set_extra_http_headers({"Accept-Language": "pt-BR"})
+                    url_pw = f"https://lista.mercadolivre.com.br/acessorios-veiculos/{q.replace(' ','-')}"
+                    await page.goto(url_pw, timeout=30000, wait_until="domcontentloaded")
+                    try:
+                        await page.wait_for_selector("li.ui-search-layout__item", timeout=8000)
+                        items = await page.query_selector_all("li.ui-search-layout__item")
+                        html = await page.content()
+                        await browser.close()
+                        return len(items), len(html)
+                    except Exception as e2:
+                        html = await page.content()
+                        await browser.close()
+                        return 0, len(html)
+            nitens, tam = asyncio.run(_pw_test())
+            resultado["camadas"]["playwright"]["itens_encontrados"] = nitens
+            resultado["camadas"]["playwright"]["tamanho_html"] = tam
         except ImportError:
             resultado["camadas"]["playwright"] = {"instalado": False}
+        except Exception as e:
+            resultado["camadas"]["playwright"]["erro"] = str(e)
         return jsonify(resultado)
 
     @app.route("/")
