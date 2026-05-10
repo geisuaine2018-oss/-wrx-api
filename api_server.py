@@ -566,6 +566,40 @@ if USE_FLASK:
             return _cors(app.response_class(status=204))
         return jsonify({"ok": True, "porta": PORT})
 
+    @app.route("/debug-ml")
+    def debug_ml():
+        q = request.args.get("q", "sensor pressao oleo")
+        resultado = {"query": q, "camadas": {}}
+        # Testa API ML
+        try:
+            r = requests.get("https://api.mercadolibre.com/sites/MLB/search",
+                             params={"q": q, "limit": 5}, timeout=15)
+            resultado["camadas"]["api_ml"] = {
+                "status": r.status_code,
+                "total": r.json().get("paging", {}).get("total", 0) if r.status_code == 200 else 0,
+                "titulos": [x.get("title") for x in r.json().get("results", [])[:3]] if r.status_code == 200 else []
+            }
+        except Exception as e:
+            resultado["camadas"]["api_ml"] = {"erro": str(e)}
+        # Testa requests HTML
+        try:
+            url = f"https://lista.mercadolivre.com.br/acessorios-veiculos/{q.replace(' ', '-')}"
+            r2 = requests.get(url, headers={"User-Agent": _UA_ML}, timeout=15)
+            resultado["camadas"]["requests_html"] = {
+                "status": r2.status_code,
+                "tamanho": len(r2.text),
+                "tem_produtos": _has_resultados(r2.text)
+            }
+        except Exception as e:
+            resultado["camadas"]["requests_html"] = {"erro": str(e)}
+        # Testa Playwright
+        try:
+            from playwright.async_api import async_playwright
+            resultado["camadas"]["playwright"] = {"instalado": True}
+        except ImportError:
+            resultado["camadas"]["playwright"] = {"instalado": False}
+        return jsonify(resultado)
+
     @app.route("/")
     @app.route("/criar-anuncio.html")
     def rota_form():
