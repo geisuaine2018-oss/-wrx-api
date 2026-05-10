@@ -220,9 +220,37 @@ def _baixar_html_via_powershell(url, timeout_sec=25):
     except Exception:
         return ""
 
-# ─── Camada 4: requests direto (funciona no Railway/Linux) ────────────────────
+# ─── Camada 4: requests direto + extração JSON embarcado ─────────────────────
+def _extrair_json_ml_page(html):
+    """Extrai títulos e preços do JSON embarcado que o ML inclui no HTML (SSR)."""
+    titles, novos, usados = [], [], []
+    import json as _json
+    patterns = [
+        r'window\.__PRELOADED_STATE__\s*=\s*(\{.*?\})(?:\s*;|\s*</script)',
+        r'"initialState"\s*:\s*(\{.*?"results".*?\})',
+        r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
+    ]
+    for pat in patterns:
+        for m in re.finditer(pat, html, re.DOTALL):
+            try:
+                obj = _json.loads(m.group(1))
+                results = obj if isinstance(obj, list) else (
+                    obj.get("results") or obj.get("items") or
+                    obj.get("search", {}).get("results") or []
+                )
+                for item in (results if isinstance(results, list) else []):
+                    t = item.get("title") or item.get("name", "")
+                    p = float(item.get("price") or item.get("original_price") or 0)
+                    cond = item.get("condition", "new")
+                    if t and len(t) > 5 and t not in titles:
+                        titles.append(t)
+                    if p > 5:
+                        (usados if cond == "used" else novos).append(p)
+            except Exception:
+                continue
+    return titles, novos, usados
+
 def _buscar_requests_html(urls):
-    htmls = []
     headers = {
         "User-Agent": _UA_ML,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -233,12 +261,11 @@ def _buscar_requests_html(urls):
     for url in urls:
         try:
             r = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
-            if r.status_code == 200 and len(r.text) > 1000 and _has_resultados(r.text):
-                htmls.append(r.text)
-                break
+            if r.status_code == 200 and len(r.text) > 1000:
+                return [r.text]
         except Exception:
             continue
-    return htmls
+    return []
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
 def buscar_ml(codigo):
@@ -267,10 +294,12 @@ def buscar_ml(codigo):
                 _absorver(*_parse_html_ml(html_ps))
                 break
 
-    # Camada 4: requests direto — funciona no Railway/Linux quando PS/Node indisponíveis
+    # Camada 4: requests + extração JSON embarcado (Railway/Linux)
     if not novos and not usados:
         for h in _buscar_requests_html(urls_html):
-            _absorver(*_parse_html_ml(h))
+            _absorver(*_extrair_json_ml_page(h))
+            if not novos and not usados:
+                _absorver(*_parse_html_ml(h))
 
     novos  = sorted(set(round(p, 2) for p in novos))[:15]
     usados = sorted(set(round(p, 2) for p in usados))[:15]
