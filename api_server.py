@@ -423,11 +423,36 @@ def _gemini(api_key, prompt):
             continue
     return None
 
+# ─── Identifica nome da peça para busca secundária ────────────────────────────
+def _identificar_nome_peca(codigo):
+    """Pede à IA só o nome da peça para usar como query no ML."""
+    cfg = carregar_config()
+    provider = cfg.get("provider", "gemini")
+    prompt = f"Qual o nome comercial desta peça automotiva no Brasil (código OEM: {codigo})? Responda APENAS o nome curto, ex: 'Sensor Pressão Óleo Renault'. Sem explicações."
+    if provider == "gemini":
+        r = _gemini(cfg.get("gemini_key", ""), prompt)
+    else:
+        r = _claude(cfg.get("api_key", ""), prompt)
+    if isinstance(r, dict):
+        v = list(r.values())[0] if r else ""
+        return str(v).strip()[:60]
+    return ""
+
 # ─── Lógica principal de busca ────────────────────────────────────────────────
 def executar_busca(codigo):
     titles, novos, usados = buscar_ml(codigo)
     ml_achou = bool(titles or novos or usados)
     print(f"[WRX] ML achou: titles={len(titles)} novos={len(novos)} usados={len(usados)}")
+
+    # Se ML não achou pelo código OEM, tenta buscar pelo nome da peça
+    if not ml_achou:
+        nome_peca = _identificar_nome_peca(codigo)
+        if nome_peca:
+            print(f"[WRX] Buscando ML por nome: {nome_peca}")
+            t2, n2, u2 = buscar_ml(nome_peca)
+            if t2 or n2 or u2:
+                titles, novos, usados = t2, n2, u2
+                ml_achou = True
 
     prices    = novos or usados
     preco_ref = calcular_preco_sugerido(prices)
