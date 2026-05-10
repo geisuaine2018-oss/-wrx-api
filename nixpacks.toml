@@ -2,4 +2,4 @@
 cmds = ["pip install -r requirements.txt"]
 
 [start]
-cmd = "playwright install chromium --with-deps && python api_server.py"
+cmd = "playwright install-deps chromium && playwright install chromium && python api_server.py"
