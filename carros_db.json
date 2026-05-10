@@ -1,0 +1,325 @@
+{
+  "fiat_pulse": {
+    "veiculo": "Fiat Pulse",
+    "anos": "2021 2022 2023 2024 2025",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_pulse_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_pulse_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_pulse_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_pulse_3.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_pulse_4.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_pulse_5.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_pulse_6.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_pulse_7.png"
+    ],
+    "selecionada": 7
+  },
+  "fiat_fastback": {
+    "veiculo": "Fiat Fastback",
+    "anos": "2023 2024 2025 2026",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_fastback.png"
+    ],
+    "selecionada": 0
+  },
+  "fiat_cronos": {
+    "veiculo": "Fiat Cronos",
+    "anos": "2017 2018 2019 2020 2021 2022 2023 2024 2025",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_cronos_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_cronos_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_cronos_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_cronos_3.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_cronos_4.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_cronos_5.png"
+    ],
+    "selecionada": 0
+  },
+  "fiat_argo": {
+    "veiculo": "Fiat Argo",
+    "anos": "2017 2018 2019 2020 2021 2022 2023 2024 2025 2026",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_argo_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_argo_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_argo_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_argo_3.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_argo_4.png"
+    ],
+    "selecionada": 0
+  },
+  "fiat_mobi": {
+    "veiculo": "Fiat Mobi",
+    "anos": "2016 2017 2018 2019 2020 2021 2022 2023 2024 2025",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_mobi_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_mobi_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_mobi_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_mobi_3.png"
+    ],
+    "selecionada": 0
+  },
+  "fiat_uno": {
+    "veiculo": "Fiat Uno",
+    "anos": "2011 2012 2013 2014 2015 2016 2017 2018 2019 2020 2021 2022 2023",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_3.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_4.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_5.png"
+    ],
+    "selecionada": 0
+  },
+  "fiat_uno_vivace": {
+    "veiculo": "Fiat Uno Vivace",
+    "anos": "2011 2012 2013 2014 2015 2016 2017 2018 2019 2020 2021",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_3.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_4.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_5.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_6.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_7.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_8.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_uno_vivace_9.png"
+    ],
+    "selecionada": 0
+  },
+  "fiat_novo_uno": {
+    "veiculo": "Fiat Novo Uno",
+    "anos": "2011 2012 2013 2014 2015 2016 2017 2018 2019 2020 2021",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_novo_uno_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_novo_uno_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_novo_uno_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_novo_uno_3.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_novo_uno_4.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_novo_uno_5.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_novo_uno_6.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_novo_uno_7.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_novo_uno_8.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\fiat_novo_uno_9.png"
+    ],
+    "selecionada": 0
+  },
+  "peugeot_208": {
+    "veiculo": "Peugeot 208",
+    "anos": "2021 2022 2023 2024 2025 2026",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\peugeot_208.png"
+    ],
+    "selecionada": 0
+  },
+  "peugeot_308": {
+    "veiculo": "Peugeot 308",
+    "anos": "2013 2014 2015 2016 2017 2018 2019 2020",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\peugeot_308_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\peugeot_308_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\peugeot_308_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\peugeot_308_3.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\peugeot_308_4.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\peugeot_308_5.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\peugeot_308_6.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\peugeot_308_7.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\peugeot_308_8.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\peugeot_308_9.png"
+    ],
+    "selecionada": 0
+  },
+  "peugeot_2008": {
+    "veiculo": "Peugeot 2008",
+    "anos": "2020 2021 2022 2023 2024 2025",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\peugeot_2008.png"
+    ],
+    "selecionada": 0
+  },
+  "peugeot_3008": {
+    "veiculo": "Peugeot 3008",
+    "anos": "2017 2018 2019 2020 2021 2022 2023 2024",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\peugeot_3008.png"
+    ],
+    "selecionada": 0
+  },
+  "peugeot_408": {
+    "veiculo": "Peugeot 408",
+    "anos": "2023 2024 2025 2026",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\peugeot_408.png"
+    ],
+    "selecionada": 0
+  },
+  "citroen_c3": {
+    "veiculo": "Citroën C3",
+    "anos": "2017 2018 2019 2020 2021 2022 2023 2024 2025",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\citroen_c3.png"
+    ],
+    "selecionada": 0
+  },
+  "citroen_c3_aircross": {
+    "veiculo": "Citroën C3 Aircross",
+    "anos": "2023 2024 2025 2026",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\citroen_c4_cactus.png"
+    ],
+    "selecionada": 0
+  },
+  "citroen_c4_cactus": {
+    "veiculo": "Citroën C4 Cactus",
+    "anos": "2017 2018 2019 2020 2021 2022 2023",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\citroen_c4_cactus.png"
+    ],
+    "selecionada": 0
+  },
+  "citroen_c4_lounge": {
+    "veiculo": "Citroën C4 Lounge",
+    "anos": "2013 2014 2015 2016 2017 2018 2019 2020",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\citroen_c4_lounge.png"
+    ],
+    "selecionada": 0
+  },
+  "chevrolet_tracker": {
+    "veiculo": "Chevrolet Tracker",
+    "anos": "2020 2021 2022 2023 2024 2025",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_tracker_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_tracker_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_tracker_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_tracker_3.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_tracker_4.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_tracker_5.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_tracker_6.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_tracker_7.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_tracker_8.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_tracker_9.png"
+    ],
+    "selecionada": 0
+  },
+  "chevrolet_onix": {
+    "veiculo": "Chevrolet Onix",
+    "anos": "2020 2021 2022 2023 2024 2025",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_onix_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_onix_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_onix_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_onix_3.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_onix_4.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_onix_5.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_onix_6.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_onix_7.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_onix_8.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_onix_9.png"
+    ],
+    "selecionada": 0
+  },
+  "chevrolet_spin": {
+    "veiculo": "Chevrolet Spin",
+    "anos": "2012 2013 2014 2015 2016 2017 2018 2019 2020 2021 2022 2023 2024",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_spin_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_spin_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_spin_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_spin_3.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_spin_4.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_spin_5.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_spin_6.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_spin_7.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_spin_8.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_spin_9.png"
+    ],
+    "selecionada": 0
+  },
+  "chevrolet_prisma": {
+    "veiculo": "Chevrolet Prisma",
+    "anos": "2013 2014 2015 2016 2017 2018 2019 2020",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_prisma_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_prisma_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_prisma_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_prisma_3.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_prisma_4.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_prisma_5.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_prisma_6.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_prisma_7.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_prisma_8.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\chevrolet_prisma_9.png"
+    ],
+    "selecionada": 0
+  },
+  "renault_sandero": {
+    "veiculo": "Renault Sandero",
+    "anos": "2014 2015 2016 2017 2018 2019 2020 2021 2022 2023",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_sandero_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_sandero_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_sandero_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_sandero_3.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_sandero_4.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_sandero_5.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_sandero_6.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_sandero_7.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_sandero_8.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_sandero_9.png"
+    ],
+    "selecionada": 0
+  },
+  "renault_logan": {
+    "veiculo": "Renault Logan",
+    "anos": "2014 2015 2016 2017 2018 2019 2020 2021 2022 2023",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_logan_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_logan_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_logan_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_logan_3.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_logan_4.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_logan_5.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_logan_6.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_logan_7.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_logan_8.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_logan_9.png"
+    ],
+    "selecionada": 0
+  },
+  "renault_duster": {
+    "veiculo": "Renault Duster",
+    "anos": "2016 2017 2018 2019 2020 2021 2022 2023",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_duster_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_duster_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_duster_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_duster_3.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_duster_4.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_duster_5.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_duster_6.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_duster_7.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_duster_8.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\renault_duster_9.png"
+    ],
+    "selecionada": 9
+  },
+  "volvo_s60": {
+    "veiculo": "Volvo S60",
+    "anos": "2020 2021 2022 2023",
+    "fotos": [
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\volvo_s60_0.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\volvo_s60_1.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\volvo_s60_2.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\volvo_s60_3.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\volvo_s60_4.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\volvo_s60_5.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\volvo_s60_6.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\volvo_s60_7.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\volvo_s60_8.png",
+      "C:\\Users\\Geisuane\\Downloads\\WRX-Search\\wrx-search\\fotos_carros\\volvo_s60_9.png"
+    ],
+    "selecionada": 0
+  }
+}

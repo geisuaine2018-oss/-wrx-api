@@ -1,0 +1,6 @@
+config.json
+license.dat
+__pycache__/
+*.pyc
+.env
+wrx_debug.log

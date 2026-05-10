@@ -1,0 +1,104 @@
+[
+  {
+    "keywords": ["parachoque", "para-choque", "parabarro", "spoiler"],
+    "ncm": "8708.10.00",
+    "cest": "01.044.00",
+    "desc": "Para-choques e suas partes"
+  },
+  {
+    "keywords": ["paralama", "capo", "capô", "porta", "tampa de mala", "longarina", "assoalho", "coluna"],
+    "ncm": "8708.29.99",
+    "cest": "01.044.00",
+    "desc": "Partes e acessórios para carroçaria"
+  },
+  {
+    "keywords": ["farol", "lanterna", "luz", "farolete", "pisca", "neblina"],
+    "ncm": "8512.20.00",
+    "cest": "01.033.00",
+    "desc": "Aparelhos de iluminação ou sinalização visual"
+  },
+  {
+    "keywords": ["amortecedor", "mola", "suspensao", "suspensão", "bandeja", "manga de eixo", "cubo de roda"],
+    "ncm": "8708.80.00",
+    "cest": "01.056.00",
+    "desc": "Amortecedores e suas partes"
+  },
+  {
+    "keywords": ["radiador", "condensador", "intercooler", "resfriador"],
+    "ncm": "8708.91.00",
+    "cest": "01.060.00",
+    "desc": "Radiadores e suas partes"
+  },
+  {
+    "keywords": ["freio", "pastilha", "disco de freio", "tambor", "cilindro de freio", "abs"],
+    "ncm": "8708.30.00",
+    "cest": "01.050.00",
+    "desc": "Freios e servo-freios e suas partes"
+  },
+  {
+    "keywords": ["motor de arranque", "motor de partida", "alternador", "bobina", "vela", "platinado"],
+    "ncm": "8511.40.00",
+    "cest": "01.027.00",
+    "desc": "Motores de arranque e suas partes"
+  },
+  {
+    "keywords": ["motor de vidro", "motor de janela", "motor eletrico", "motor ventoinha", "motor esguicho", "motor parabrisa", "motor limpador"],
+    "ncm": "8501.10.19",
+    "cest": "01.023.00",
+    "desc": "Motores elétricos de potência até 37,5 W"
+  },
+  {
+    "keywords": ["modulo", "módulo", "central eletrica", "ecu", "computador", "central eletronica"],
+    "ncm": "8537.10.20",
+    "cest": "01.028.00",
+    "desc": "Módulos de controle eletrônico"
+  },
+  {
+    "keywords": ["vidro", "parabrisa", "luneta", "vigia"],
+    "ncm": "7007.21.00",
+    "cest": "01.046.00",
+    "desc": "Vidros temperados ou laminados para veículos"
+  },
+  {
+    "keywords": ["cabecote", "cabeçote", "bloco", "coletor", "escapamento", "silencioso", "catalisador"],
+    "ncm": "8708.99.90",
+    "cest": "01.080.00",
+    "desc": "Outras partes e acessórios para veículos"
+  },
+  {
+    "keywords": ["correia", "correia dentada", "correia acessorios", "tensor", "polia"],
+    "ncm": "4010.39.90",
+    "cest": "01.070.00",
+    "desc": "Correias de transmissão de borracha vulcanizada"
+  },
+  {
+    "keywords": ["retrovisor", "espelho"],
+    "ncm": "7009.10.00",
+    "cest": "01.045.00",
+    "desc": "Espelhos retrovisores para veículos"
+  },
+  {
+    "keywords": ["pneu", "pneus", "pneumatico", "pneumático"],
+    "ncm": "4011.10.00",
+    "cest": "01.005.00",
+    "desc": "Pneus novos para automóveis"
+  },
+  {
+    "keywords": ["bateria", "acumulador"],
+    "ncm": "8507.10.00",
+    "cest": "01.021.00",
+    "desc": "Acumuladores elétricos para ignição"
+  },
+  {
+    "keywords": ["sensor", "sonda lambda", "map", "iac", "tps"],
+    "ncm": "9026.80.00",
+    "cest": "01.029.00",
+    "desc": "Instrumentos e aparelhos para medida ou controle"
+  },
+  {
+    "keywords": ["bomba de combustivel", "bomba combustivel", "injetor", "bico injetor", "bomba dagua", "bomba d'agua"],
+    "ncm": "8413.30.90",
+    "cest": "01.059.00",
+    "desc": "Bombas para combustível, lubrificante ou arrefecimento"
+  }
+]
