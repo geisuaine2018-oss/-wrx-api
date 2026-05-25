@@ -558,6 +558,7 @@ if USE_FLASK:
         return _cors(resp)
 
     @app.route("/buscar", methods=["GET", "OPTIONS"])
+    @app.route("/wrx-buscar", methods=["GET", "OPTIONS"])
     def rota_buscar():
         if request.method == "OPTIONS":
             return _cors(app.response_class(status=204))
@@ -806,6 +807,7 @@ if USE_FLASK:
 
     @app.route("/", methods=["OPTIONS"])
     @app.route("/buscar", methods=["OPTIONS"])
+    @app.route("/wrx-buscar", methods=["OPTIONS"])
     @app.route("/carros", methods=["OPTIONS"])
     def options():
         return Response(status=204, headers={
