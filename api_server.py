@@ -811,59 +811,48 @@ if USE_FLASK:
             return _cors(app.response_class(status=204))
         query = request.args.get("q", "").strip()
         nome = request.args.get("nome", "").strip()
-        if not query:
+        if not query and not nome:
             return jsonify({"erro": "Parâmetro ?q= obrigatório"}), 400
-        token = _get_ml_token()
-        headers = {"Accept": "application/json", "Accept-Language": "pt-BR,pt;q=0.9"}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
 
-        def _coletar(termo, condition):
-            resultados = []
-            for offset in [0, 48, 96]:
-                try:
-                    r = requests.get(
-                        "https://api.mercadolibre.com/sites/MLB/search",
-                        params={"q": termo, "condition": condition, "limit": 48, "offset": offset},
-                        headers=headers, timeout=15
-                    )
-                    if r.status_code != 200:
-                        break
-                    items = r.json().get("results", [])
-                    if not items:
-                        break
-                    for item in items:
-                        qty = int(item.get("available_quantity") or 99)
-                        if qty > 2:
-                            continue
-                        price = float(item.get("price") or 0)
-                        if price <= 5:
-                            continue
-                        resultados.append({
-                            "price": price,
-                            "qty": qty,
-                            "title": item.get("title", "")[:60],
-                            "link": item.get("permalink", "")
-                        })
-                except Exception:
-                    break
-            return resultados
+        termo = query or nome
 
-        termo_final = query
-        usados = _coletar(query, "used")
-        if not usados and nome:
-            usados = _coletar(nome, "used")
-            termo_final = nome if usados else query
+        def _scrape_condition(term, condition_suffix):
+            """Raspa ML listing page para uma condição (u=usado, n=novo)."""
+            slug = re.sub(r'\s+', '-', term.strip().lower())
+            urls = [
+                f"https://lista.mercadolivre.com.br/acessorios-veiculos/{slug}_Condition_{condition_suffix}",
+                f"https://lista.mercadolivre.com.br/{slug}_Condition_{condition_suffix}",
+            ]
+            # Tenta browser (local Windows: Edge ou Chromium bundled)
+            htmls = _buscar_navegador(urls)
+            if not htmls:
+                # Fallback: requests direto (pode não ter conteúdo em SPA, mas tenta)
+                htmls = _buscar_requests_html(urls)
+            if not htmls:
+                htmls = _buscar_playwright_python(urls)
+            precos = []
+            for h in htmls:
+                _, novos_h, usados_h = _parse_html_ml(h)
+                precos.extend(novos_h + usados_h)
+            return sorted(set(round(p, 2) for p in precos if p > 5))
 
-        novos = _coletar(termo_final, "new")
+        usados_precos = _scrape_condition(termo, "u")
+        novos_precos  = _scrape_condition(termo, "n")
 
-        usados.sort(key=lambda x: x["price"])
-        novos.sort(key=lambda x: x["price"])
+        # Fallback: se não achou nada com o termo principal e tem nome, tenta com nome
+        if not usados_precos and not novos_precos and query and nome and nome != query:
+            usados_precos = _scrape_condition(nome, "u")
+            novos_precos  = _scrape_condition(nome, "n")
+            termo = nome
+
+        def _fmt(precos):
+            return [{"price": p} for p in precos[:15]]
+
         return jsonify({
-            "usados": usados[:15],
-            "novos": novos[:15],
-            "total": len(usados) + len(novos),
-            "termo_usado": termo_final
+            "usados": _fmt(usados_precos),
+            "novos":  _fmt(novos_precos),
+            "total":  len(usados_precos) + len(novos_precos),
+            "termo_usado": termo,
         })
 
     @app.route("/", methods=["OPTIONS"])
