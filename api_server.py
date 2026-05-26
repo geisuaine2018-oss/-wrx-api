@@ -818,13 +818,13 @@ if USE_FLASK:
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-        def _buscar_usados(termo):
+        def _coletar(termo, condition):
             resultados = []
             for offset in [0, 48, 96]:
                 try:
                     r = requests.get(
                         "https://api.mercadolibre.com/sites/MLB/search",
-                        params={"q": termo, "condition": "used", "limit": 48, "offset": offset},
+                        params={"q": termo, "condition": condition, "limit": 48, "offset": offset},
                         headers=headers, timeout=15
                     )
                     if r.status_code != 200:
@@ -849,12 +849,22 @@ if USE_FLASK:
                     break
             return resultados
 
-        usados = _buscar_usados(query)
-        # Se não achou nada com OEM/código, tenta com nome da peça
+        termo_final = query
+        usados = _coletar(query, "used")
         if not usados and nome:
-            usados = _buscar_usados(nome)
+            usados = _coletar(nome, "used")
+            termo_final = nome if usados else query
+
+        novos = _coletar(termo_final, "new")
+
         usados.sort(key=lambda x: x["price"])
-        return jsonify({"usados": usados[:10], "novos": [], "total": len(usados), "termo_usado": query if usados else (nome or query)})
+        novos.sort(key=lambda x: x["price"])
+        return jsonify({
+            "usados": usados[:15],
+            "novos": novos[:15],
+            "total": len(usados) + len(novos),
+            "termo_usado": termo_final
+        })
 
     @app.route("/", methods=["OPTIONS"])
     @app.route("/buscar", methods=["OPTIONS"])
