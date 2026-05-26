@@ -805,10 +805,59 @@ if USE_FLASK:
             data = f.read()
         return Response(data, mimetype=mime, headers={"Access-Control-Allow-Origin": "*"})
 
+    @app.route("/ml-precos", methods=["GET", "OPTIONS"])
+    def rota_ml_precos():
+        if request.method == "OPTIONS":
+            return _cors(app.response_class(status=204))
+        query = request.args.get("q", "").strip()
+        if not query:
+            return jsonify({"erro": "Parâmetro ?q= obrigatório"}), 400
+        token = _get_ml_token()
+        headers = {"Accept": "application/json", "Accept-Language": "pt-BR,pt;q=0.9"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        usados, novos = [], []
+        try:
+            for offset in [0, 48]:
+                r = requests.get(
+                    "https://api.mercadolibre.com/sites/MLB/search",
+                    params={"q": query, "limit": 48, "offset": offset},
+                    headers=headers, timeout=15
+                )
+                if r.status_code != 200:
+                    break
+                items = r.json().get("results", [])
+                if not items:
+                    break
+                for item in items:
+                    qty = int(item.get("available_quantity") or item.get("sold_quantity") or 99)
+                    if qty > 2:
+                        continue
+                    price = float(item.get("price") or 0)
+                    if price <= 5:
+                        continue
+                    cond = item.get("condition", "new")
+                    entry = {
+                        "price": price,
+                        "qty": qty,
+                        "title": item.get("title", "")[:60],
+                        "link": item.get("permalink", "")
+                    }
+                    if cond == "used":
+                        usados.append(entry)
+                    else:
+                        novos.append(entry)
+        except Exception as e:
+            return jsonify({"erro": str(e), "usados": [], "novos": []}), 200
+        usados.sort(key=lambda x: x["price"])
+        novos.sort(key=lambda x: x["price"])
+        return jsonify({"usados": usados[:10], "novos": novos[:5], "total": len(usados) + len(novos)})
+
     @app.route("/", methods=["OPTIONS"])
     @app.route("/buscar", methods=["OPTIONS"])
     @app.route("/wrx-buscar", methods=["OPTIONS"])
     @app.route("/carros", methods=["OPTIONS"])
+    @app.route("/ml-precos", methods=["OPTIONS"])
     def options():
         return Response(status=204, headers={
             "Access-Control-Allow-Origin": "*",
