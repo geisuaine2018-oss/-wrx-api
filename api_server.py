@@ -870,7 +870,6 @@ if USE_FLASK:
     @app.route("/buscar", methods=["OPTIONS"])
     @app.route("/wrx-buscar", methods=["OPTIONS"])
     @app.route("/carros", methods=["OPTIONS"])
-    @app.route("/ml-precos", methods=["OPTIONS"])
     def options():
         return Response(status=204, headers={
             "Access-Control-Allow-Origin": "*",
