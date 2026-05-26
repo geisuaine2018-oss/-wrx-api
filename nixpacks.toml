@@ -1,5 +1,5 @@
 [phases.build]
-cmds = ["pip install -r requirements.txt"]
+cmds = ["pip install -r requirements.txt", "playwright install-deps chromium || true", "playwright install chromium || true"]
 
 [start]
-cmd = "playwright install-deps chromium && playwright install chromium && python api_server.py"
+cmd = "python api_server.py"
