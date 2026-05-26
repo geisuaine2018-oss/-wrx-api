@@ -810,48 +810,51 @@ if USE_FLASK:
         if request.method == "OPTIONS":
             return _cors(app.response_class(status=204))
         query = request.args.get("q", "").strip()
+        nome = request.args.get("nome", "").strip()
         if not query:
             return jsonify({"erro": "Parâmetro ?q= obrigatório"}), 400
         token = _get_ml_token()
         headers = {"Accept": "application/json", "Accept-Language": "pt-BR,pt;q=0.9"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        usados, novos = [], []
-        try:
-            for offset in [0, 48]:
-                r = requests.get(
-                    "https://api.mercadolibre.com/sites/MLB/search",
-                    params={"q": query, "limit": 48, "offset": offset},
-                    headers=headers, timeout=15
-                )
-                if r.status_code != 200:
+
+        def _buscar_usados(termo):
+            resultados = []
+            for offset in [0, 48, 96]:
+                try:
+                    r = requests.get(
+                        "https://api.mercadolibre.com/sites/MLB/search",
+                        params={"q": termo, "condition": "used", "limit": 48, "offset": offset},
+                        headers=headers, timeout=15
+                    )
+                    if r.status_code != 200:
+                        break
+                    items = r.json().get("results", [])
+                    if not items:
+                        break
+                    for item in items:
+                        qty = int(item.get("available_quantity") or 99)
+                        if qty > 2:
+                            continue
+                        price = float(item.get("price") or 0)
+                        if price <= 5:
+                            continue
+                        resultados.append({
+                            "price": price,
+                            "qty": qty,
+                            "title": item.get("title", "")[:60],
+                            "link": item.get("permalink", "")
+                        })
+                except Exception:
                     break
-                items = r.json().get("results", [])
-                if not items:
-                    break
-                for item in items:
-                    qty = int(item.get("available_quantity") or item.get("sold_quantity") or 99)
-                    if qty > 2:
-                        continue
-                    price = float(item.get("price") or 0)
-                    if price <= 5:
-                        continue
-                    cond = item.get("condition", "new")
-                    entry = {
-                        "price": price,
-                        "qty": qty,
-                        "title": item.get("title", "")[:60],
-                        "link": item.get("permalink", "")
-                    }
-                    if cond == "used":
-                        usados.append(entry)
-                    else:
-                        novos.append(entry)
-        except Exception as e:
-            return jsonify({"erro": str(e), "usados": [], "novos": []}), 200
+            return resultados
+
+        usados = _buscar_usados(query)
+        # Se não achou nada com OEM/código, tenta com nome da peça
+        if not usados and nome:
+            usados = _buscar_usados(nome)
         usados.sort(key=lambda x: x["price"])
-        novos.sort(key=lambda x: x["price"])
-        return jsonify({"usados": usados[:10], "novos": novos[:5], "total": len(usados) + len(novos)})
+        return jsonify({"usados": usados[:10], "novos": [], "total": len(usados), "termo_usado": query if usados else (nome or query)})
 
     @app.route("/", methods=["OPTIONS"])
     @app.route("/buscar", methods=["OPTIONS"])
