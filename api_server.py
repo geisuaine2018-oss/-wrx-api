@@ -25,7 +25,7 @@ _NODE       = os.path.join(_DIR, "pw_driver", "node.exe")
 _SCRAPER    = os.path.join(_DIR, "scraper.js")
 _UA_ML      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
 ML_CLIENT_ID     = os.environ.get("ML_CLIENT_ID",     "5450531514024470")
-ML_CLIENT_SECRET = os.environ.get("ML_CLIENT_SECRET", "s9gn1wiLSuHv2JlDbKnhoJYRQzil7YTu")
+ML_CLIENT_SECRET = os.environ.get("ML_CLIENT_SECRET", "s9gn1wlLSuHv2JlDbKnhoJYRQziI7YTu")
 
 def carregar_config():
     # Env vars têm prioridade (Railway); fallback para config.json local
