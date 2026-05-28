@@ -868,6 +868,9 @@ if USE_FLASK:
 
     # ─── Integrações: Mercado Livre, OLX, Shopee ─────────────────────────────────
     import urllib.parse as _urlparse
+    import hashlib as _hashlib
+    import secrets as _secrets
+    import base64 as _base64
 
     _INTEG_DIR = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp")
     _ML_TOKENS_FILE = os.path.join(_INTEG_DIR, "wrx_ml_tokens.json")
@@ -875,6 +878,13 @@ if USE_FLASK:
     _ML_QUEUE_FILE = os.path.join(_INTEG_DIR, "wrx_ml_queue.json")
     _ml_tokens_mem = {}
     _olx_token_mem = {}
+    _pkce_store = {}  # state -> code_verifier
+
+    def _pkce_pair():
+        verifier = _base64.urlsafe_b64encode(_secrets.token_bytes(32)).rstrip(b'=').decode()
+        digest = _hashlib.sha256(verifier.encode()).digest()
+        challenge = _base64.urlsafe_b64encode(digest).rstrip(b'=').decode()
+        return verifier, challenge
 
     ML_REDIRECT_URI = os.environ.get("ML_REDIRECT_URI", "https://wrx-api-production.up.railway.app/integracoes/mercadolivre/oauth/callback")
     OLX_CLIENT_ID = os.environ.get("OLX_CLIENT_ID", "")
@@ -943,11 +953,14 @@ if USE_FLASK:
     def ml_oauth():
         from flask import redirect as _redir
         conta = request.args.get("conta", "default")
+        verifier, challenge = _pkce_pair()
+        _pkce_store[conta] = verifier
         url = (
             "https://auth.mercadolivre.com.br/authorization"
-            f"?response_type=code&client_id={ML_CLIENT_ID}"
+            f"?response_type=code&client_id={ML_CLIENT_ID.strip()}"
             f"&redirect_uri={_urlparse.quote(ML_REDIRECT_URI, safe='')}"
             f"&state={conta}"
+            f"&code_challenge={challenge}&code_challenge_method=S256"
         )
         return _redir(url)
 
@@ -958,13 +971,18 @@ if USE_FLASK:
         if not code:
             return jsonify({"erro": "codigo OAuth ausente"}), 400
         try:
-            _r = requests.post("https://api.mercadolibre.com/oauth/token", data={
+            _exchange = {
                 "grant_type": "authorization_code",
-                "client_id": ML_CLIENT_ID,
-                "client_secret": ML_CLIENT_SECRET,
+                "client_id": ML_CLIENT_ID.strip(),
+                "client_secret": ML_CLIENT_SECRET.strip(),
                 "code": code,
                 "redirect_uri": ML_REDIRECT_URI
-            }, timeout=15)
+            }
+            verifier = _pkce_store.pop(conta, None)
+            if verifier:
+                _exchange["code_verifier"] = verifier
+            _r = requests.post("https://api.mercadolibre.com/oauth/token",
+                               data=_exchange, timeout=15)
             if _r.status_code != 200:
                 return jsonify({"erro": f"ML {_r.status_code}: {_r.text[:300]}"}), 400
             _d = _r.json()
