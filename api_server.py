@@ -1191,11 +1191,8 @@ if USE_FLASK:
             "condition": data.get("condicao", "used"),
             "listing_type_id": data.get("listingTypeId", "gold_special"),
             "seller_custom_field": sku,
-            "family_name": _titulo,
             "shipping": {"mode": "me2", "free_shipping": bool(data.get("freeShipping", False))}
         }
-        if data.get("descricao"):
-            ml_payload["description"] = {"plain_text": str(data["descricao"])[:50000]}
         if fotos:
             ml_payload["pictures"] = [{"source": f} for f in fotos[:10]]
         try:
@@ -1206,7 +1203,19 @@ if USE_FLASK:
             )
             if _r.status_code in (200, 201):
                 item = _r.json()
-                return jsonify({"ok": True, "mlId": item.get("id"), "item": item, "conta": conta_nome})
+                item_id = item.get("id")
+                # Posta descrição separadamente (ML recomenda POST separado)
+                if item_id and data.get("descricao"):
+                    try:
+                        requests.post(
+                            f"https://api.mercadolibre.com/items/{item_id}/description",
+                            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                            json={"plain_text": str(data["descricao"])[:50000]},
+                            timeout=10
+                        )
+                    except Exception:
+                        pass
+                return jsonify({"ok": True, "mlId": item_id, "item": item, "conta": conta_nome})
             _err = _r.json() if _r.headers.get("content-type", "").startswith("application/json") else {}
             return jsonify({
                 "ok": False,
