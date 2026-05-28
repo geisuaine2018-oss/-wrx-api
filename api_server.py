@@ -1160,8 +1160,9 @@ if USE_FLASK:
         preco = float(data.get("preco", 0) or 0)
         if preco <= 0:
             return jsonify({"ok": False, "erro": "preco invalido"}), 400
+        _titulo = (data.get("titulo", "") or data.get("nomeInterno", ""))[:60]
         ml_payload = {
-            "title": (data.get("titulo", "") or data.get("nomeInterno", ""))[:60],
+            "title": _titulo,
             "category_id": data.get("mlCategoryId", "") or "MLB174561",
             "price": preco,
             "currency_id": "BRL",
@@ -1170,6 +1171,7 @@ if USE_FLASK:
             "condition": data.get("condicao", "used"),
             "listing_type_id": data.get("listingTypeId", "gold_special"),
             "seller_custom_field": sku,
+            "family_name": _titulo,
             "shipping": {"mode": "me2", "free_shipping": bool(data.get("freeShipping", False))}
         }
         if data.get("descricao"):
