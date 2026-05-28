@@ -511,7 +511,27 @@ def executar_busca(codigo):
     data      = _chamar_ia(prompt)
 
     if not data:
-        return {"erro": "Falha na IA. Verifique a API Key no WRX-Search."}
+        # IA falhou mas ML pode ter achado dados — devolve resultado parcial
+        titulo_base = titles[0] if titles else codigo
+        titulos_gerados = [
+            titulo_base,
+            f"{titulo_base} {codigo}".strip()[:60],
+            f"{titulo_base} Original".strip()[:60],
+            f"{titulo_base} Usado".strip()[:60],
+        ]
+        data = {
+            "codigo": codigo,
+            "titulos_otimizados": titulos_gerados,
+            "titulo_ia": titulos_gerados[0],
+            "preco_sugerido": preco_ref,
+            "compatibilidade": [],
+            "versoes": [],
+            "explicacao": "IA indisponível. Dados coletados do Mercado Livre.",
+            "funcao": titulo_base,
+            "sem_ia": True,
+        }
+        if not ml_achou:
+            return {"erro": "Falha na IA e nenhum dado encontrado no ML. Verifique a API Key no WRX-Search."}
 
     # Força preço calculado pelo Python
     if preco_ref > 0:
