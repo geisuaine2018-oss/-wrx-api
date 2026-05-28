@@ -358,43 +358,105 @@ def buscar_ml(codigo):
 
 # ─── IA: prompt + ajuste + chamada ────────────────────────────────────────────
 def _build_prompt(codigo, titles, prices):
-    tlist = "\n".join(f"- {t}" for t in titles) if titles else "(sem anúncios encontrados no ML — use seu conhecimento do código OEM)"
-    plist = ", ".join(f"R$ {p:.2f}" for p in prices) if prices else "(sem preços — sugira baseado no mercado brasileiro)"
-    return f"""Analise a peça automotiva com código OEM: {codigo}
+    tlist = "\n".join(f"- {t}" for t in titles) if titles else "(sem anúncios encontrados — use seu conhecimento técnico do código OEM)"
+    plist = ", ".join(f"R$ {p:.2f}" for p in prices) if prices else "(sem preços coletados — estime com base em concorrentes reais de auto peças)"
+    return f"""Você é um especialista profissional em Mercado Livre, SEO automotivo, auto peças, compatibilidade veicular e precificação inteligente.
 
-Anúncios Mercado Livre:
+CÓDIGO OEM / PEÇA: {codigo}
+
+ANÚNCIOS COLETADOS DO MERCADO LIVRE (vendedores reais, independentes):
 {tlist}
 
-Preços encontrados: {plist}
+PREÇOS ENCONTRADOS:
+{plist}
 
-Retorne APENAS um JSON com esta estrutura exata (sem texto fora):
+═══════════════════════════════════════
+REGRAS OBRIGATÓRIAS DE PESQUISA E PREÇO
+═══════════════════════════════════════
+
+IGNORAR COMPLETAMENTE como referência de preço:
+- Concessionárias, lojas oficiais, montadoras, fabricantes oficiais
+- Fiat, Citroen, Peugeot, Volkswagen, GM, Chevrolet, Toyota, Honda, Renault, Jeep, Hyundai, Nissan, Ford (como vendedores)
+- Peças paralelas ruins, anúncios sem descrição, anúncios sem compatibilidade
+
+USAR SOMENTE:
+- Vendedores reais do Mercado Livre, auto peças independentes, vendedores premium com boa reputação
+- Anúncios mais vendidos com compatibilidade completa
+
+CÁLCULO DE PREÇO OBRIGATÓRIO:
+- Analisar anúncios vendidos por vendedores independentes fortes
+- Ignorar valores absurdamente caros ou suspeitos de serem muito baratos
+- Calcular média real dos anúncios fortes
+- Gerar 4 faixas de preço: médio mercado, competitivo, venda rápida, premium
+- Considerar condição da peça: original, OEM, genuína, primeira linha, nova, usada, recuperada
+
+═══════════════════════════════════════
+REGRAS DE TÍTULOS
+═══════════════════════════════════════
+
+Gerar EXATAMENTE 4 títulos profissionais, máximo 60 caracteres cada.
+Prioridade no título: PEÇA > MARCA > MODELO > MOTOR > ANOS > LADO > FABRICANTE > CÓDIGO
+Tentar encaixar até 3-4 veículos compatíveis no mesmo título.
+Anos no título: resumir como 2020/2025 ou 20/25.
+Nunca usar emojis. Títulos limpos, fortes e com SEO.
+
+EXEMPLOS DE FORMATO:
+- Sensor Pressão Óleo Logan Sandero 1.0 1.6 2014/2024
+- Farol Citroen C3 Aircross C4 2020/2025 D/E
+
+═══════════════════════════════════════
+REGRAS DE COMPATIBILIDADE
+═══════════════════════════════════════
+
+- Listar TODOS os modelos confirmados para este código exato
+- NUNCA resumir anos (ERRADO: "2020 a 2025" | CERTO: cada ano individual)
+- Separar por veículo, expandir todos os anos individualmente
+- Incluir marca, modelo, versão, motorização, combustível, turbo quando existir
+- Peças mecânicas DEVEM ter: motor, combustível, turbo, câmbio, versão
+- Peças de carroceria (porta, capô, farol, etc.) só incluem motor se houver diferença entre versões
+
+═══════════════════════════════════════
+SAÍDA OBRIGATÓRIA — JSON PURO
+═══════════════════════════════════════
+
+Retorne SOMENTE o JSON abaixo, sem texto antes ou depois:
+
 {{
-  "titulos_otimizados": ["titulo padrao1 sem codigo", "titulo padrao2 com codigo", "titulo padrao3 com anos", "titulo padrao4 com marca"],
-  "titulo_ia": "titulo completo com codigo no final",
+  "titulos_otimizados": [
+    "Título 1 sem código OEM (máx 60 chars)",
+    "Título 2 com código OEM no final (máx 60 chars)",
+    "Título 3 com anos resumidos ex: 2014/2024 (máx 60 chars)",
+    "Título 4 com fabricante ou lado (máx 60 chars)"
+  ],
+  "titulo_ia": "Título completo com código {codigo} no final (máx 60 chars)",
   "preco_sugerido": 0.00,
+  "preco_medio_mercado": 0.00,
+  "preco_competitivo": 0.00,
+  "preco_venda_rapida": 0.00,
+  "preco_premium": 0.00,
   "compatibilidade": [
     {{"veiculo": "Renault Logan", "anos": "2014 a 2024", "status": "COMPATÍVEL"}}
   ],
   "versoes": [
-    {{"veiculo": "Renault Logan", "anos": "2014 2015 2016 2017 2018 2019 2020 2021 2022 2023 2024", "detalhes": "Motor 1.0, 1.6"}}
+    {{"veiculo": "Renault Logan", "anos": "2014 2015 2016 2017 2018 2019 2020 2021 2022 2023 2024", "detalhes": "Motor 1.0 1.6 Flex"}}
   ],
-  "explicacao": "o que é a peça e para que serve em 2 linhas max",
-  "funcao": "função técnica em 1 linha",
-  "categoria": "categoria do produto (ex: Motor e Câmbio, Suspensão, Elétrica, Freios, Carroceria, Ar-condicionado, Iluminação)"
+  "explicacao": "O que é a peça e para que serve (2 linhas máximo)",
+  "funcao": "Função técnica resumida em 1 linha",
+  "categoria": "Categoria ML (ex: Motor e Câmbio, Suspensão, Elétrica, Freios, Carroceria, Ar-condicionado, Iluminação)",
+  "ncm": "",
+  "seo_palavras_chave": ["palavra1", "palavra2", "palavra3"],
+  "observacoes": "Observações importantes sobre a peça, lado, fabricante preferencial"
 }}
 
-Regras:
-- titulos_otimizados: EXATAMENTE 4, máximo 60 caracteres cada (serão reorganizados pelo sistema)
-- titulo_ia: máximo 60 chars, código {codigo} SEMPRE ÚLTIMO ELEMENTO
-- compatibilidade: APENAS veículos CONFIRMADOS para este código exato. NÃO inclua por suposição de marca.
-  Ex: se é Peugeot 208, NÃO inclua Peugeot 308. Se é Fiat Uno, NÃO duplique como "Fiat Uno Way".
-  Use o nome base do modelo (Fiat Uno, não "Fiat Uno Way Attractive").
-- versoes: MESMO conjunto que compatibilidade, com anos individuais e detalhes de motor.
-  NUNCA repita o mesmo modelo duas vezes.
-- versoes.anos: listar CADA ANO individualmente separado por espaço (NUNCA "a" ou "-")
-- versoes.detalhes: OBRIGATÓRIO — motores compatíveis ex: "Motor 1.0, 1.3" ou "Motor 1.0 Turbo"
-- categoria: escolha a mais adequada para Mercado Livre Peças Automotivas
-- Responda SOMENTE o JSON válido"""
+REGRAS FINAIS DO JSON:
+- titulos_otimizados: EXATAMENTE 4, máximo 60 chars cada
+- titulo_ia: máximo 60 chars, código {codigo} SEMPRE no final
+- versoes.anos: cada ano INDIVIDUAL separado por espaço — NUNCA "a" nem "-"
+- versoes.detalhes: OBRIGATÓRIO — ex: "Motor 1.0 1.6 Flex" ou "2.0 Turbo Diesel"
+- compatibilidade: APENAS veículos CONFIRMADOS para este código exato, sem duplicatas
+- Nunca repetir o mesmo modelo duas vezes em compatibilidade ou versoes
+- preco_sugerido = preco_competitivo
+- Responda SOMENTE JSON válido, sem markdown, sem explicações"""
 
 def _ajustar_titulos(data, codigo):
     def so_truncar(titulo):
