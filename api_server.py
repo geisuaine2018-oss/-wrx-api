@@ -890,7 +890,7 @@ if USE_FLASK:
     ML_REDIRECT_URI = os.environ.get("ML_REDIRECT_URI", "https://wrx-api-production.up.railway.app/integracoes/mercadolivre/oauth/callback")
     OLX_CLIENT_ID = os.environ.get("OLX_CLIENT_ID", "")
     OLX_CLIENT_SECRET = os.environ.get("OLX_CLIENT_SECRET", "")
-    OLX_REDIRECT_URI = os.environ.get("OLX_REDIRECT_URI", "https://wrx-api-production.up.railway.app/integracoes/olx/oauth/callback")
+    OLX_REDIRECT_URI = os.environ.get("OLX_REDIRECT_URI", "https://magnificent-quietude-production-931a.up.railway.app/callback/olx")
     SHOPEE_PARTNER_ID = int(os.environ.get("SHOPEE_PARTNER_ID", "1234546"))
     SHOPEE_PARTNER_KEY = os.environ.get("SHOPEE_PARTNER_KEY", "shpk76666558496143524c7a474e416c59517651744a49766976425459796265")
 
@@ -1268,6 +1268,35 @@ if USE_FLASK:
             }, timeout=15)
             if _r.status_code != 200:
                 return jsonify({"erro": f"OLX {_r.status_code}: {_r.text[:200]}"}), 400
+            _d = _r.json()
+            _olx_token_mem = {"access_token": _d.get("access_token", ""), "expires_at": time.time() + _d.get("expires_in", 3600)}
+            try:
+                with open(_OLX_TOKENS_FILE, "w") as _f:
+                    json.dump(_olx_token_mem, _f)
+            except Exception:
+                pass
+            return ("<html><body style='font-family:sans-serif;text-align:center;padding:40px;"
+                    "background:#0f172a;color:#fff'><h2 style='color:#22c55e'>&#10003; OLX conectada!</h2>"
+                    "<p style='color:#9ca3af'>Pode fechar esta janela.</p></body></html>")
+        except Exception as _e:
+            return jsonify({"erro": str(_e)}), 500
+
+    @app.route("/integracoes/olx/oauth/trocar-codigo")
+    def olx_trocar_codigo():
+        global _olx_token_mem
+        code = request.args.get("code", "")
+        if not code or not OLX_CLIENT_ID:
+            return jsonify({"erro": "code ausente ou OLX nao configurada"}), 400
+        try:
+            _r = requests.post("https://auth.olx.com.br/oauth/token", data={
+                "grant_type": "authorization_code",
+                "client_id": OLX_CLIENT_ID,
+                "client_secret": OLX_CLIENT_SECRET,
+                "code": code,
+                "redirect_uri": OLX_REDIRECT_URI
+            }, timeout=15)
+            if _r.status_code != 200:
+                return jsonify({"erro": f"OLX {_r.status_code}: {_r.text[:300]}"}), 400
             _d = _r.json()
             _olx_token_mem = {"access_token": _d.get("access_token", ""), "expires_at": time.time() + _d.get("expires_in", 3600)}
             try:
