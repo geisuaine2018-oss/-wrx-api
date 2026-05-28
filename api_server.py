@@ -548,7 +548,7 @@ if USE_FLASK:
 
     def _cors(resp):
         resp.headers["Access-Control-Allow-Origin"]  = "*"
-        resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        resp.headers.setdefault("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Access-Control-Request-Private-Network"
         resp.headers["Access-Control-Allow-Private-Network"] = "true"
         return resp
@@ -865,6 +865,451 @@ if USE_FLASK:
             "Access-Control-Allow-Methods": "GET, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type",
         })
+
+    # ─── Integrações: Mercado Livre, OLX, Shopee ─────────────────────────────────
+    import urllib.parse as _urlparse
+
+    _INTEG_DIR = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp")
+    _ML_TOKENS_FILE = os.path.join(_INTEG_DIR, "wrx_ml_tokens.json")
+    _OLX_TOKENS_FILE = os.path.join(_INTEG_DIR, "wrx_olx_token.json")
+    _ML_QUEUE_FILE = os.path.join(_INTEG_DIR, "wrx_ml_queue.json")
+    _ml_tokens_mem = {}
+    _olx_token_mem = {}
+
+    ML_REDIRECT_URI = os.environ.get("ML_REDIRECT_URI", "https://wrx-api-production.up.railway.app/integracoes/mercadolivre/oauth/callback")
+    OLX_CLIENT_ID = os.environ.get("OLX_CLIENT_ID", "")
+    OLX_CLIENT_SECRET = os.environ.get("OLX_CLIENT_SECRET", "")
+    OLX_REDIRECT_URI = os.environ.get("OLX_REDIRECT_URI", "https://wrx-api-production.up.railway.app/integracoes/olx/oauth/callback")
+    SHOPEE_PARTNER_ID = int(os.environ.get("SHOPEE_PARTNER_ID", "1234546"))
+    SHOPEE_PARTNER_KEY = os.environ.get("SHOPEE_PARTNER_KEY", "shpk76666558496143524c7a474e416c59517651744a49766976425459796265")
+
+    def _ml_load_tokens():
+        global _ml_tokens_mem
+        if _ml_tokens_mem:
+            return _ml_tokens_mem
+        try:
+            with open(_ML_TOKENS_FILE) as _f:
+                _ml_tokens_mem = json.load(_f)
+        except Exception:
+            pass
+        return _ml_tokens_mem
+
+    def _ml_save_tokens(tokens):
+        global _ml_tokens_mem
+        _ml_tokens_mem = tokens
+        try:
+            with open(_ML_TOKENS_FILE, "w") as _f:
+                json.dump(tokens, _f)
+        except Exception:
+            pass
+
+    def _ml_get_user_token(conta="default"):
+        tokens = _ml_load_tokens()
+        t = tokens.get(conta, {})
+        if not t.get("access_token"):
+            return None
+        if t.get("expires_at", 0) - time.time() < 300:
+            try:
+                _r = requests.post("https://api.mercadolibre.com/oauth/token", data={
+                    "grant_type": "refresh_token",
+                    "client_id": ML_CLIENT_ID,
+                    "client_secret": ML_CLIENT_SECRET,
+                    "refresh_token": t.get("refresh_token", "")
+                }, timeout=10)
+                if _r.status_code == 200:
+                    _d = _r.json()
+                    t["access_token"] = _d["access_token"]
+                    t["refresh_token"] = _d.get("refresh_token", t["refresh_token"])
+                    t["expires_at"] = time.time() + _d.get("expires_in", 21600)
+                    tokens[conta] = t
+                    _ml_save_tokens(tokens)
+                else:
+                    del tokens[conta]
+                    _ml_save_tokens(tokens)
+                    return None
+            except Exception:
+                return None
+        return t.get("access_token")
+
+    def _options_resp():
+        return Response(status=204, headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+        })
+
+    # ML OAuth
+    @app.route("/integracoes/mercadolivre/oauth")
+    def ml_oauth():
+        from flask import redirect as _redir
+        conta = request.args.get("conta", "default")
+        url = (
+            "https://auth.mercadolibre.com.br/authorization"
+            f"?response_type=code&client_id={ML_CLIENT_ID}"
+            f"&redirect_uri={_urlparse.quote(ML_REDIRECT_URI, safe='')}"
+            f"&state={conta}"
+        )
+        return _redir(url)
+
+    @app.route("/integracoes/mercadolivre/oauth/callback")
+    def ml_oauth_callback():
+        code = request.args.get("code", "")
+        conta = request.args.get("state", "default")
+        if not code:
+            return jsonify({"erro": "codigo OAuth ausente"}), 400
+        try:
+            _r = requests.post("https://api.mercadolibre.com/oauth/token", data={
+                "grant_type": "authorization_code",
+                "client_id": ML_CLIENT_ID,
+                "client_secret": ML_CLIENT_SECRET,
+                "code": code,
+                "redirect_uri": ML_REDIRECT_URI
+            }, timeout=15)
+            if _r.status_code != 200:
+                return jsonify({"erro": f"ML {_r.status_code}: {_r.text[:300]}"}), 400
+            _d = _r.json()
+            tokens = _ml_load_tokens()
+            tokens[conta] = {
+                "access_token": _d["access_token"],
+                "refresh_token": _d.get("refresh_token", ""),
+                "expires_at": time.time() + _d.get("expires_in", 21600),
+                "user_id": str(_d.get("user_id", ""))
+            }
+            _ml_save_tokens(tokens)
+            return (
+                "<html><body style='font-family:sans-serif;text-align:center;padding:40px;"
+                "background:#0f172a;color:#fff'>"
+                "<h2 style='color:#22c55e'>&#10003; Mercado Livre conectado!</h2>"
+                f"<p>Conta: <strong>{conta}</strong></p>"
+                "<p style='color:#9ca3af'>Pode fechar esta janela.</p>"
+                "</body></html>"
+            )
+        except Exception as _e:
+            return jsonify({"erro": str(_e)}), 500
+
+    @app.route("/integracoes/mercadolivre/config")
+    def ml_config():
+        tokens = _ml_load_tokens()
+        contas = {c: bool(t.get("access_token")) for c, t in tokens.items()}
+        return jsonify({
+            "configured": True,
+            "contas": contas,
+            "oauth_url_default": "/integracoes/mercadolivre/oauth?conta=default",
+            "oauth_url_geisa": "/integracoes/mercadolivre/oauth?conta=geisa",
+        })
+
+    @app.route("/integracoes/mercadolivre/categorias/predizer", methods=["GET", "OPTIONS"])
+    def ml_categorias_predizer():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        q = request.args.get("q", "").strip()
+        site_id = request.args.get("site_id", "MLB")
+        limit = request.args.get("limit", "1")
+        if not q:
+            return jsonify({"erro": "q obrigatorio"}), 400
+        token = _get_ml_token()
+        hdrs = {"Accept": "application/json"}
+        if token:
+            hdrs["Authorization"] = f"Bearer {token}"
+        try:
+            _r = requests.get(
+                f"https://api.mercadolibre.com/sites/{site_id}/domain_discovery/search",
+                params={"limit": limit, "q": q}, headers=hdrs, timeout=10
+            )
+            if _r.status_code == 200:
+                _data = _r.json()
+                if _data:
+                    return jsonify(_data[0])
+                return jsonify({"erro": "sem categoria"}), 404
+            return jsonify({"erro": f"ML {_r.status_code}"}), _r.status_code
+        except Exception as _e:
+            return jsonify({"erro": str(_e)}), 500
+
+    @app.route("/integracoes/mercadolivre/status-sku", methods=["GET", "OPTIONS"])
+    def ml_status_sku():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        sku_raw = request.args.get("sku", "").strip()
+        if not sku_raw:
+            return jsonify({"erro": "sku obrigatorio"}), 400
+        sku_base = sku_raw.split("-")[0]
+        tokens = _ml_load_tokens()
+        all_items = []
+        for conta_nome in list(tokens.keys()):
+            token = _ml_get_user_token(conta_nome)
+            if not token:
+                continue
+            try:
+                me_r = requests.get("https://api.mercadolibre.com/users/me",
+                                    headers={"Authorization": f"Bearer {token}"}, timeout=8)
+                if me_r.status_code != 200:
+                    continue
+                user_id = me_r.json().get("id")
+                for sku_q in set([sku_raw, sku_base]):
+                    sr = requests.get(
+                        f"https://api.mercadolibre.com/users/{user_id}/items/search",
+                        params={"seller_sku": sku_q, "limit": 20},
+                        headers={"Authorization": f"Bearer {token}"}, timeout=8
+                    )
+                    if sr.status_code != 200:
+                        continue
+                    for iid in sr.json().get("results", [])[:8]:
+                        ir = requests.get(f"https://api.mercadolibre.com/items/{iid}",
+                                          headers={"Authorization": f"Bearer {token}"}, timeout=8)
+                        if ir.status_code == 200:
+                            item = ir.json()
+                            all_items.append({
+                                "mlId": item["id"],
+                                "sku": item.get("seller_custom_field", sku_raw),
+                                "skuInterno": sku_base,
+                                "titulo": item.get("title", ""),
+                                "status": item.get("status", ""),
+                                "preco": item.get("price", 0),
+                                "conta": conta_nome,
+                                "grupo": item.get("status", "")
+                            })
+            except Exception:
+                continue
+        if all_items:
+            return jsonify({"ok": True, "anuncios": all_items, "item": all_items[0]})
+        return jsonify({"ok": False, "anuncios": [], "mensagem": "SKU nao encontrado"})
+
+    @app.route("/integracoes/mercadolivre/publicar-local", methods=["POST", "OPTIONS"])
+    def ml_publicar_local():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        sku = data.get("sku", "")
+        if not sku:
+            return jsonify({"erro": "sku obrigatorio"}), 400
+        try:
+            queue = []
+            if os.path.exists(_ML_QUEUE_FILE):
+                with open(_ML_QUEUE_FILE) as _f:
+                    queue = json.load(_f)
+            queue = [q for q in queue if q.get("sku") != sku]
+            data["saved_at"] = time.time()
+            data["grupo"] = "pending_publish"
+            queue.append(data)
+            with open(_ML_QUEUE_FILE, "w") as _f:
+                json.dump(queue, _f)
+        except Exception:
+            pass
+        return jsonify({"ok": True, "sku": sku, "grupo": "pending_publish"})
+
+    @app.route("/integracoes/mercadolivre/publicar", methods=["POST", "OPTIONS"])
+    def ml_publicar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        conta_nome = data.get("nome", "default")
+        sku = data.get("sku", "")
+        if not sku:
+            return jsonify({"ok": False, "erro": "sku obrigatorio"}), 400
+        token = _ml_get_user_token(conta_nome)
+        if not token:
+            # Save to queue and inform frontend
+            try:
+                queue = []
+                if os.path.exists(_ML_QUEUE_FILE):
+                    with open(_ML_QUEUE_FILE) as _f:
+                        queue = json.load(_f)
+                queue = [q for q in queue if q.get("sku") != sku]
+                data["saved_at"] = time.time()
+                data["grupo"] = "pending_publish"
+                queue.append(data)
+                with open(_ML_QUEUE_FILE, "w") as _f:
+                    json.dump(queue, _f)
+            except Exception:
+                pass
+            return jsonify({
+                "ok": False,
+                "erro": f"Conta '{conta_nome}' nao autorizada. Acesse /integracoes/mercadolivre/oauth?conta={conta_nome}",
+                "authUrl": f"https://wrx-api-production.up.railway.app/integracoes/mercadolivre/oauth?conta={conta_nome}",
+                "grupo": "pending_publish"
+            }), 401
+        fotos = [f for f in data.get("fotos", []) if f and (f.startswith("http://") or f.startswith("https://"))]
+        preco = float(data.get("preco", 0) or 0)
+        if preco <= 0:
+            return jsonify({"ok": False, "erro": "preco invalido"}), 400
+        ml_payload = {
+            "title": (data.get("titulo", "") or data.get("nomeInterno", ""))[:60],
+            "category_id": data.get("mlCategoryId", "") or "MLB174561",
+            "price": preco,
+            "currency_id": "BRL",
+            "available_quantity": int(data.get("quantidade", 1) or 1),
+            "buying_mode": "buy_it_now",
+            "condition": data.get("condicao", "used"),
+            "listing_type_id": data.get("listingTypeId", "gold_special"),
+            "seller_custom_field": sku,
+            "shipping": {"mode": "me2", "free_shipping": bool(data.get("freeShipping", False))}
+        }
+        if data.get("descricao"):
+            ml_payload["description"] = {"plain_text": str(data["descricao"])[:50000]}
+        if fotos:
+            ml_payload["pictures"] = [{"source": f} for f in fotos[:10]]
+        try:
+            _r = requests.post(
+                "https://api.mercadolibre.com/items",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json=ml_payload, timeout=25
+            )
+            if _r.status_code in (200, 201):
+                item = _r.json()
+                return jsonify({"ok": True, "mlId": item.get("id"), "item": item, "conta": conta_nome})
+            _err = _r.json() if _r.headers.get("content-type", "").startswith("application/json") else {}
+            return jsonify({
+                "ok": False,
+                "erro": _err.get("message") or _err.get("error") or f"ML {_r.status_code}",
+                "detalhes": _r.text[:500]
+            }), _r.status_code
+        except Exception as _e:
+            return jsonify({"ok": False, "erro": str(_e)}), 500
+
+    @app.route("/integracoes/mercadolivre/sincronizar", methods=["POST", "GET", "OPTIONS"])
+    def ml_sincronizar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        tokens = _ml_load_tokens()
+        resultado = {}
+        for conta_nome in list(tokens.keys()):
+            token = _ml_get_user_token(conta_nome)
+            resultado[conta_nome] = {"ok": bool(token)}
+        return jsonify({"ok": True, "contas": resultado})
+
+    @app.route("/integracoes/mercadolivre/video", methods=["POST", "OPTIONS"])
+    def ml_video():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        item_id = data.get("mlId") or data.get("item_id", "")
+        video_id = data.get("videoId") or data.get("video_id", "")
+        conta_nome = data.get("conta", "default")
+        if not item_id or not video_id:
+            return jsonify({"ok": False, "erro": "mlId e videoId obrigatorios"}), 400
+        token = _ml_get_user_token(conta_nome)
+        if not token:
+            return jsonify({"ok": False, "erro": "conta nao autorizada"}), 401
+        try:
+            _r = requests.put(f"https://api.mercadolibre.com/items/{item_id}",
+                              headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                              json={"video_id": video_id}, timeout=10)
+            if _r.status_code in (200, 201):
+                return jsonify({"ok": True})
+            return jsonify({"ok": False, "erro": _r.text[:200]}), _r.status_code
+        except Exception as _e:
+            return jsonify({"ok": False, "erro": str(_e)}), 500
+
+    # ─── OLX ─────────────────────────────────────────────────────────────────────
+    @app.route("/integracoes/olx/config", methods=["GET", "OPTIONS"])
+    def olx_config():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        global _olx_token_mem
+        if not _olx_token_mem.get("access_token"):
+            try:
+                with open(_OLX_TOKENS_FILE) as _f:
+                    _olx_token_mem = json.load(_f)
+            except Exception:
+                pass
+        configured = bool(OLX_CLIENT_ID and OLX_CLIENT_SECRET)
+        token_saved = bool(_olx_token_mem.get("access_token"))
+        auth_url = None
+        if configured and not token_saved:
+            auth_url = (
+                f"https://auth.olx.com.br/oauth/authorize"
+                f"?client_id={OLX_CLIENT_ID}"
+                f"&redirect_uri={_urlparse.quote(OLX_REDIRECT_URI, safe='')}"
+                f"&response_type=code&scope=basic_user_info%20autoupload"
+            )
+        return jsonify({"configured": configured, "tokenSaved": token_saved, "authUrl": auth_url})
+
+    @app.route("/integracoes/olx/oauth/callback")
+    def olx_oauth_callback():
+        global _olx_token_mem
+        code = request.args.get("code", "")
+        if not code or not OLX_CLIENT_ID:
+            return jsonify({"erro": "OLX nao configurada ou codigo ausente"}), 400
+        try:
+            _r = requests.post("https://auth.olx.com.br/oauth/token", data={
+                "grant_type": "authorization_code",
+                "client_id": OLX_CLIENT_ID,
+                "client_secret": OLX_CLIENT_SECRET,
+                "code": code,
+                "redirect_uri": OLX_REDIRECT_URI
+            }, timeout=15)
+            if _r.status_code != 200:
+                return jsonify({"erro": f"OLX {_r.status_code}: {_r.text[:200]}"}), 400
+            _d = _r.json()
+            _olx_token_mem = {"access_token": _d.get("access_token", ""), "expires_at": time.time() + _d.get("expires_in", 3600)}
+            try:
+                with open(_OLX_TOKENS_FILE, "w") as _f:
+                    json.dump(_olx_token_mem, _f)
+            except Exception:
+                pass
+            return ("<html><body style='font-family:sans-serif;text-align:center;padding:40px;"
+                    "background:#0f172a;color:#fff'><h2 style='color:#22c55e'>&#10003; OLX conectada!</h2>"
+                    "<p style='color:#9ca3af'>Pode fechar esta janela.</p></body></html>")
+        except Exception as _e:
+            return jsonify({"erro": str(_e)}), 500
+
+    @app.route("/integracoes/olx/publicar", methods=["POST", "OPTIONS"])
+    def olx_publicar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        if not OLX_CLIENT_ID:
+            return jsonify({"ok": False, "erro": "OLX nao configurada — informe OLX_CLIENT_ID e OLX_CLIENT_SECRET nas variaveis de ambiente do Railway"}), 501
+        global _olx_token_mem
+        if not _olx_token_mem.get("access_token"):
+            try:
+                with open(_OLX_TOKENS_FILE) as _f:
+                    _olx_token_mem = json.load(_f)
+            except Exception:
+                pass
+        if not _olx_token_mem.get("access_token"):
+            return jsonify({"ok": False, "erro": "OLX nao autorizada — clique em Conectar"}), 401
+        data = request.get_json(force=True) or {}
+        fotos = [f for f in data.get("fotos", []) if f and f.startswith("http")]
+        preco = float(data.get("preco", 0) or 0)
+        payload = {
+            "subject": (data.get("titulo") or data.get("nomeInterno", "Peca Automotiva"))[:70],
+            "body": (data.get("descricao") or data.get("titulo", ""))[:6000],
+            "price": int(preco),
+            "category": {"id": "8020"},
+            "phone": {"phone": data.get("telefone", ""), "phone_hidden": False},
+            "locations": [{"zipcode": (data.get("cep", "") or "20521160").replace("-", "")}],
+            "images": fotos[:10]
+        }
+        try:
+            _r = requests.post("https://apps.olx.com.br/autoupload/import",
+                               headers={"Authorization": f"Bearer {_olx_token_mem['access_token']}", "Content-Type": "application/json"},
+                               json=payload, timeout=20)
+            if _r.status_code in (200, 201, 202):
+                return jsonify({"ok": True, "token": _r.json().get("token", "")})
+            return jsonify({"ok": False, "erro": _r.text[:300]}), _r.status_code
+        except Exception as _e:
+            return jsonify({"ok": False, "erro": str(_e)}), 500
+
+    # ─── Shopee ───────────────────────────────────────────────────────────────────
+    @app.route("/integracoes/shopee/config", methods=["GET", "OPTIONS"])
+    def shopee_config():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        return jsonify({
+            "configured": True,
+            "partner_id": SHOPEE_PARTNER_ID,
+            "modo": "sandbox" if SHOPEE_PARTNER_ID == 1234546 else "producao",
+            "aviso": "App em modo Developing (sandbox). Solicite Go-Live no open.shopee.com.br para publicar de verdade."
+        })
+
+    @app.route("/integracoes/shopee/publicar", methods=["POST", "OPTIONS"])
+    def shopee_publicar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        return jsonify({
+            "ok": False,
+            "erro": "Shopee em modo sandbox (Developing). OAuth nao disponivel ate aprovacao do app. Solicite Go-Live em open.shopee.com.br > seu app > Versao ao vivo."
+        }), 501
 
     def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace") if hasattr(sys.stdout, "reconfigure") else None
