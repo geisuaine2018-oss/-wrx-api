@@ -955,12 +955,13 @@ if USE_FLASK:
         from flask import redirect as _redir
         conta = request.args.get("conta", "default")
         verifier, challenge = _pkce_pair()
-        _pkce_store[conta] = verifier
+        # Embute conta+verifier no state para evitar problema de múltiplos workers
+        state_payload = _base64.urlsafe_b64encode(f"{conta}:{verifier}".encode()).rstrip(b'=').decode()
         url = (
             "https://auth.mercadolivre.com.br/authorization"
             f"?response_type=code&client_id={ML_CLIENT_ID.strip()}"
             f"&redirect_uri={_urlparse.quote(ML_REDIRECT_URI, safe='')}"
-            f"&state={conta}"
+            f"&state={state_payload}"
             f"&code_challenge={challenge}&code_challenge_method=S256"
         )
         return _redir(url)
@@ -968,7 +969,16 @@ if USE_FLASK:
     @app.route("/integracoes/mercadolivre/oauth/callback")
     def ml_oauth_callback():
         code = request.args.get("code", "")
-        conta = request.args.get("state", "default")
+        state_raw = request.args.get("state", "")
+        conta = "default"
+        verifier = None
+        try:
+            # Decodifica state que contém "conta:verifier"
+            padded = state_raw + "=" * (4 - len(state_raw) % 4)
+            decoded = _base64.urlsafe_b64decode(padded).decode()
+            conta, verifier = decoded.split(":", 1)
+        except Exception:
+            conta = state_raw or "default"
         if not code:
             return jsonify({"erro": "codigo OAuth ausente"}), 400
         try:
@@ -979,7 +989,6 @@ if USE_FLASK:
                 "code": code,
                 "redirect_uri": ML_REDIRECT_URI
             }
-            verifier = _pkce_store.pop(conta, None)
             if verifier:
                 _exchange["code_verifier"] = verifier
             _r = requests.post("https://api.mercadolibre.com/oauth/token",
