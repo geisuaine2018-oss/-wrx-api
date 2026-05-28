@@ -944,7 +944,7 @@ if USE_FLASK:
         from flask import redirect as _redir
         conta = request.args.get("conta", "default")
         url = (
-            "https://auth.mercadolibre.com.br/authorization"
+            "https://auth.mercadolivre.com.br/authorization"
             f"?response_type=code&client_id={ML_CLIENT_ID}"
             f"&redirect_uri={_urlparse.quote(ML_REDIRECT_URI, safe='')}"
             f"&state={conta}"
