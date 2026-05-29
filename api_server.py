@@ -1178,6 +1178,44 @@ if USE_FLASK:
             "oauth_url_geisa": "/integracoes/mercadolivre/oauth?conta=geisa",
         })
 
+    @app.route("/integracoes/mercadolivre/debug-token")
+    def ml_debug_token():
+        conta = request.args.get("conta", "default")
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"erro": "sem token para esta conta"}), 401
+        try:
+            me = requests.get("https://api.mercadolibre.com/users/me",
+                              headers={"Authorization": f"Bearer {token}"}, timeout=10).json()
+            cats = requests.get("https://api.mercadolibre.com/users/me/items/search?status=active&limit=5",
+                                headers={"Authorization": f"Bearer {token}"}, timeout=10).json()
+            test_payload = {
+                "title": "Teste API",
+                "category_id": "MLB3530",
+                "price": 10.0,
+                "currency_id": "BRL",
+                "available_quantity": 1,
+                "buying_mode": "buy_it_now",
+                "condition": "used",
+                "listing_type_id": "free",
+                "seller_custom_field": "TESTE-DEBUG",
+                "shipping": {"mode": "me2", "free_shipping": False}
+            }
+            test_r = requests.post("https://api.mercadolibre.com/items",
+                                   headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                                   json=test_payload, timeout=15)
+            return jsonify({
+                "user_id": me.get("id"),
+                "nickname": me.get("nickname"),
+                "site_id": me.get("site_id"),
+                "seller_reputation": me.get("seller_reputation", {}).get("level_id"),
+                "test_post_status": test_r.status_code,
+                "test_post_response": test_r.json() if test_r.headers.get("content-type","").startswith("application/json") else test_r.text[:300],
+                "active_items": cats.get("results", [])[:5]
+            })
+        except Exception as _e:
+            return jsonify({"erro": str(_e)}), 500
+
     @app.route("/integracoes/mercadolivre/categorias/predizer", methods=["GET", "OPTIONS"])
     def ml_categorias_predizer():
         if request.method == "OPTIONS":
