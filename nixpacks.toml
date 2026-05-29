@@ -1,5 +1,8 @@
+[phases.setup]
+nixPkgs = ["chromium", "nss", "nspr", "atk", "cups", "dbus", "libdrm", "libxkbcommon", "xorg.libX11", "xorg.libXcomposite", "xorg.libXdamage", "xorg.libXext", "xorg.libXfixes", "xorg.libXrandr", "xorg.libxcb", "mesa", "expat", "libxshmfence", "xorg.libXrender", "pango", "cairo", "glib"]
+
 [phases.build]
-cmds = ["pip install -r requirements.txt"]
+cmds = ["pip install -r requirements.txt", "playwright install chromium --with-deps || true"]
 
 [start]
 cmd = "python api_server.py"
