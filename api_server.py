@@ -953,7 +953,7 @@ if USE_FLASK:
     import hashlib as _hashlib
     import secrets as _secrets
     import base64 as _base64
-    # redeploy-trigger-v2
+    # redeploy-trigger-v3
 
     _INTEG_DIR = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp")
     _ML_TOKENS_FILE = os.path.join(_INTEG_DIR, "wrx_ml_tokens.json")
@@ -976,15 +976,83 @@ if USE_FLASK:
     SHOPEE_PARTNER_ID = int(os.environ.get("SHOPEE_PARTNER_ID", "1234546"))
     SHOPEE_PARTNER_KEY = os.environ.get("SHOPEE_PARTNER_KEY", "shpk76666558496143524c7a474e416c59517651744a49766976425459796265")
 
+    # ── PartHub Supabase — persistência de tokens entre redeployments ──────────
+    _PH_HOST  = "iftzoceaalhpyckuznae.supabase.co"
+    _PH_ANON  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlmdHpvY2VhYWxocHlja3V6bmFlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA0MzMwNjcsImV4cCI6MjA3NjAwOTA2N30.VZY9NLFvRMX-lr9FQUlOkMfE0RfdGxk0HVpslxMYDYg"
+    _PH_EMAIL = "geisuaine2025@gmail.com"
+    _PH_SENHA = "Vitoria12$"
+    _ph_jwt_cache = {"token": None, "expires_at": 0}
+
+    def _ph_get_jwt():
+        if _ph_jwt_cache["token"] and time.time() < _ph_jwt_cache["expires_at"] - 60:
+            return _ph_jwt_cache["token"]
+        try:
+            _r = requests.post(
+                f"https://{_PH_HOST}/auth/v1/token?grant_type=password",
+                json={"email": _PH_EMAIL, "password": _PH_SENHA},
+                headers={"apikey": _PH_ANON, "Content-Type": "application/json"},
+                timeout=10
+            )
+            if _r.status_code == 200:
+                _d = _r.json()
+                _ph_jwt_cache["token"] = _d.get("access_token")
+                _ph_jwt_cache["expires_at"] = time.time() + _d.get("expires_in", 3600)
+                return _ph_jwt_cache["token"]
+        except Exception:
+            pass
+        return None
+
+    def _ph_save_tokens_remote(ml_tokens):
+        jwt = _ph_get_jwt()
+        if not jwt:
+            return
+        try:
+            requests.put(
+                f"https://{_PH_HOST}/auth/v1/user",
+                json={"data": {"wrx_ml_tokens": ml_tokens}},
+                headers={"apikey": _PH_ANON, "Authorization": f"Bearer {jwt}", "Content-Type": "application/json"},
+                timeout=10
+            )
+        except Exception:
+            pass
+
+    def _ph_load_tokens_remote():
+        jwt = _ph_get_jwt()
+        if not jwt:
+            return {}
+        try:
+            _r = requests.get(
+                f"https://{_PH_HOST}/auth/v1/user",
+                headers={"apikey": _PH_ANON, "Authorization": f"Bearer {jwt}"},
+                timeout=10
+            )
+            if _r.status_code == 200:
+                return _r.json().get("user_metadata", {}).get("wrx_ml_tokens", {})
+        except Exception:
+            pass
+        return {}
+
     def _ml_load_tokens():
         global _ml_tokens_mem
         if _ml_tokens_mem:
             return _ml_tokens_mem
         try:
             with open(_ML_TOKENS_FILE) as _f:
-                _ml_tokens_mem = json.load(_f)
+                loaded = json.load(_f)
+                if loaded:
+                    _ml_tokens_mem = loaded
+                    return _ml_tokens_mem
         except Exception:
             pass
+        # Arquivo local vazio/inexistente — busca no Supabase (sobrevive a redeployments)
+        remote = _ph_load_tokens_remote()
+        if remote:
+            _ml_tokens_mem = remote
+            try:
+                with open(_ML_TOKENS_FILE, "w") as _f:
+                    json.dump(remote, _f)
+            except Exception:
+                pass
         return _ml_tokens_mem
 
     def _ml_save_tokens(tokens):
@@ -995,6 +1063,8 @@ if USE_FLASK:
                 json.dump(tokens, _f)
         except Exception:
             pass
+        # Persiste no Supabase em background (tokens sobrevivem a redeployments)
+        threading.Thread(target=_ph_save_tokens_remote, args=(tokens,), daemon=True).start()
 
     def _ml_get_user_token(conta="default"):
         tokens = _ml_load_tokens()
