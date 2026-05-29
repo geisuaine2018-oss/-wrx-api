@@ -1732,6 +1732,23 @@ if USE_FLASK:
         except Exception as _e:
             return jsonify({"erro": str(_e)}), 500
 
+    @app.route("/integracoes/olx/salvar-token", methods=["POST", "OPTIONS"])
+    def olx_salvar_token():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        global _olx_token_mem
+        data = request.get_json(force=True) or {}
+        token = data.get("access_token", "").strip()
+        if not token:
+            return jsonify({"ok": False, "erro": "access_token ausente"}), 400
+        _olx_token_mem = {"access_token": token, "expires_at": time.time() + 3600}
+        try:
+            with open(_OLX_TOKENS_FILE, "w") as _f:
+                json.dump(_olx_token_mem, _f)
+        except Exception:
+            pass
+        return jsonify({"ok": True, "msg": "Token OLX salvo com sucesso"})
+
     @app.route("/integracoes/olx/publicar", methods=["POST", "OPTIONS"])
     def olx_publicar():
         if request.method == "OPTIONS":
