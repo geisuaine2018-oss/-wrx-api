@@ -483,10 +483,13 @@ ETAPA 3 — TÍTULOS
 MERCADO LIVRE — exatamente 4 títulos, entre 55 e 60 caracteres cada:
 - Prioridade: PEÇA > VEÍCULO CONFIRMADO > MOTOR > ANOS > LADO > CÓDIGO
 - Use somente veículos da lista OEM confirmada nos títulos
-- Se não há compatibilidade confirmada, use apenas peça + código
+- Se não há compatibilidade confirmada, use apenas peça + variações (Original, Novo, OEM, etc.)
+- PROIBIDO: título que seja APENAS o código OEM (ex: "4605885905" é inválido como título)
+- PROIBIDO: repetir o mesmo código OEM em todos os 4 títulos
+- O código OEM pode aparecer no máximo em 1 dos 4 títulos, como complemento no final
 - Não repetir palavras entre títulos; não usar emojis
-- Código OEM como complemento, nunca como título único
 - Anos: resumir como 2021/2026 ou 21/26
+- Se você não souber o nome da peça, use "Peça Automotiva" + descrição genérica
 
 SHOPEE — 1 título, até 100 caracteres, mais descritivo que ML.
 
@@ -560,18 +563,37 @@ def _ajustar_titulos(data, codigo):
 
     def com_codigo(titulo, maxlen=60):
         if not titulo: return ""
-        t = titulo.strip().replace(codigo, "").strip()
+        # Remove todas as ocorrências do código para evitar duplicatas
+        t = re.sub(re.escape(codigo), "", titulo, flags=re.IGNORECASE).strip().replace("  ", " ").strip()
+        if not t:
+            return codigo[:maxlen]
         espaco = maxlen - len(codigo) - 1
+        if espaco <= 3:
+            return codigo[:maxlen]
         base = t[:espaco].strip()
         return f"{base} {codigo}"[:maxlen]
 
     def enforcar_faixa(titulo, max_len=60):
         return limpar(titulo, max_len)
 
+    def _valido(titulo):
+        """Retorna False se o título for apenas o código OEM repetido."""
+        if not titulo: return False
+        sem_cod = re.sub(re.escape(codigo), "", titulo, flags=re.IGNORECASE).strip()
+        return len(sem_cod) >= 5
+
     # Títulos ML
     ml = data.get("mercado_livre") or data.get("titulos_otimizados") or []
+    nome_base = data.get("nome_peca") or ""
+    # Filtra títulos inválidos (só com o OEM)
+    ml = [t for t in ml if _valido(t)]
+    # Completa até 4 títulos usando nome_peca como fallback
     while len(ml) < 4:
-        ml.append(ml[-1] if ml else codigo)
+        if nome_base and _valido(nome_base):
+            sufixos = ["", " Original", " Usado", " Nacional"]
+            ml.append(f"{nome_base}{sufixos[len(ml)%4]}"[:60])
+        else:
+            ml.append(f"Peça Automotiva {codigo}"[:60])
     ml_ajustados = [
         enforcar_faixa(ml[0]),
         com_codigo(ml[1]),
@@ -617,6 +639,35 @@ def _chamar_ia(prompt):
     if provider == "gemini":
         return _gemini(cfg.get("gemini_key", ""), prompt)
     return _claude(cfg.get("api_key", ""), prompt)
+
+def _chamar_ia_texto(prompt_text):
+    """Chama IA esperando resposta texto puro (não JSON)."""
+    cfg = carregar_config()
+    provider = cfg.get("provider", "gemini")
+    try:
+        if provider == "gemini":
+            api_key = cfg.get("gemini_key", "")
+            if not api_key: return None
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+            r = requests.post(url, json={
+                "contents": [{"parts": [{"text": prompt_text}]}],
+                "generationConfig": {"maxOutputTokens": 80, "temperature": 0.1,
+                                     "thinkingConfig": {"thinkingBudget": 0}}
+            }, timeout=20)
+            if r.status_code == 200:
+                parts = r.json()["candidates"][0]["content"]["parts"]
+                return " ".join(p["text"] for p in parts if "text" in p).strip()
+        else:
+            api_key = cfg.get("api_key", "")
+            if not api_key: return None
+            r = requests.post("https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={"model": "claude-haiku-4-5-20251001", "max_tokens": 80,
+                      "messages": [{"role": "user", "content": prompt_text}]}, timeout=20)
+            return r.json()["content"][0]["text"].strip()
+    except Exception:
+        return None
 
 def _claude(api_key, prompt):
     if not api_key: return None
@@ -664,17 +715,19 @@ def _gemini(api_key, prompt):
 
 # ─── Identifica nome da peça para busca secundária ────────────────────────────
 def _identificar_nome_peca(codigo):
-    """Pede à IA só o nome da peça para usar como query no ML."""
-    cfg = carregar_config()
-    provider = cfg.get("provider", "gemini")
-    prompt = f"Qual o nome comercial desta peça automotiva no Brasil (código OEM: {codigo})? Responda APENAS o nome curto, ex: 'Sensor Pressão Óleo Renault'. Sem explicações."
-    if provider == "gemini":
-        r = _gemini(cfg.get("gemini_key", ""), prompt)
-    else:
-        r = _claude(cfg.get("api_key", ""), prompt)
-    if isinstance(r, dict):
-        v = list(r.values())[0] if r else ""
-        return str(v).strip()[:60]
+    """Pede à IA o nome comercial da peça para usar como query no ML."""
+    prompt = (
+        f"Código OEM de autopeça: {codigo}\n"
+        "Qual é o nome comercial desta peça no Brasil? "
+        "Responda SOMENTE o nome curto em português, ex: 'Sensor Rotação Renault' ou 'Vela Ignição NGK'. "
+        "Sem explicações, sem código, apenas o nome."
+    )
+    texto = _chamar_ia_texto(prompt)
+    if texto:
+        # Remove o próprio código se a IA o repetiu
+        limpo = texto.replace(codigo, "").strip().strip(".,:-").strip()
+        if limpo and len(limpo) > 3:
+            return limpo[:60]
     return ""
 
 # ─── Lógica principal de busca ────────────────────────────────────────────────
@@ -727,8 +780,14 @@ def executar_busca(codigo, compatibilidade_oem=None):
     data = _chamar_ia(prompt)
 
     if not data:
-        # IA falhou — monta resultado mínimo a partir dos dados ML
-        titulo_base = nome_peca_confirmado or (titles[0] if titles else codigo)
+        # IA falhou — tenta identificar nome da peça e monta fallback
+        nome_fallback = nome_peca_confirmado
+        if not nome_fallback and titles:
+            nome_fallback = _extrair_nome_oem_do_titulo(titles[0], codigo) or titles[0]
+        if not nome_fallback:
+            # Última tentativa: pede só o nome à IA via texto puro
+            nome_fallback = _identificar_nome_peca(codigo)
+        titulo_base = nome_fallback or f"Peça Automotiva {codigo}"
         titulos_gerados = [
             titulo_base[:60],
             f"{titulo_base} {codigo}".strip()[:60],
