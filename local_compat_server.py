@@ -17,44 +17,18 @@ app = Flask(__name__)
 
 # ─── Configuração ─────────────────────────────────────────────────────────────
 
-_PH_HOST  = "iftzoceaalhpyckuznae.supabase.co"
-_PH_ANON  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlmdHpvY2VhYWxocHlja3V6bmFlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA0MzMwNjcsImV4cCI6MjA3NjAwOTA2N30.VZY9NLFvRMX-lr9FQUlOkMfE0RfdGxk0HVpslxMYDYg"
-_PH_EMAIL = "geisuaine2025@gmail.com"
-_PH_SENHA = "Vitoria12$"
+# CRM Supabase — tabela oem_compatibilidades com RLS pública (sem auth necessária)
+_CRM_HOST = "uthsiihzpsgarargegcw.supabase.co"
+_CRM_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV0aHNpaWh6cHNnYXJhcmdlZ2N3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkxMTAyMzcsImV4cCI6MjA5NDY4NjIzN30.vLsk56k7VUROClBmyg4NJFXHtpTGmr1f0Xl_dARbtZE"
 
 _GEMINI_KEY = os.environ.get("GEMINI_KEY", "AIzaSyCG0XhzMPJi6w0mB3v3Fg5ISmxLxnYGi4A")
 _CLAUDE_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
-_jwt_cache = {"token": None, "expires_at": 0}
 
-
-def _get_jwt():
-    if _jwt_cache["token"] and time.time() < _jwt_cache["expires_at"] - 60:
-        return _jwt_cache["token"]
-    try:
-        r = requests.post(
-            f"https://{_PH_HOST}/auth/v1/token?grant_type=password",
-            json={"email": _PH_EMAIL, "password": _PH_SENHA},
-            headers={"apikey": _PH_ANON, "Content-Type": "application/json"},
-            timeout=10
-        )
-        if r.status_code == 200:
-            d = r.json()
-            _jwt_cache["token"] = d.get("access_token")
-            _jwt_cache["expires_at"] = time.time() + d.get("expires_in", 3600)
-            return _jwt_cache["token"]
-    except Exception as e:
-        print(f"[JWT] Erro: {e}")
-    return None
-
-
-def _ph_headers():
-    jwt = _get_jwt()
-    if not jwt:
-        return None
+def _crm_headers():
     return {
-        "apikey": _PH_ANON,
-        "Authorization": f"Bearer {jwt}",
+        "apikey": _CRM_ANON,
+        "Authorization": f"Bearer {_CRM_ANON}",
         "Content-Type": "application/json",
         "Prefer": "return=representation"
     }
@@ -234,10 +208,7 @@ def _agrupar_compat(compatibilidades: list) -> list:
 
 def _salvar_supabase(oem: str, grupos: list, confianca: int) -> int:
     """Salva grupo de compatibilidades no Supabase. Retorna quantos salvos."""
-    hdrs = _ph_headers()
-    if not hdrs:
-        print("[Supabase] Sem autenticação")
-        return 0
+    hdrs = _crm_headers()
 
     total = 0
     for g in grupos:
@@ -258,7 +229,7 @@ def _salvar_supabase(oem: str, grupos: list, confianca: int) -> int:
         }
         try:
             r = requests.post(
-                f"https://{_PH_HOST}/rest/v1/oem_compatibilidades",
+                f"https://{_CRM_HOST}/rest/v1/oem_compatibilidades",
                 headers=hdrs, json=payload, timeout=10
             )
             if r.status_code in (200, 201):
