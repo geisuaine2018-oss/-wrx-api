@@ -631,7 +631,7 @@ if USE_FLASK:
     def _cors(resp):
         resp.headers["Access-Control-Allow-Origin"]  = "*"
         resp.headers.setdefault("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Access-Control-Request-Private-Network"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Cache-Control, Authorization, Access-Control-Request-Private-Network"
         resp.headers["Access-Control-Allow-Private-Network"] = "true"
         return resp
 
@@ -945,7 +945,7 @@ if USE_FLASK:
         return Response(status=204, headers={
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Headers": "Content-Type, Cache-Control, Authorization",
         })
 
     # ─── Integrações: Mercado Livre, OLX, Shopee ─────────────────────────────────
@@ -1098,7 +1098,7 @@ if USE_FLASK:
         return Response(status=204, headers={
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Headers": "Content-Type, Cache-Control, Authorization",
         })
 
     # ML OAuth
