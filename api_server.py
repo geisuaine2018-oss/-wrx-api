@@ -1775,6 +1775,8 @@ if USE_FLASK:
         data = request.get_json(force=True) or {}
         fotos = [f for f in (data.get("fotos") or data.get("images") or []) if f and f.startswith("http")]
         preco = float(data.get("preco") or data.get("price") or 0)
+        if preco < 180:
+            return jsonify({"ok": False, "erro": f"OLX exige preco minimo de R$ 180. Valor enviado: R$ {preco:.2f}"}), 400
         _sku = data.get("_sku") or data.get("sku", "")
         payload = {
             "subject": (data.get("subject") or data.get("titulo") or data.get("nomeInterno", "Peca Automotiva"))[:70],
@@ -1788,11 +1790,13 @@ if USE_FLASK:
         if _sku:
             payload["custom_id"] = str(_sku)
         try:
-            _r = requests.post("https://apps.olx.com.br/autoupload/import",
-                               headers={"Authorization": f"Bearer {_olx_token_mem['access_token']}", "Content-Type": "application/json"},
-                               json=payload, timeout=20)
+            _r = requests.put("https://apps.olx.com.br/autoupload/import",
+                              headers={"Authorization": f"Bearer {_olx_token_mem['access_token']}", "Content-Type": "application/json"},
+                              json={"ad_list": [payload]}, timeout=20)
             if _r.status_code in (200, 201, 202):
-                return jsonify({"ok": True, "token": _r.json().get("token", "")})
+                _resp = _r.json()
+                _ad = (_resp.get("ad_list") or [{}])[0]
+                return jsonify({"ok": True, "status": _ad.get("status", ""), "id": _ad.get("id", ""), "raw": _resp})
             return jsonify({"ok": False, "erro": _r.text[:300]}), _r.status_code
         except Exception as _e:
             return jsonify({"ok": False, "erro": str(_e)}), 500
