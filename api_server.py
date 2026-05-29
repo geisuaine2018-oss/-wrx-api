@@ -731,7 +731,7 @@ def _identificar_nome_peca(codigo):
     return ""
 
 # ─── Lógica principal de busca ────────────────────────────────────────────────
-def executar_busca(codigo, compatibilidade_oem=None):
+def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
     # ── ETAPA 1: busca no ML pelo código OEM exato ─────────────────────────────
     titles, novos, usados = buscar_ml(codigo)
     ml_achou = bool(titles or novos or usados)
@@ -739,10 +739,13 @@ def executar_busca(codigo, compatibilidade_oem=None):
     # Verifica se algum título ML contém o OEM exato
     titulos_oem_exato = _titulos_com_oem(titles, codigo)
     oem_confirmado_ml = bool(titulos_oem_exato)
-    nome_peca_confirmado = None
+
+    # nome_peca_fixo (enviado pelo frontend) tem prioridade absoluta — nunca sobrescrever
+    nome_peca_confirmado = nome_peca_fixo or None
 
     if oem_confirmado_ml:
-        nome_peca_confirmado = _extrair_nome_oem_do_titulo(titulos_oem_exato[0], codigo)
+        if not nome_peca_fixo:
+            nome_peca_confirmado = _extrair_nome_oem_do_titulo(titulos_oem_exato[0], codigo)
         fonte_resultado = "oem_exato_ml"
         grau_confianca  = 99
         print(f"[WRX] OEM pesquisado: {codigo}")
@@ -901,8 +904,12 @@ if USE_FLASK:
                     ] or None
             except Exception:
                 pass
+        # Nome da peça já cadastrado no sistema — tem prioridade absoluta sobre ML
+        nome_peca_fixo = request.args.get("nome_peca", "").strip()[:80] or None
+        if nome_peca_fixo:
+            print(f"[WRX-API] Nome fixo recebido do frontend: {nome_peca_fixo!r}")
         print(f"[WRX-API] Buscando: {codigo}" + (f" | OEM compat: {len(compatibilidade_oem)} veículos" if compatibilidade_oem else ""))
-        resultado = executar_busca(codigo, compatibilidade_oem=compatibilidade_oem)
+        resultado = executar_busca(codigo, compatibilidade_oem=compatibilidade_oem, nome_peca_fixo=nome_peca_fixo)
         print(f"[WRX-API] Concluído: {codigo}")
         return jsonify(resultado)
 
