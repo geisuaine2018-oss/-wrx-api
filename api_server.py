@@ -1468,10 +1468,10 @@ if USE_FLASK:
             brand_val = brand_m.group(1).capitalize() if brand_m else "Genérico"
             attrs.append({"id": "BRAND", "value_name": brand_val})
         _pkg_defaults = [
-            ("seller_package_height", str(int(data.get("package_height") or 30))),
-            ("seller_package_width",  str(int(data.get("package_width")  or 30))),
-            ("seller_package_length", str(int(data.get("package_length") or 50))),
-            ("seller_package_weight", str(int(data.get("package_weight") or 2000))),
+            ("seller_package_height", f"{int(data.get('package_height') or 30)} cm"),
+            ("seller_package_width",  f"{int(data.get('package_width')  or 30)} cm"),
+            ("seller_package_length", f"{int(data.get('package_length') or 50)} cm"),
+            ("seller_package_weight", f"{int(data.get('package_weight') or 2000)} g"),
         ]
         for pid, pval in _pkg_defaults:
             if pid not in attr_ids:
