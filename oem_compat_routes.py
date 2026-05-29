@@ -167,39 +167,59 @@ def _buscar_ml_playwright_python(oem):
         return []
 
 
+_UA_ML = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+
 def _buscar_ml_api(oem):
-    """Fallback: busca direto na API do ML com token OAuth (sem Playwright)."""
-    token = _get_ml_token()
-    headers = {"Accept": "application/json", "Accept-Language": "pt-BR,pt;q=0.9"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    """Scraping direto do site ML com BeautifulSoup (funciona no Railway sem Playwright)."""
+    from bs4 import BeautifulSoup
+    query = re.sub(r'\s+', '-', oem.strip())
+    urls = [
+        f"https://lista.mercadolivre.com.br/acessorios-veiculos/{query}",
+        f"https://lista.mercadolivre.com.br/{query}",
+    ]
+    headers = {
+        "User-Agent": _UA_ML,
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    }
     anuncios = []
-    for offset in [0, 20]:
+    for url in urls:
         try:
-            r = requests.get(
-                "https://api.mercadolibre.com/sites/MLB/search",
-                params={"q": oem, "limit": 20, "offset": offset},
-                headers=headers,
-                timeout=15
-            )
-            if r.status_code != 200:
-                break
-            resultados = r.json().get("results", [])
-            if not resultados:
-                break
-            for item in resultados:
-                titulo = item.get("title", "")
-                if not titulo or len(titulo) < 5:
+            r = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
+            if r.status_code != 200 or len(r.text) < 1000:
+                continue
+            soup = BeautifulSoup(r.text, "html.parser")
+            items = (soup.select("li.ui-search-layout__item") or
+                     soup.select("div.ui-search-result") or
+                     soup.select("[data-item-id]"))
+            for item in items:
+                t_tag = (item.find(class_="ui-search-item__title") or
+                         item.find(class_=re.compile(r"poly-component__title|title|item__title")))
+                if not t_tag:
                     continue
-                preco = item.get("price", "")
+                titulo = t_tag.get_text(strip=True)
+                if not titulo or len(titulo) < 8:
+                    continue
+                link_tag = item.find("a", href=True)
+                frac = item.find(class_="andes-money-amount__fraction")
+                preco = ""
+                if frac:
+                    try:
+                        preco = str(float(frac.get_text(strip=True).replace(".", "").replace(",", "")))
+                    except Exception:
+                        pass
                 anuncios.append({
                     "titulo": titulo,
-                    "link": item.get("permalink", ""),
-                    "preco": str(preco) if preco else ""
+                    "link": (link_tag["href"].split("?")[0] if link_tag else ""),
+                    "preco": preco
                 })
+            if anuncios:
+                break
         except Exception as e:
-            print(f"[OEM-COMPAT] API ML erro: {e}")
-            break
+            print(f"[OEM-COMPAT] Scraping ML erro ({url}): {e}")
+            continue
     return anuncios
 
 
