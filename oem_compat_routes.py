@@ -10,6 +10,28 @@ _NODE     = os.path.join(_DIR, "pw_driver", "node.exe")
 _OEM_JS   = os.path.join(_DIR, "ml_oem_compat.js")
 _IS_LINUX = os.name == "posix"
 
+_ML_CLIENT_ID     = os.environ.get("ML_CLIENT_ID",     "5450531514024470")
+_ML_CLIENT_SECRET = os.environ.get("ML_CLIENT_SECRET", "s9gn1wlLSuHv2JlDbKnhoJYRQziI7YTu")
+_ml_token_cache   = {"token": "", "expires_at": 0}
+
+def _get_ml_token():
+    if _ml_token_cache["token"] and time.time() < _ml_token_cache["expires_at"] - 30:
+        return _ml_token_cache["token"]
+    try:
+        r = requests.post("https://api.mercadolibre.com/oauth/token", data={
+            "grant_type": "client_credentials",
+            "client_id": _ML_CLIENT_ID,
+            "client_secret": _ML_CLIENT_SECRET,
+        }, timeout=10)
+        if r.status_code == 200:
+            d = r.json()
+            _ml_token_cache["token"] = d.get("access_token", "")
+            _ml_token_cache["expires_at"] = time.time() + d.get("expires_in", 21600)
+            return _ml_token_cache["token"]
+    except Exception:
+        pass
+    return ""
+
 # PartHub Supabase — mesmos dados do api_server.py
 _PH_HOST  = "iftzoceaalhpyckuznae.supabase.co"
 _PH_ANON  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlmdHpvY2VhYWxocHlja3V6bmFlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA0MzMwNjcsImV4cCI6MjA3NjAwOTA2N30.VZY9NLFvRMX-lr9FQUlOkMfE0RfdGxk0HVpslxMYDYg"
@@ -146,31 +168,39 @@ def _buscar_ml_playwright_python(oem):
 
 
 def _buscar_ml_api(oem):
-    """Fallback: busca direto na API pública do ML sem Playwright."""
-    try:
-        r = requests.get(
-            "https://api.mercadolibre.com/sites/MLB/search",
-            params={"q": oem, "limit": 20},
-            timeout=15
-        )
-        if r.status_code != 200:
-            return []
-        resultados = r.json().get("results", [])
-        anuncios = []
-        for item in resultados:
-            titulo = item.get("title", "")
-            if not titulo or len(titulo) < 5:
-                continue
-            preco = item.get("price", "")
-            anuncios.append({
-                "titulo": titulo,
-                "link": item.get("permalink", ""),
-                "preco": str(preco) if preco else ""
-            })
-        return anuncios
-    except Exception as e:
-        print(f"[OEM-COMPAT] API ML erro: {e}")
-        return []
+    """Fallback: busca direto na API do ML com token OAuth (sem Playwright)."""
+    token = _get_ml_token()
+    headers = {"Accept": "application/json", "Accept-Language": "pt-BR,pt;q=0.9"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    anuncios = []
+    for offset in [0, 20]:
+        try:
+            r = requests.get(
+                "https://api.mercadolibre.com/sites/MLB/search",
+                params={"q": oem, "limit": 20, "offset": offset},
+                headers=headers,
+                timeout=15
+            )
+            if r.status_code != 200:
+                break
+            resultados = r.json().get("results", [])
+            if not resultados:
+                break
+            for item in resultados:
+                titulo = item.get("title", "")
+                if not titulo or len(titulo) < 5:
+                    continue
+                preco = item.get("price", "")
+                anuncios.append({
+                    "titulo": titulo,
+                    "link": item.get("permalink", ""),
+                    "preco": str(preco) if preco else ""
+                })
+        except Exception as e:
+            print(f"[OEM-COMPAT] API ML erro: {e}")
+            break
+    return anuncios
 
 
 def _buscar_ml(oem):
