@@ -145,12 +145,44 @@ def _buscar_ml_playwright_python(oem):
         return []
 
 
+def _buscar_ml_api(oem):
+    """Fallback: busca direto na API pública do ML sem Playwright."""
+    try:
+        r = requests.get(
+            "https://api.mercadolibre.com/sites/MLB/search",
+            params={"q": oem, "limit": 20},
+            timeout=15
+        )
+        if r.status_code != 200:
+            return []
+        resultados = r.json().get("results", [])
+        anuncios = []
+        for item in resultados:
+            titulo = item.get("title", "")
+            if not titulo or len(titulo) < 5:
+                continue
+            preco = item.get("price", "")
+            anuncios.append({
+                "titulo": titulo,
+                "link": item.get("permalink", ""),
+                "preco": str(preco) if preco else ""
+            })
+        return anuncios
+    except Exception as e:
+        print(f"[OEM-COMPAT] API ML erro: {e}")
+        return []
+
+
 def _buscar_ml(oem):
-    """Tenta Node primeiro (Windows), depois Playwright Python (Linux)."""
+    """Tenta Node primeiro (Windows), depois Playwright Python (Linux), depois API direta."""
     resultado = _buscar_ml_node(oem)
-    if resultado is not None:
+    if resultado:
         return resultado
-    return _buscar_ml_playwright_python(oem)
+    resultado = _buscar_ml_playwright_python(oem)
+    if resultado:
+        return resultado
+    # Fallback final: API pública do ML (sempre funciona no Railway)
+    return _buscar_ml_api(oem)
 
 
 # ─── Análise com AI ──────────────────────────────────────────────────────────
@@ -414,7 +446,7 @@ def register_routes(app, cfg_fn):
                 "oem": oem,
                 "erro": "Nenhum anúncio encontrado no ML para este OEM",
                 "tempo_s": round(time.time() - t0, 1)
-            }), 404
+            })
 
         cfg = cfg_fn()
         anuncios = _extrair_com_ai(anuncios_brutos, oem, cfg)
