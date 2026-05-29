@@ -1704,6 +1704,9 @@ if USE_FLASK:
     def olx_trocar_codigo():
         global _olx_token_mem
         code = request.args.get("code", "")
+        # aceita redirect_uri como parâmetro para sobrescrever o default
+        redirect_uri_override = request.args.get("redirect_uri", "").strip()
+        _redir = redirect_uri_override or OLX_REDIRECT_URI
         if not code or not OLX_CLIENT_ID:
             return jsonify({"erro": "code ausente ou OLX nao configurada"}), 400
         try:
@@ -1712,7 +1715,7 @@ if USE_FLASK:
                 "client_id": OLX_CLIENT_ID,
                 "client_secret": OLX_CLIENT_SECRET,
                 "code": code,
-                "redirect_uri": OLX_REDIRECT_URI
+                "redirect_uri": _redir
             }, timeout=15)
             if _r.status_code != 200:
                 return jsonify({"erro": f"OLX {_r.status_code}: {_r.text[:300]}"}), 400
