@@ -573,6 +573,26 @@ def register_routes(app, cfg_fn):
         r.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
         return r
 
+    def _buscar_supabase_cache(oem):
+        """Retorna compatibilidades salvas no Supabase para este OEM, ou None se não tiver."""
+        hdrs = _ph_headers()
+        if not hdrs:
+            return None
+        try:
+            r = requests.get(
+                f"https://{_PH_HOST}/rest/v1/oem_compatibilidades",
+                headers=hdrs,
+                params={"oem": f"eq.{oem}", "order": "confianca.desc", "limit": "20"},
+                timeout=8
+            )
+            if r.status_code == 200:
+                rows = r.json()
+                if rows:
+                    return rows
+        except Exception as e:
+            print(f"[OEM-COMPAT] Supabase cache erro: {e}")
+        return None
+
     @app.route("/compatibilidade/buscar-oem", methods=["POST", "OPTIONS"])
     def compat_buscar_oem():
         if request.method == "OPTIONS":
@@ -585,17 +605,47 @@ def register_routes(app, cfg_fn):
 
         print(f"[OEM-COMPAT] Buscando OEM: {oem}" + (f" | nome: {nome_peca}" if nome_peca else ""))
         t0 = time.time()
-        cfg = cfg_fn()
 
-        # ML bloqueado no Railway — usa IA diretamente com conhecimento de catálogo OEM
-        resultado_ia = _buscar_compat_via_ia(oem, nome_peca, cfg)
-        print(f"[OEM-COMPAT] IA retornou {len(resultado_ia.get('compatibilidades_confirmadas') or [])} compatibilidades em {round(time.time()-t0,1)}s")
+        # 1. Verifica cache no Supabase (dados reais do ML)
+        cache = _buscar_supabase_cache(oem)
+        if cache:
+            confianca = cache[0].get("confianca", 0)
+            compat = [
+                {
+                    "veiculo": f"{row.get('marca','')} {row.get('modelo','')}".strip(),
+                    "anos": (f"{row['ano_inicial']} - {row['ano_final']}"
+                             if row.get("ano_inicial") and row.get("ano_final")
+                             else str(row.get("ano_inicial", "") or "")),
+                    "detalhes": row.get("motor", "") or "",
+                    "marca": row.get("marca"),
+                    "modelo": row.get("modelo"),
+                    "motor": row.get("motor"),
+                    "cambio": row.get("cambio"),
+                    "ano_inicial": row.get("ano_inicial"),
+                    "ano_final": row.get("ano_final"),
+                }
+                for row in cache
+            ]
+            print(f"[OEM-COMPAT] Cache Supabase: {len(compat)} registros em {round(time.time()-t0,2)}s")
+            return jsonify({
+                "ok": True,
+                "oem": oem,
+                "fonte": "supabase_cache",
+                "compatibilidades_confirmadas": compat,
+                "grau_de_confianca": confianca,
+                "tempo_s": round(time.time() - t0, 1)
+            })
+
+        # 2. Sem dados reais — retorna sem_dados para o frontend chamar servidor local
+        print(f"[OEM-COMPAT] Sem dados no Supabase para OEM {oem} — retornando sem_dados")
         return jsonify({
             "ok": True,
             "oem": oem,
-            "fonte": "ia_catalogo",
-            "tempo_s": round(time.time() - t0, 1),
-            **resultado_ia
+            "fonte": "sem_dados",
+            "compatibilidades_confirmadas": [],
+            "grau_de_confianca": 0,
+            "mensagem": "OEM sem dados no banco. Execute o servidor local para buscar no Mercado Livre.",
+            "tempo_s": round(time.time() - t0, 1)
         })
 
     @app.route("/compatibilidade/salvar", methods=["POST", "OPTIONS"])
