@@ -1166,7 +1166,9 @@ if USE_FLASK:
     ML_REDIRECT_URI = os.environ.get("ML_REDIRECT_URI", "https://wrx-api-production.up.railway.app/integracoes/mercadolivre/oauth/callback")
     OLX_CLIENT_ID = os.environ.get("OLX_CLIENT_ID", "")
     OLX_CLIENT_SECRET = os.environ.get("OLX_CLIENT_SECRET", "")
-    OLX_REDIRECT_URI = os.environ.get("OLX_REDIRECT_URI", "https://magnificent-quietude-production-931a.up.railway.app/callback/olx")
+    OLX_REDIRECT_URI = os.environ.get("OLX_REDIRECT_URI", "https://glowing-pastelito-6e4556.netlify.app/olx-callback.html")
+    OLX_TELEFONE = os.environ.get("OLX_TELEFONE", "21964449123")
+    OLX_CEP = os.environ.get("OLX_CEP", "22725001")
     SHOPEE_PARTNER_ID = int(os.environ.get("SHOPEE_PARTNER_ID", "1234546"))
     SHOPEE_PARTNER_KEY = os.environ.get("SHOPEE_PARTNER_KEY", "shpk76666558496143524c7a474e416c59517651744a49766976425459796265")
 
@@ -1743,17 +1745,20 @@ if USE_FLASK:
         if not _olx_token_mem.get("access_token"):
             return jsonify({"ok": False, "erro": "OLX nao autorizada — clique em Conectar"}), 401
         data = request.get_json(force=True) or {}
-        fotos = [f for f in data.get("fotos", []) if f and f.startswith("http")]
-        preco = float(data.get("preco", 0) or 0)
+        fotos = [f for f in (data.get("fotos") or data.get("images") or []) if f and f.startswith("http")]
+        preco = float(data.get("preco") or data.get("price") or 0)
+        _sku = data.get("_sku") or data.get("sku", "")
         payload = {
-            "subject": (data.get("titulo") or data.get("nomeInterno", "Peca Automotiva"))[:70],
-            "body": (data.get("descricao") or data.get("titulo", ""))[:6000],
+            "subject": (data.get("subject") or data.get("titulo") or data.get("nomeInterno", "Peca Automotiva"))[:70],
+            "body": (data.get("body") or data.get("descricao") or data.get("titulo", ""))[:6000],
             "price": int(preco),
             "category": {"id": "8020"},
-            "phone": {"phone": data.get("telefone", ""), "phone_hidden": False},
-            "locations": [{"zipcode": (data.get("cep", "") or "20521160").replace("-", "")}],
+            "phone": {"phone": data.get("telefone") or OLX_TELEFONE, "phone_hidden": False},
+            "locations": [{"zipcode": (data.get("cep") or OLX_CEP).replace("-", "")}],
             "images": fotos[:10]
         }
+        if _sku:
+            payload["custom_id"] = str(_sku)
         try:
             _r = requests.post("https://apps.olx.com.br/autoupload/import",
                                headers={"Authorization": f"Bearer {_olx_token_mem['access_token']}", "Content-Type": "application/json"},
