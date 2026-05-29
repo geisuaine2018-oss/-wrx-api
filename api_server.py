@@ -12,6 +12,26 @@ Rodar:
 import json, re, os, subprocess, time, threading, sys
 import requests
 
+# Instala Chromium automaticamente no Railway se não existir
+def _ensure_playwright_chromium():
+    if os.name != "posix":
+        return
+    try:
+        import playwright
+        result = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
+            capture_output=True, timeout=120
+        )
+        if result.returncode == 0:
+            print("[STARTUP] Playwright Chromium instalado/verificado com sucesso")
+        else:
+            print(f"[STARTUP] playwright install chromium saiu com código {result.returncode}")
+    except Exception as e:
+        print(f"[STARTUP] playwright install chromium erro: {e}")
+
+if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
+    threading.Thread(target=_ensure_playwright_chromium, daemon=True).start()
+
 # ─── Config ───────────────────────────────────────────────────────────────────
 # Railway define PORT via env var; local usa 5678
 PORT        = int(os.environ.get("PORT", 5678))
