@@ -356,8 +356,50 @@ def buscar_ml(codigo):
     usados = sorted(set(round(p, 2) for p in usados))[:15]
     return titles[:15], novos, usados
 
+# ─── Extrai nome da peça a partir de títulos ML que contêm o OEM exato ────────
+_MARCAS_VEICULOS = re.compile(
+    r'\b(renault|peugeot|citroen|volkswagen|vw|fiat|chevrolet|gm|toyota|honda|ford|hyundai|'
+    r'nissan|mitsubishi|jeep|dodge|ram|kia|bmw|mercedes|benz|mb|audi|volvo|suzuki|subaru|'
+    r'lifan|caoa|chery|jac|haval|great wall|byd|geely|mg|troller|'
+    r'logan|sandero|duster|clio|kangoo|megane|fluence|captur|kwid|oroch|'
+    r'uno|palio|siena|strada|punto|bravo|toro|cronos|argo|pulse|fastback|mobi|'
+    r'onix|prisma|cobalt|spin|s10|tracker|montana|trailblazer|cruze|equinox|'
+    r'gol|polo|voyage|fox|up|saveiro|amarok|tiguan|t-cross|virtus|nivus|taos|jetta|passat|'
+    r'ka|ecosport|fiesta|focus|ranger|transit|territory|bronco|mustang|fusion|'
+    r'hb20|ix35|creta|tucson|santa fe|azera|elantra|sonata|veracruz|'
+    r'march|versa|kicks|frontier|livina|sentra|x-trail|murano|'
+    r'corolla|hilux|yaris|etios|sw4|camry|rav4|land cruiser|prado|'
+    r'city|civic|fit|hr-v|cr-v|wr-v|accord|pilot|'
+    r'renegade|compass|commander|wrangler|grand cherokee|cherokee|'
+    r'c3|c4|c5|berlingo|jumper|207|208|308|408|3008|5008|expert|'
+    r'duster|master|traffic|1\.0|1\.3|1\.6|2\.0|2\.5|diesel|flex|turbo|automático|manual|cvt|'
+    r'\d{4}/\d{4}|\d{4})\b',
+    re.IGNORECASE
+)
+
+def _extrair_nome_oem_do_titulo(titulo, codigo):
+    """Extrai o nome da peça de um título ML que contém o OEM.
+    Ex: 'Caixa Filtro Ar Renault Duster 8200420871b' → 'Caixa Filtro Ar'"""
+    # Remove o código OEM do título
+    t = re.sub(re.escape(codigo), '', titulo, flags=re.IGNORECASE).strip()
+    # Quebra nas palavras antes da primeira marca/modelo/ano
+    m = _MARCAS_VEICULOS.search(t)
+    nome = t[:m.start()].strip() if m else t
+    # Remove caracteres especiais do final
+    nome = re.sub(r'[\-–—/|\\]+$', '', nome).strip()
+    # Remove palavras genéricas soltas
+    nome = re.sub(r'\b(original|oem|genuina|genuíno|novo|nova|par)\b', '', nome, flags=re.IGNORECASE).strip()
+    nome = re.sub(r'\s+', ' ', nome).strip()
+    return nome if len(nome) > 3 else titulo.split()[0] if titulo else ''
+
+def _titulos_com_oem(titles, codigo):
+    """Filtra títulos ML que contêm o código OEM exato."""
+    cod = codigo.lower().strip()
+    return [t for t in titles if cod in t.lower()]
+
 # ─── IA: prompt + ajuste + chamada ────────────────────────────────────────────
-def _build_prompt(codigo, titles, prices, compatibilidade_oem=None):
+def _build_prompt(codigo, titles, prices, compatibilidade_oem=None,
+                  nome_peca_confirmado=None):
     tlist = "\n".join(f"- {t}" for t in titles) if titles else "(nenhum anúncio coletado)"
     plist = ", ".join(f"R$ {p:.2f}" for p in prices) if prices else "(sem preços coletados — estime com base em concorrentes reais)"
 
@@ -396,18 +438,30 @@ def _build_prompt(codigo, titles, prices, compatibilidade_oem=None):
             "- compatibilidades_confirmadas: lista VAZIA [] quando não há confirmação OEM"
         )
 
+    if nome_peca_confirmado:
+        bloco_nome = (
+            "╔══════════════════════════════════════════╗\n"
+            "║  NOME DA PEÇA CONFIRMADO POR OEM EXATO   ║\n"
+            "╚══════════════════════════════════════════╝\n\n"
+            f"Nome confirmado pelo Mercado Livre via correspondência OEM exata:\n"
+            f"  → {nome_peca_confirmado}\n\n"
+            "REGRA ABSOLUTA: use ESTE nome no campo 'nome_peca'. NÃO altere, NÃO substitua,\n"
+            "NÃO use conhecimento próprio para mudar a identificação da peça.\n"
+            "Os títulos gerados devem usar este nome como base.\n"
+        )
+    else:
+        bloco_nome = (
+            "ETAPA 1 — IDENTIFICAÇÃO DA PEÇA\n"
+            "Use o código OEM para identificar o nome comercial da peça.\n"
+            "Prioridade: OEM > catálogo > anúncios (somente para nome).\n"
+        )
+
     return f"""Você é um especialista em precificação e geração de títulos para Mercado Livre, Shopee e OLX de autopeças.
 
 CÓDIGO OEM / PEÇA: {codigo}
 
+{bloco_nome}
 {bloco_compat}
-═══════════════════════════════════════
-ETAPA 1 — IDENTIFICAÇÃO DA PEÇA
-═══════════════════════════════════════
-
-Use o código OEM acima para identificar o nome comercial da peça.
-Prioridade: OEM > catálogo > anúncios abaixo (somente para nome, nunca para compatibilidade).
-
 ═══════════════════════════════════════
 ETAPA 2 — PREÇOS (use os anúncios APENAS para preço)
 ═══════════════════════════════════════
@@ -625,71 +679,121 @@ def _identificar_nome_peca(codigo):
 
 # ─── Lógica principal de busca ────────────────────────────────────────────────
 def executar_busca(codigo, compatibilidade_oem=None):
+    # ── ETAPA 1: busca no ML pelo código OEM exato ─────────────────────────────
     titles, novos, usados = buscar_ml(codigo)
     ml_achou = bool(titles or novos or usados)
-    print(f"[WRX] ML achou: titles={len(titles)} novos={len(novos)} usados={len(usados)}")
 
-    # Se ML não achou pelo código OEM, tenta buscar pelo nome da peça
-    if not ml_achou:
-        nome_peca = _identificar_nome_peca(codigo)
-        if nome_peca:
-            print(f"[WRX] Buscando ML por nome: {nome_peca}")
-            t2, n2, u2 = buscar_ml(nome_peca)
-            if t2 or n2 or u2:
-                titles, novos, usados = t2, n2, u2
-                ml_achou = True
+    # Verifica se algum título ML contém o OEM exato
+    titulos_oem_exato = _titulos_com_oem(titles, codigo)
+    oem_confirmado_ml = bool(titulos_oem_exato)
+    nome_peca_confirmado = None
+
+    if oem_confirmado_ml:
+        nome_peca_confirmado = _extrair_nome_oem_do_titulo(titulos_oem_exato[0], codigo)
+        fonte_resultado = "oem_exato_ml"
+        grau_confianca  = 99
+        print(f"[WRX] OEM pesquisado: {codigo}")
+        print(f"[WRX] OEM encontrado: {nome_peca_confirmado!r} | Título ML: {titulos_oem_exato[0]!r}")
+        print(f"[WRX] Fonte: {fonte_resultado} | Confiança: {grau_confianca}")
+    else:
+        print(f"[WRX] OEM pesquisado: {codigo}")
+        print(f"[WRX] OEM não encontrado por correspondência exata no ML ({len(titles)} títulos sem match)")
+
+        # ── ETAPA 2: OEM não encontrado → tenta por nome da peça (IA identifica) ──
+        if not ml_achou:
+            nome_peca_ia = _identificar_nome_peca(codigo)
+            if nome_peca_ia:
+                print(f"[WRX] Buscando ML por nome (IA): {nome_peca_ia}")
+                t2, n2, u2 = buscar_ml(nome_peca_ia)
+                if t2 or n2 or u2:
+                    titles, novos, usados = t2, n2, u2
+                    ml_achou = True
+
+        fonte_resultado = "ml_sem_oem_exato" if ml_achou else "ia_pura"
+        grau_confianca  = 50 if ml_achou else 30
+        print(f"[WRX] Fonte: {fonte_resultado} | Confiança: {grau_confianca}")
 
     if compatibilidade_oem:
-        print(f"[WRX] Usando compatibilidade OEM confirmada: {len(compatibilidade_oem)} veículos")
+        print(f"[WRX] Compatibilidade OEM confirmada: {len(compatibilidade_oem)} veículos")
 
+    # ── ETAPA 3: chama IA (somente para títulos/preço; nome já confirmado se OEM exato) ──
     prices    = novos or usados
     preco_ref = calcular_preco_sugerido(prices)
-    prompt    = _build_prompt(codigo, titles, prices[:10], compatibilidade_oem=compatibilidade_oem)
-    data      = _chamar_ia(prompt)
+    prompt    = _build_prompt(
+        codigo, titles, prices[:10],
+        compatibilidade_oem=compatibilidade_oem,
+        nome_peca_confirmado=nome_peca_confirmado
+    )
+    data = _chamar_ia(prompt)
 
     if not data:
-        # IA falhou mas ML pode ter achado dados — devolve resultado parcial
-        titulo_base = titles[0] if titles else codigo
+        # IA falhou — monta resultado mínimo a partir dos dados ML
+        titulo_base = nome_peca_confirmado or (titles[0] if titles else codigo)
         titulos_gerados = [
-            titulo_base,
+            titulo_base[:60],
             f"{titulo_base} {codigo}".strip()[:60],
             f"{titulo_base} Original".strip()[:60],
             f"{titulo_base} Usado".strip()[:60],
         ]
         data = {
+            "nome_peca": titulo_base,
+            "oem": codigo,
             "codigo": codigo,
             "titulos_otimizados": titulos_gerados,
+            "mercado_livre": titulos_gerados,
             "titulo_ia": titulos_gerados[0],
             "preco_sugerido": preco_ref,
             "compatibilidade": [],
+            "compatibilidades_confirmadas": [],
             "versoes": [],
             "explicacao": "IA indisponível. Dados coletados do Mercado Livre.",
             "funcao": titulo_base,
             "sem_ia": True,
         }
-        if not ml_achou:
-            return {"erro": "Falha na IA e nenhum dado encontrado no ML. Verifique a API Key no WRX-Search."}
+        if not ml_achou and not oem_confirmado_ml:
+            return {
+                "erro": "Falha na IA e nenhum dado encontrado no ML.",
+                "oem_pesquisado": codigo,
+                "oem_encontrado": False,
+                "fonte_resultado": "erro",
+                "grau_de_confianca": 0,
+            }
+
+    # Garante que nome_peca_confirmado não seja sobrescrito pela IA
+    if nome_peca_confirmado:
+        data["nome_peca"] = nome_peca_confirmado
 
     # Força preço calculado pelo Python
     if preco_ref > 0:
         data["preco_sugerido"] = preco_ref
 
+    # Força grau_de_confianca para OEM exato (IA pode ter retornado valor menor)
+    if oem_confirmado_ml:
+        data["grau_de_confianca"] = grau_confianca
+
     data = _ajustar_titulos(data, codigo)
 
-    # Adiciona NCM/CEST se encontrar
-    nome_peca = (data.get("titulos_otimizados") or [codigo])[0]
-    ncm = buscar_ncm_local(nome_peca)
+    # NCM/CEST
+    nome_ncm = data.get("nome_peca") or (data.get("titulos_otimizados") or [codigo])[0]
+    ncm = buscar_ncm_local(nome_ncm)
     if ncm:
-        data["ncm"]  = ncm.get("ncm", "")
-        data["cest"] = ncm.get("cest", "")
+        data["ncm"]      = ncm.get("ncm", "")
+        data["cest"]     = ncm.get("cest", "")
         data["ncm_desc"] = ncm.get("descricao", "")
 
-    # Adiciona preços separados
-    data["precos_novos"]  = novos
-    data["precos_usados"] = usados
-    data["fonte"] = "ml+ia" if ml_achou else "ia_pura"
+    # Campos de auditoria
+    data["oem_pesquisado"]         = codigo
+    data["oem_encontrado"]         = oem_confirmado_ml
+    data["oem_titulo_ml"]          = titulos_oem_exato[0] if titulos_oem_exato else None
+    data["fonte_resultado"]        = fonte_resultado
+    data["grau_de_confianca"]      = data.get("grau_de_confianca") or grau_confianca
     data["ml_titulos_encontrados"] = len(titles)
+    data["precos_novos"]           = novos
+    data["precos_usados"]          = usados
+    # legado
+    data["fonte"] = fonte_resultado
 
+    print(f"[WRX] Resultado: nome={data.get('nome_peca')!r} | fonte={fonte_resultado} | conf={data['grau_de_confianca']}")
     return data
 
 # ─── Servidor HTTP ────────────────────────────────────────────────────────────
