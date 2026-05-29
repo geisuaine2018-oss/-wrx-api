@@ -1283,7 +1283,7 @@ if USE_FLASK:
             return _options_resp()
         data = request.get_json(force=True) or {}
         conta_nome = data.get("nome", "default")
-        sku = data.get("sku", "")
+        sku = data.get("sku", "") or data.get("_sku", "")
         if not sku:
             return jsonify({"ok": False, "erro": "sku obrigatorio"}), 400
         token = _ml_get_user_token(conta_nome)
