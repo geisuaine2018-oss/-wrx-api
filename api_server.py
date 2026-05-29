@@ -794,6 +794,7 @@ def executar_busca(codigo, compatibilidade_oem=None):
             f"{titulo_base} Original".strip()[:60],
             f"{titulo_base} Usado".strip()[:60],
         ]
+        sem_ml = not ml_achou and not oem_confirmado_ml
         data = {
             "nome_peca": titulo_base,
             "oem": codigo,
@@ -805,18 +806,11 @@ def executar_busca(codigo, compatibilidade_oem=None):
             "compatibilidade": [],
             "compatibilidades_confirmadas": [],
             "versoes": [],
-            "explicacao": "IA indisponível. Dados coletados do Mercado Livre.",
+            "explicacao": "IA indisponível — sem dados ML para este código." if sem_ml else "IA indisponível. Dados coletados do Mercado Livre.",
             "funcao": titulo_base,
             "sem_ia": True,
+            "sem_ml": sem_ml,
         }
-        if not ml_achou and not oem_confirmado_ml:
-            return {
-                "erro": "Falha na IA e nenhum dado encontrado no ML.",
-                "oem_pesquisado": codigo,
-                "oem_encontrado": False,
-                "fonte_resultado": "erro",
-                "grau_de_confianca": 0,
-            }
 
     # Garante que nome_peca_confirmado não seja sobrescrito pela IA
     if nome_peca_confirmado:
