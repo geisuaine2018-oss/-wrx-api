@@ -1353,7 +1353,7 @@ if USE_FLASK:
             return jsonify({"ok": False, "erro": "preco invalido"}), 400
         _titulo = (data.get("titulo", "") or data.get("nomeInterno", ""))[:60]
         ml_payload = {
-            "title": _titulo,
+            "name": _titulo,
             "family_name": (data.get("family_name") or _titulo)[:60],
             "category_id": data.get("mlCategoryId", "") or "MLB3530",
             "price": preco,
