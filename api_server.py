@@ -358,154 +358,146 @@ def buscar_ml(codigo):
 
 # ─── IA: prompt + ajuste + chamada ────────────────────────────────────────────
 def _build_prompt(codigo, titles, prices, compatibilidade_oem=None):
-    tlist = "\n".join(f"- {t}" for t in titles) if titles else "(sem anúncios encontrados — use seu conhecimento técnico do código OEM)"
-    plist = ", ".join(f"R$ {p:.2f}" for p in prices) if prices else "(sem preços coletados — estime com base em concorrentes reais de auto peças)"
+    tlist = "\n".join(f"- {t}" for t in titles) if titles else "(nenhum anúncio coletado)"
+    plist = ", ".join(f"R$ {p:.2f}" for p in prices) if prices else "(sem preços coletados — estime com base em concorrentes reais)"
 
     if compatibilidade_oem:
-        linhas = "\n".join(
-            f"  - {c.get('veiculo','?')} | anos: {c.get('anos','?')}"
-            for c in compatibilidade_oem
+        linhas_oem = "\n".join(
+            f"  {i+1}. {c.get('veiculo','?')} | anos: {c.get('anos','?')}"
+            for i, c in enumerate(compatibilidade_oem)
         )
-        bloco_oem = (
-            "\n╔══════════════════════════════════════════╗\n"
+        bloco_compat = (
+            "╔══════════════════════════════════════════╗\n"
             "║  COMPATIBILIDADE OEM CONFIRMADA          ║\n"
             "╚══════════════════════════════════════════╝\n\n"
-            "Os veículos abaixo foram confirmados pelo fabricante para este código exato.\n"
-            "USE SOMENTE ESTA LISTA nos campos 'compatibilidade' e 'versoes' da resposta.\n"
-            "NÃO adicione veículos de anúncios do ML, SEO, IA ou inferência própria.\n"
-            "NÃO remova nenhum veículo desta lista.\n\n"
-            f"{linhas}\n"
+            "Fonte: catálogo oficial / base interna validada.\n\n"
+            f"{linhas_oem}\n\n"
+            "REGRA ABSOLUTA: use SOMENTE estes veículos em 'compatibilidades_confirmadas'.\n"
+            "PROIBIDO adicionar qualquer outro veículo — mesmo que apareça em anúncios do ML,\n"
+            "títulos, descrições ou seja sugerido por SEO, IA ou inferência própria.\n"
+        )
+        regra_compat_json = (
+            "- compatibilidades_confirmadas: SOMENTE os veículos da lista OEM acima, sem adicionar nem remover"
         )
     else:
-        bloco_oem = ""
+        bloco_compat = (
+            "╔══════════════════════════════════════════╗\n"
+            "║  SEM COMPATIBILIDADE OEM FORNECIDA       ║\n"
+            "╚══════════════════════════════════════════╝\n\n"
+            "Nenhuma compatibilidade confirmada foi recebida para este código.\n"
+            "REGRA ABSOLUTA: NÃO deduza compatibilidade a partir de:\n"
+            "  - anúncios do Mercado Livre\n"
+            "  - títulos ou descrições de vendedores\n"
+            "  - SEO, palavras semelhantes, modelos parecidos\n"
+            "  - conhecimento geral ou inferência própria\n\n"
+            "Se não há confirmação OEM, retorne 'compatibilidades_confirmadas' como lista vazia.\n"
+        )
+        regra_compat_json = (
+            "- compatibilidades_confirmadas: lista VAZIA [] quando não há confirmação OEM"
+        )
 
-    return f"""Você é um especialista profissional em Mercado Livre, SEO automotivo, auto peças, compatibilidade veicular e precificação inteligente.
-{bloco_oem}
+    return f"""Você é um especialista em precificação e geração de títulos para Mercado Livre, Shopee e OLX de autopeças.
+
 CÓDIGO OEM / PEÇA: {codigo}
 
-ANÚNCIOS COLETADOS DO MERCADO LIVRE (vendedores reais, independentes):
+{bloco_compat}
+═══════════════════════════════════════
+ETAPA 1 — IDENTIFICAÇÃO DA PEÇA
+═══════════════════════════════════════
+
+Use o código OEM acima para identificar o nome comercial da peça.
+Prioridade: OEM > catálogo > anúncios abaixo (somente para nome, nunca para compatibilidade).
+
+═══════════════════════════════════════
+ETAPA 2 — PREÇOS (use os anúncios APENAS para preço)
+═══════════════════════════════════════
+
+ANÚNCIOS COLETADOS DO MERCADO LIVRE (referência de preço SOMENTE):
 {tlist}
 
 PREÇOS ENCONTRADOS:
 {plist}
 
-═══════════════════════════════════════
-REGRAS OBRIGATÓRIAS DE PESQUISA E PREÇO
-═══════════════════════════════════════
-
-IGNORAR COMPLETAMENTE como referência de preço:
-- Concessionárias, lojas oficiais, montadoras, fabricantes oficiais
-- Fiat, Citroen, Peugeot, Volkswagen, GM, Chevrolet, Toyota, Honda, Renault, Jeep, Hyundai, Nissan, Ford (como vendedores)
-- Peças paralelas ruins, anúncios sem descrição, anúncios sem compatibilidade
-
-USAR SOMENTE:
-- Vendedores reais do Mercado Livre, auto peças independentes, vendedores premium com boa reputação
-- Anúncios mais vendidos com compatibilidade completa
-
-CÁLCULO DE PREÇO OBRIGATÓRIO:
-- Analisar anúncios vendidos por vendedores independentes fortes
-- Ignorar valores absurdamente caros ou suspeitos de serem muito baratos
-- Calcular média real dos anúncios fortes
-- Gerar 4 faixas de preço: médio mercado, competitivo, venda rápida, premium
-- Considerar condição da peça: original, OEM, genuína, primeira linha, nova, usada, recuperada
+Ignorar como referência de preço: concessionárias, montadoras, fabricantes oficiais.
+Usar: vendedores independentes com boa reputação.
+Calcular 4 faixas: médio mercado, competitivo, venda rápida, premium.
 
 ═══════════════════════════════════════
-REGRAS DE TÍTULOS
+ETAPA 3 — TÍTULOS
 ═══════════════════════════════════════
 
-Gerar EXATAMENTE 4 títulos profissionais, máximo 60 caracteres cada.
-Prioridade no título: PEÇA > MARCA > MODELO > MOTOR > ANOS > LADO > FABRICANTE > CÓDIGO
-Tentar encaixar até 3-4 veículos compatíveis no mesmo título.
-Anos no título: resumir como 2020/2025 ou 20/25.
-Nunca usar emojis. Títulos limpos, fortes e com SEO.
+MERCADO LIVRE — exatamente 4 títulos, entre 55 e 60 caracteres cada:
+- Prioridade: PEÇA > VEÍCULO CONFIRMADO > MOTOR > ANOS > LADO > CÓDIGO
+- Use somente veículos da lista OEM confirmada nos títulos
+- Se não há compatibilidade confirmada, use apenas peça + código
+- Não repetir palavras entre títulos; não usar emojis
+- Código OEM como complemento, nunca como título único
+- Anos: resumir como 2021/2026 ou 21/26
 
-EXEMPLOS DE FORMATO:
-- Sensor Pressão Óleo Logan Sandero 1.0 1.6 2014/2024
-- Farol Citroen C3 Aircross C4 2020/2025 D/E
+SHOPEE — 1 título, até 100 caracteres, mais descritivo que ML.
 
-═══════════════════════════════════════
-REGRAS DE COMPATIBILIDADE
-═══════════════════════════════════════
-{"- COMPATIBILIDADE OEM JÁ FORNECIDA ACIMA — use SOMENTE aquela lista. Não adicione, não remova, não infira outros veículos." if compatibilidade_oem else "- Listar TODOS os modelos confirmados para este código exato"}
-- NUNCA resumir anos (ERRADO: "2020 a 2025" | CERTO: cada ano individual)
-- Separar por veículo, expandir todos os anos individualmente
-- Incluir marca, modelo, versão, motorização, combustível, turbo quando existir
-- Peças mecânicas DEVEM ter: motor, combustível, turbo, câmbio, versão
-- Peças de carroceria (porta, capô, farol, etc.) só incluem motor se houver diferença entre versões
+OLX — 1 título, até 100 caracteres, tom comercial.
 
 ═══════════════════════════════════════
-REGRAS DOS TÍTULOS — OBRIGATÓRIO
+VALIDAÇÃO FINAL ANTES DE RESPONDER
 ═══════════════════════════════════════
 
-MERCADO LIVRE — 4 títulos diferentes, cada um entre 55 e 60 caracteres:
-- Prioridade: PEÇA > MARCA > MODELO > MOTOR > ANOS > LADO > FABRICANTE > CÓDIGO
-- Cada título deve ter conteúdo diferente: varie a combinação de veículos, anos, lado e código
-- Não repetir as mesmas palavras em títulos diferentes
-- Não gerar título apenas com código
-- Código OEM só como complemento, nunca como título principal
-- Anos: resumir como 2020/2025 ou 20/25
-- Lado: usar D/E, T/D, T/E quando relevante
-- SEO para autopeças: termos que compradores reais usam
+Verifique cada item antes de retornar:
+1. Todos os veículos em compatibilidades_confirmadas têm confirmação OEM?
+2. Existe algum veículo inferido de anúncio ou dedução própria? Se sim, REMOVA.
+3. Os títulos usam somente veículos confirmados?
+4. O campo grau_de_confianca reflete corretamente a certeza sobre nome e compatibilidade?
 
-SHOPEE — 1 título exclusivo, até 100 caracteres:
-- Mais descritivo que o ML
-- Incluir palavras-chave de busca relevantes
-- Pode incluir mais modelos e detalhes que não cabem no ML
-
-OLX — 1 título exclusivo, até 100 caracteres:
-- Linguagem natural e comercial
-- Destacar compatibilidade e estado da peça (Original / Usada / Nova)
-- Mencionar o principal veículo compatível de forma clara
+Se qualquer dúvida sobre compatibilidade: retorne compatibilidades_confirmadas vazio e grau_de_confianca abaixo de 90.
 
 ═══════════════════════════════════════
-SAÍDA OBRIGATÓRIA — JSON PURO
+SAÍDA — JSON PURO
 ═══════════════════════════════════════
 
 Retorne SOMENTE o JSON abaixo, sem texto antes ou depois:
 
 {{
-  "mercado_livre": [
-    "Título ML 1 (55-60 chars, sem código, foco SEO)",
-    "Título ML 2 (55-60 chars, com código {codigo} no final)",
-    "Título ML 3 (55-60 chars, com anos ex: 2014/2024)",
-    "Título ML 4 (55-60 chars, com lado ou fabricante)"
+  "nome_peca": "Nome comercial da peça identificada pelo código OEM",
+  "oem": "{codigo}",
+  "compatibilidades_confirmadas": [
+    {{"veiculo": "Marca Modelo Versão Motor", "anos": "2021 2022 2023 2024 2025 2026", "detalhes": "1.6 Flex Automático"}}
   ],
-  "shopee": "Título Shopee completo com palavras-chave relevantes (máx 100 chars)",
-  "olx": "Título OLX natural e comercial com estado da peça e compatibilidade (máx 100 chars)",
-  "titulos_otimizados": ["mesmo conteúdo de mercado_livre[0]", "mercado_livre[1]", "mercado_livre[2]", "mercado_livre[3]"],
+  "grau_de_confianca": 95,
+  "mercado_livre": [
+    "Título ML 1 (55-60 chars)",
+    "Título ML 2 (55-60 chars)",
+    "Título ML 3 (55-60 chars)",
+    "Título ML 4 (55-60 chars)"
+  ],
+  "shopee": "Título Shopee (máx 100 chars)",
+  "olx": "Título OLX (máx 100 chars)",
+  "titulos_otimizados": ["cópia de mercado_livre[0]", "cópia [1]", "cópia [2]", "cópia [3]"],
   "titulo_ia": "Cópia de mercado_livre[1] com código {codigo} no final (máx 60 chars)",
   "preco_sugerido": 0.00,
   "preco_medio_mercado": 0.00,
   "preco_competitivo": 0.00,
   "preco_venda_rapida": 0.00,
   "preco_premium": 0.00,
-  "compatibilidade": [
-    {{"veiculo": "Renault Logan", "anos": "2014 a 2024", "status": "COMPATÍVEL"}}
-  ],
-  "versoes": [
-    {{"veiculo": "Renault Logan", "anos": "2014 2015 2016 2017 2018 2019 2020 2021 2022 2023 2024", "detalhes": "Motor 1.0 1.6 Flex"}}
-  ],
   "explicacao": "O que é a peça e para que serve (2 linhas máximo)",
   "funcao": "Função técnica resumida em 1 linha",
-  "categoria": "Categoria ML (ex: Motor e Câmbio, Suspensão, Elétrica, Freios, Carroceria, Ar-condicionado, Iluminação)",
+  "categoria": "Categoria ML",
   "ncm": "",
-  "seo_palavras_chave": ["palavra1", "palavra2", "palavra3"],
-  "observacoes": "Observações importantes sobre a peça, lado, fabricante preferencial"
+  "seo_palavras_chave": ["palavra1", "palavra2"],
+  "observacoes": "Observações sobre lado, fabricante, revisão necessária se confiança < 90"
 }}
 
-REGRAS FINAIS DO JSON:
-- mercado_livre: EXATAMENTE 4 títulos, entre 55 e 60 chars cada, todos diferentes
+REGRAS DO JSON:
+- mercado_livre: EXATAMENTE 4 títulos entre 55 e 60 chars, todos diferentes
 - shopee: máximo 100 chars
 - olx: máximo 100 chars
-- titulos_otimizados: MESMO conteúdo de mercado_livre (cópia obrigatória para compatibilidade)
+- titulos_otimizados: cópia de mercado_livre (compatibilidade legado)
 - titulo_ia: máximo 60 chars, código {codigo} SEMPRE no final
-- versoes.anos: cada ano INDIVIDUAL separado por espaço — NUNCA "a" nem "-"
-- versoes.detalhes: OBRIGATÓRIO — ex: "Motor 1.0 1.6 Flex" ou "2.0 Turbo Diesel"
-{"- compatibilidade: APENAS os veículos da lista OEM fornecida, sem adicionar nem remover nenhum" if compatibilidade_oem else "- compatibilidade: APENAS veículos CONFIRMADOS para este código exato, sem duplicatas"}
-- Nunca repetir o mesmo modelo duas vezes em compatibilidade ou versoes
-- Se não há compatibilidade confirmada: {{"veiculo": "Compatibilidade não identificada", "anos": "", "status": "NÃO IDENTIFICADA"}}
+{regra_compat_json}
+- compatibilidades_confirmadas[].anos: cada ano INDIVIDUAL separado por espaço (NUNCA "a" ou "-")
+- grau_de_confianca: 0-100; abaixo de 90 indica necessidade de revisão manual
 - preco_sugerido = preco_competitivo
 - Responda SOMENTE JSON válido, sem markdown, sem explicações"""
+
 
 def _ajustar_titulos(data, codigo):
     def limpar(titulo, maxlen=60):
@@ -519,13 +511,10 @@ def _ajustar_titulos(data, codigo):
         base = t[:espaco].strip()
         return f"{base} {codigo}"[:maxlen]
 
-    def enforcar_faixa(titulo, min_len=55, max_len=60):
-        t = limpar(titulo, max_len)
-        if len(t) < min_len and len(t) > 0:
-            pass  # mantém mesmo abaixo de 55 se a IA não conseguiu mais
-        return t
+    def enforcar_faixa(titulo, max_len=60):
+        return limpar(titulo, max_len)
 
-    # Processa mercado_livre (novo formato)
+    # Títulos ML
     ml = data.get("mercado_livre") or data.get("titulos_otimizados") or []
     while len(ml) < 4:
         ml.append(ml[-1] if ml else codigo)
@@ -536,25 +525,35 @@ def _ajustar_titulos(data, codigo):
         enforcar_faixa(ml[3]),
     ]
     data["mercado_livre"]      = ml_ajustados
-    data["titulos_otimizados"] = ml_ajustados  # compatibilidade com código legado
+    data["titulos_otimizados"] = ml_ajustados
 
-    # Shopee — até 100 chars
-    if data.get("shopee"):
-        data["shopee"] = limpar(data["shopee"], 100)
-    else:
-        data["shopee"] = limpar(ml_ajustados[0] + " " + codigo, 100)
+    # Shopee
+    data["shopee"] = limpar(data.get("shopee") or (ml_ajustados[0] + " " + codigo), 100)
 
-    # OLX — até 100 chars
-    if data.get("olx"):
-        data["olx"] = limpar(data["olx"], 100)
-    else:
-        data["olx"] = limpar(ml_ajustados[0], 100)
+    # OLX
+    data["olx"] = limpar(data.get("olx") or ml_ajustados[0], 100)
 
-    # titulo_ia — compatibilidade
-    if data.get("titulo_ia"):
-        data["titulo_ia"] = com_codigo(data["titulo_ia"])
-    else:
-        data["titulo_ia"] = ml_ajustados[1]
+    # titulo_ia
+    data["titulo_ia"] = com_codigo(data.get("titulo_ia") or ml_ajustados[1])
+
+    # Mapeia compatibilidades_confirmadas → compatibilidade (campo legado lido pelo frontend)
+    confirmadas = data.get("compatibilidades_confirmadas")
+    if isinstance(confirmadas, list):
+        data["compatibilidade"] = [
+            {"veiculo": c.get("veiculo", ""), "anos": c.get("anos", ""), "status": "COMPATÍVEL"}
+            for c in confirmadas
+        ]
+        data["versoes"] = [
+            {"veiculo": c.get("veiculo", ""), "anos": c.get("anos", ""), "detalhes": c.get("detalhes", "")}
+            for c in confirmadas
+        ]
+    elif not data.get("compatibilidade"):
+        data["compatibilidade"] = []
+        data["versoes"] = []
+
+    # grau_de_confianca — garante campo presente
+    if "grau_de_confianca" not in data:
+        data["grau_de_confianca"] = 0
 
     return data
 
