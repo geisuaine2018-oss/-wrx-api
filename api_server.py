@@ -357,11 +357,30 @@ def buscar_ml(codigo):
     return titles[:15], novos, usados
 
 # ─── IA: prompt + ajuste + chamada ────────────────────────────────────────────
-def _build_prompt(codigo, titles, prices):
+def _build_prompt(codigo, titles, prices, compatibilidade_oem=None):
     tlist = "\n".join(f"- {t}" for t in titles) if titles else "(sem anúncios encontrados — use seu conhecimento técnico do código OEM)"
     plist = ", ".join(f"R$ {p:.2f}" for p in prices) if prices else "(sem preços coletados — estime com base em concorrentes reais de auto peças)"
-    return f"""Você é um especialista profissional em Mercado Livre, SEO automotivo, auto peças, compatibilidade veicular e precificação inteligente.
 
+    if compatibilidade_oem:
+        linhas = "\n".join(
+            f"  - {c.get('veiculo','?')} | anos: {c.get('anos','?')}"
+            for c in compatibilidade_oem
+        )
+        bloco_oem = (
+            "\n╔══════════════════════════════════════════╗\n"
+            "║  COMPATIBILIDADE OEM CONFIRMADA          ║\n"
+            "╚══════════════════════════════════════════╝\n\n"
+            "Os veículos abaixo foram confirmados pelo fabricante para este código exato.\n"
+            "USE SOMENTE ESTA LISTA nos campos 'compatibilidade' e 'versoes' da resposta.\n"
+            "NÃO adicione veículos de anúncios do ML, SEO, IA ou inferência própria.\n"
+            "NÃO remova nenhum veículo desta lista.\n\n"
+            f"{linhas}\n"
+        )
+    else:
+        bloco_oem = ""
+
+    return f"""Você é um especialista profissional em Mercado Livre, SEO automotivo, auto peças, compatibilidade veicular e precificação inteligente.
+{bloco_oem}
 CÓDIGO OEM / PEÇA: {codigo}
 
 ANÚNCIOS COLETADOS DO MERCADO LIVRE (vendedores reais, independentes):
@@ -407,8 +426,7 @@ EXEMPLOS DE FORMATO:
 ═══════════════════════════════════════
 REGRAS DE COMPATIBILIDADE
 ═══════════════════════════════════════
-
-- Listar TODOS os modelos confirmados para este código exato
+{"- COMPATIBILIDADE OEM JÁ FORNECIDA ACIMA — use SOMENTE aquela lista. Não adicione, não remova, não infira outros veículos." if compatibilidade_oem else "- Listar TODOS os modelos confirmados para este código exato"}
 - NUNCA resumir anos (ERRADO: "2020 a 2025" | CERTO: cada ano individual)
 - Separar por veículo, expandir todos os anos individualmente
 - Incluir marca, modelo, versão, motorização, combustível, turbo quando existir
@@ -483,7 +501,7 @@ REGRAS FINAIS DO JSON:
 - titulo_ia: máximo 60 chars, código {codigo} SEMPRE no final
 - versoes.anos: cada ano INDIVIDUAL separado por espaço — NUNCA "a" nem "-"
 - versoes.detalhes: OBRIGATÓRIO — ex: "Motor 1.0 1.6 Flex" ou "2.0 Turbo Diesel"
-- compatibilidade: APENAS veículos CONFIRMADOS para este código exato, sem duplicatas
+{"- compatibilidade: APENAS os veículos da lista OEM fornecida, sem adicionar nem remover nenhum" if compatibilidade_oem else "- compatibilidade: APENAS veículos CONFIRMADOS para este código exato, sem duplicatas"}
 - Nunca repetir o mesmo modelo duas vezes em compatibilidade ou versoes
 - Se não há compatibilidade confirmada: {{"veiculo": "Compatibilidade não identificada", "anos": "", "status": "NÃO IDENTIFICADA"}}
 - preco_sugerido = preco_competitivo
@@ -607,7 +625,7 @@ def _identificar_nome_peca(codigo):
     return ""
 
 # ─── Lógica principal de busca ────────────────────────────────────────────────
-def executar_busca(codigo):
+def executar_busca(codigo, compatibilidade_oem=None):
     titles, novos, usados = buscar_ml(codigo)
     ml_achou = bool(titles or novos or usados)
     print(f"[WRX] ML achou: titles={len(titles)} novos={len(novos)} usados={len(usados)}")
@@ -622,9 +640,12 @@ def executar_busca(codigo):
                 titles, novos, usados = t2, n2, u2
                 ml_achou = True
 
+    if compatibilidade_oem:
+        print(f"[WRX] Usando compatibilidade OEM confirmada: {len(compatibilidade_oem)} veículos")
+
     prices    = novos or usados
     preco_ref = calcular_preco_sugerido(prices)
-    prompt    = _build_prompt(codigo, titles, prices[:10])
+    prompt    = _build_prompt(codigo, titles, prices[:10], compatibilidade_oem=compatibilidade_oem)
     data      = _chamar_ia(prompt)
 
     if not data:
@@ -702,8 +723,23 @@ if USE_FLASK:
         codigo = request.args.get("q", "").strip()
         if not codigo:
             return jsonify({"erro": "Parâmetro ?q= obrigatório"}), 400
-        print(f"[WRX-API] Buscando: {codigo}")
-        resultado = executar_busca(codigo)
+        # Compatibilidade OEM confirmada enviada pelo frontend (JSON array)
+        compatibilidade_oem = None
+        raw_compat = request.args.get("compatibilidade_oem", "").strip()
+        if raw_compat:
+            try:
+                parsed = json.loads(raw_compat)
+                if isinstance(parsed, list) and parsed:
+                    compatibilidade_oem = [
+                        {"veiculo": str(c.get("veiculo", c.get("v", ""))).strip(),
+                         "anos": str(c.get("anos", c.get("a", ""))).strip()}
+                        for c in parsed
+                        if c.get("veiculo") or c.get("v")
+                    ] or None
+            except Exception:
+                pass
+        print(f"[WRX-API] Buscando: {codigo}" + (f" | OEM compat: {len(compatibilidade_oem)} veículos" if compatibilidade_oem else ""))
+        resultado = executar_busca(codigo, compatibilidade_oem=compatibilidade_oem)
         print(f"[WRX-API] Concluído: {codigo}")
         return jsonify(resultado)
 
