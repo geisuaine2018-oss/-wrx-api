@@ -483,13 +483,18 @@ def register_routes(app, cfg_fn):
             return _options()
         data = request.get_json(force=True) or {}
         oem = (data.get("oem") or "").strip().upper()
+        nome_peca = (data.get("nome_peca") or "").strip()
         if not oem or len(oem) < 4:
             return jsonify({"ok": False, "erro": "OEM inválido (mínimo 4 caracteres)"}), 400
 
-        print(f"[OEM-COMPAT] Buscando: {oem}")
+        print(f"[OEM-COMPAT] Buscando OEM: {oem}" + (f" | nome: {nome_peca}" if nome_peca else ""))
         t0 = time.time()
 
         anuncios_brutos = _buscar_ml(oem)
+        # Se OEM não tem resultados mas temos o nome da peça, busca por nome
+        if not anuncios_brutos and nome_peca and len(nome_peca) > 5:
+            print(f"[OEM-COMPAT] OEM sem resultado, buscando por nome: {nome_peca}")
+            anuncios_brutos = _buscar_ml(nome_peca)
         if not anuncios_brutos:
             return jsonify({
                 "ok": False,
