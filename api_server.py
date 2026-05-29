@@ -416,19 +416,46 @@ REGRAS DE COMPATIBILIDADE
 - Peças de carroceria (porta, capô, farol, etc.) só incluem motor se houver diferença entre versões
 
 ═══════════════════════════════════════
+REGRAS DOS TÍTULOS — OBRIGATÓRIO
+═══════════════════════════════════════
+
+MERCADO LIVRE — 4 títulos diferentes, cada um entre 55 e 60 caracteres:
+- Prioridade: PEÇA > MARCA > MODELO > MOTOR > ANOS > LADO > FABRICANTE > CÓDIGO
+- Cada título deve ter conteúdo diferente: varie a combinação de veículos, anos, lado e código
+- Não repetir as mesmas palavras em títulos diferentes
+- Não gerar título apenas com código
+- Código OEM só como complemento, nunca como título principal
+- Anos: resumir como 2020/2025 ou 20/25
+- Lado: usar D/E, T/D, T/E quando relevante
+- SEO para autopeças: termos que compradores reais usam
+
+SHOPEE — 1 título exclusivo, até 100 caracteres:
+- Mais descritivo que o ML
+- Incluir palavras-chave de busca relevantes
+- Pode incluir mais modelos e detalhes que não cabem no ML
+
+OLX — 1 título exclusivo, até 100 caracteres:
+- Linguagem natural e comercial
+- Destacar compatibilidade e estado da peça (Original / Usada / Nova)
+- Mencionar o principal veículo compatível de forma clara
+
+═══════════════════════════════════════
 SAÍDA OBRIGATÓRIA — JSON PURO
 ═══════════════════════════════════════
 
 Retorne SOMENTE o JSON abaixo, sem texto antes ou depois:
 
 {{
-  "titulos_otimizados": [
-    "Título 1 sem código OEM (máx 60 chars)",
-    "Título 2 com código OEM no final (máx 60 chars)",
-    "Título 3 com anos resumidos ex: 2014/2024 (máx 60 chars)",
-    "Título 4 com fabricante ou lado (máx 60 chars)"
+  "mercado_livre": [
+    "Título ML 1 (55-60 chars, sem código, foco SEO)",
+    "Título ML 2 (55-60 chars, com código {codigo} no final)",
+    "Título ML 3 (55-60 chars, com anos ex: 2014/2024)",
+    "Título ML 4 (55-60 chars, com lado ou fabricante)"
   ],
-  "titulo_ia": "Título completo com código {codigo} no final (máx 60 chars)",
+  "shopee": "Título Shopee completo com palavras-chave relevantes (máx 100 chars)",
+  "olx": "Título OLX natural e comercial com estado da peça e compatibilidade (máx 100 chars)",
+  "titulos_otimizados": ["mesmo conteúdo de mercado_livre[0]", "mercado_livre[1]", "mercado_livre[2]", "mercado_livre[3]"],
+  "titulo_ia": "Cópia de mercado_livre[1] com código {codigo} no final (máx 60 chars)",
   "preco_sugerido": 0.00,
   "preco_medio_mercado": 0.00,
   "preco_competitivo": 0.00,
@@ -449,40 +476,68 @@ Retorne SOMENTE o JSON abaixo, sem texto antes ou depois:
 }}
 
 REGRAS FINAIS DO JSON:
-- titulos_otimizados: EXATAMENTE 4, máximo 60 chars cada
+- mercado_livre: EXATAMENTE 4 títulos, entre 55 e 60 chars cada, todos diferentes
+- shopee: máximo 100 chars
+- olx: máximo 100 chars
+- titulos_otimizados: MESMO conteúdo de mercado_livre (cópia obrigatória para compatibilidade)
 - titulo_ia: máximo 60 chars, código {codigo} SEMPRE no final
 - versoes.anos: cada ano INDIVIDUAL separado por espaço — NUNCA "a" nem "-"
 - versoes.detalhes: OBRIGATÓRIO — ex: "Motor 1.0 1.6 Flex" ou "2.0 Turbo Diesel"
 - compatibilidade: APENAS veículos CONFIRMADOS para este código exato, sem duplicatas
 - Nunca repetir o mesmo modelo duas vezes em compatibilidade ou versoes
+- Se não há compatibilidade confirmada: {{"veiculo": "Compatibilidade não identificada", "anos": "", "status": "NÃO IDENTIFICADA"}}
 - preco_sugerido = preco_competitivo
 - Responda SOMENTE JSON válido, sem markdown, sem explicações"""
 
 def _ajustar_titulos(data, codigo):
-    def so_truncar(titulo):
-        if not titulo: return titulo
-        t = titulo.strip().replace("  ", " ").replace(codigo, "").strip()
-        return t[:60].strip()
+    def limpar(titulo, maxlen=60):
+        if not titulo: return ""
+        return titulo.strip().replace("  ", " ")[:maxlen].strip()
 
-    def com_codigo(titulo):
-        if not titulo: return titulo
+    def com_codigo(titulo, maxlen=60):
+        if not titulo: return ""
         t = titulo.strip().replace(codigo, "").strip()
-        espaco = 60 - len(codigo) - 1
+        espaco = maxlen - len(codigo) - 1
         base = t[:espaco].strip()
-        return f"{base} {codigo}"[:60]
+        return f"{base} {codigo}"[:maxlen]
 
-    if "titulos_otimizados" in data:
-        titulos = data["titulos_otimizados"]
-        while len(titulos) < 4:
-            titulos.append(titulos[-1] if titulos else codigo)
-        data["titulos_otimizados"] = [
-            so_truncar(titulos[0]),
-            com_codigo(titulos[1]),
-            so_truncar(titulos[2]),
-            so_truncar(titulos[3]),
-        ]
-    if "titulo_ia" in data:
+    def enforcar_faixa(titulo, min_len=55, max_len=60):
+        t = limpar(titulo, max_len)
+        if len(t) < min_len and len(t) > 0:
+            pass  # mantém mesmo abaixo de 55 se a IA não conseguiu mais
+        return t
+
+    # Processa mercado_livre (novo formato)
+    ml = data.get("mercado_livre") or data.get("titulos_otimizados") or []
+    while len(ml) < 4:
+        ml.append(ml[-1] if ml else codigo)
+    ml_ajustados = [
+        enforcar_faixa(ml[0]),
+        com_codigo(ml[1]),
+        enforcar_faixa(ml[2]),
+        enforcar_faixa(ml[3]),
+    ]
+    data["mercado_livre"]      = ml_ajustados
+    data["titulos_otimizados"] = ml_ajustados  # compatibilidade com código legado
+
+    # Shopee — até 100 chars
+    if data.get("shopee"):
+        data["shopee"] = limpar(data["shopee"], 100)
+    else:
+        data["shopee"] = limpar(ml_ajustados[0] + " " + codigo, 100)
+
+    # OLX — até 100 chars
+    if data.get("olx"):
+        data["olx"] = limpar(data["olx"], 100)
+    else:
+        data["olx"] = limpar(ml_ajustados[0], 100)
+
+    # titulo_ia — compatibilidade
+    if data.get("titulo_ia"):
         data["titulo_ia"] = com_codigo(data["titulo_ia"])
+    else:
+        data["titulo_ia"] = ml_ajustados[1]
+
     return data
 
 def _chamar_ia(prompt):
