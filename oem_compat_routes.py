@@ -235,6 +235,102 @@ def _buscar_ml(oem):
     return _buscar_ml_api(oem)
 
 
+# ─── Compatibilidade via IA (catálogo OEM) ───────────────────────────────────
+
+def _buscar_compat_via_ia(oem, nome_peca, cfg):
+    """Consulta IA com conhecimento de catálogo OEM para determinar compatibilidade."""
+    api_key = cfg.get("api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
+    gemini_key = cfg.get("gemini_key") or os.environ.get("GEMINI_KEY", "")
+    nome_ctx = f"\nNome da peça registrado no sistema: {nome_peca}" if nome_peca else ""
+
+    prompt = f"""Você é um especialista em catálogos de autopeças OEM para o mercado brasileiro.
+
+Código OEM: {oem}{nome_ctx}
+
+TAREFA: Determine a compatibilidade veicular deste código OEM.
+
+REGRAS ABSOLUTAS:
+1. Use SOMENTE conhecimento de catálogos oficiais de fabricantes
+2. NUNCA invente compatibilidade — se não tiver certeza, retorne lista vazia
+3. Cada veículo deve ter marca, modelo, motor e anos confirmados
+4. grau_de_confianca: 90-100 = confirmado por catálogo, 70-89 = provável, abaixo de 70 = incerto
+
+Retorne SOMENTE JSON válido:
+{{
+  "nome_peca": "nome comercial da peça",
+  "compatibilidades_confirmadas": [
+    {{"veiculo": "Marca Modelo Versão Motor", "anos": "2018 2019 2020 2021", "detalhes": "1.6 Flex"}}
+  ],
+  "grau_de_confianca": 0,
+  "observacoes": "fonte do catálogo ou aviso se incerto"
+}}
+
+Se não souber a peça ou compatibilidade: retorne compatibilidades_confirmadas vazio e grau_de_confianca 0."""
+
+    def _chamar_gemini(key, p):
+        for modelo in ["gemini-2.5-flash", "gemini-2.0-flash"]:
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={key}"
+                r = requests.post(url, json={
+                    "contents": [{"parts": [{"text": p}]}],
+                    "generationConfig": {"maxOutputTokens": 600, "temperature": 0.1,
+                                        "thinkingConfig": {"thinkingBudget": 0}}
+                }, timeout=30)
+                if r.status_code == 200:
+                    parts = r.json()["candidates"][0]["content"]["parts"]
+                    text = " ".join(x["text"] for x in parts if "text" in x)
+                    m = re.search(r"\{[\s\S]*\}", text)
+                    if m:
+                        return json.loads(m.group(0))
+            except Exception:
+                continue
+        return None
+
+    def _chamar_claude(key, p):
+        try:
+            r = requests.post("https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={"model": "claude-haiku-4-5-20251001", "max_tokens": 600,
+                      "messages": [{"role": "user", "content": p}]}, timeout=30)
+            text = r.json()["content"][0]["text"]
+            m = re.search(r"\{[\s\S]*\}", text)
+            return json.loads(m.group(0)) if m else None
+        except Exception:
+            return None
+
+    resultado = None
+    provider = cfg.get("provider", "gemini")
+    if provider == "gemini" and gemini_key:
+        resultado = _chamar_gemini(gemini_key, prompt)
+    if not resultado and api_key:
+        resultado = _chamar_claude(api_key, prompt)
+    if not resultado and gemini_key:
+        resultado = _chamar_gemini(gemini_key, prompt)
+
+    if not resultado:
+        return {"compatibilidades_confirmadas": [], "grau_de_confianca": 0,
+                "nome_peca": nome_peca or oem, "observacoes": "IA indisponível"}
+
+    # Garante campos obrigatórios
+    resultado.setdefault("compatibilidades_confirmadas", [])
+    resultado.setdefault("grau_de_confianca", 0)
+    resultado.setdefault("nome_peca", nome_peca or oem)
+
+    # Normaliza lista de compatibilidades para o formato do frontend
+    compat = resultado.get("compatibilidades_confirmadas") or []
+    resultado["anuncios"] = [
+        {"veiculo": c.get("veiculo",""), "anos": c.get("anos",""),
+         "motor": c.get("detalhes",""), "titulo_original": c.get("veiculo","")}
+        for c in compat
+    ]
+    resultado["consenso"] = {
+        "compatibilidades": compat,
+        "confianca": resultado.get("grau_de_confianca", 0)
+    }
+    return resultado
+
+
 # ─── Análise com AI ──────────────────────────────────────────────────────────
 
 def _extrair_com_ai(anuncios, oem, cfg):
@@ -489,30 +585,17 @@ def register_routes(app, cfg_fn):
 
         print(f"[OEM-COMPAT] Buscando OEM: {oem}" + (f" | nome: {nome_peca}" if nome_peca else ""))
         t0 = time.time()
-
-        anuncios_brutos = _buscar_ml(oem)
-        # Se OEM não tem resultados mas temos o nome da peça, busca por nome
-        if not anuncios_brutos and nome_peca and len(nome_peca) > 5:
-            print(f"[OEM-COMPAT] OEM sem resultado, buscando por nome: {nome_peca}")
-            anuncios_brutos = _buscar_ml(nome_peca)
-        if not anuncios_brutos:
-            return jsonify({
-                "ok": False,
-                "oem": oem,
-                "erro": "Nenhum anúncio encontrado no ML para este OEM",
-                "tempo_s": round(time.time() - t0, 1)
-            })
-
         cfg = cfg_fn()
-        anuncios = _extrair_com_ai(anuncios_brutos, oem, cfg)
-        consenso = _calcular_consenso(anuncios)
 
+        # ML bloqueado no Railway — usa IA diretamente com conhecimento de catálogo OEM
+        resultado_ia = _buscar_compat_via_ia(oem, nome_peca, cfg)
+        print(f"[OEM-COMPAT] IA retornou {len(resultado_ia.get('compatibilidades_confirmadas') or [])} compatibilidades em {round(time.time()-t0,1)}s")
         return jsonify({
             "ok": True,
             "oem": oem,
+            "fonte": "ia_catalogo",
             "tempo_s": round(time.time() - t0, 1),
-            "anuncios": anuncios,
-            **consenso
+            **resultado_ia
         })
 
     @app.route("/compatibilidade/salvar", methods=["POST", "OPTIONS"])
