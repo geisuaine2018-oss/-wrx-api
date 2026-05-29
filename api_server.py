@@ -1679,6 +1679,7 @@ if USE_FLASK:
         return jsonify({"configured": configured, "tokenSaved": token_saved, "authUrl": auth_url})
 
     @app.route("/integracoes/olx/oauth/callback")
+    @app.route("/callback/olx")
     def olx_oauth_callback():
         global _olx_token_mem
         code = request.args.get("code", "")
