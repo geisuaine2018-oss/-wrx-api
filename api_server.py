@@ -1366,6 +1366,19 @@ if USE_FLASK:
         }
         if fotos:
             ml_payload["pictures"] = [{"source": f} for f in fotos[:10]]
+        attrs = list(data.get("attributes") or [])
+        # Garante PART_NUMBER e BRAND (obrigatórios no modo catálogo ML)
+        attr_ids = {a.get("id") for a in attrs}
+        if "PART_NUMBER" not in attr_ids and sku:
+            attrs.append({"id": "PART_NUMBER", "value_name": sku})
+        if "BRAND" not in attr_ids:
+            # Tenta extrair marca do título: pega a última palavra com 3+ chars antes de números
+            import re as _re
+            brand_m = _re.search(r'\b([A-Za-záéíóúãõç]{3,})\s+\d{4}', _titulo)
+            brand_val = brand_m.group(1).capitalize() if brand_m else "Genérico"
+            attrs.append({"id": "BRAND", "value_name": brand_val})
+        if attrs:
+            ml_payload["attributes"] = attrs
         try:
             _r = requests.post(
                 "https://api.mercadolibre.com/items",
