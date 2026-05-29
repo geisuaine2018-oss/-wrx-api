@@ -807,6 +807,13 @@ except ImportError:
 if USE_FLASK:
     app = Flask(__name__)
 
+    # ── Módulo de compatibilidade OEM (Playwright + ML) ──────────────────────
+    try:
+        from oem_compat_routes import register_routes as _reg_oem_compat
+        _reg_oem_compat(app, carregar_config)
+    except Exception as _e_oem:
+        print(f"[OEM-COMPAT] Módulo não carregado: {_e_oem}")
+
     def _cors(resp):
         resp.headers["Access-Control-Allow-Origin"]  = "*"
         resp.headers.setdefault("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
