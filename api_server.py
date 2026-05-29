@@ -1191,6 +1191,7 @@ if USE_FLASK:
                                 headers={"Authorization": f"Bearer {token}"}, timeout=10).json()
             test_payload = {
                 "title": "Teste API",
+                "family_name": "Teste API",
                 "category_id": "MLB3530",
                 "price": 10.0,
                 "currency_id": "BRL",
@@ -1353,6 +1354,7 @@ if USE_FLASK:
         _titulo = (data.get("titulo", "") or data.get("nomeInterno", ""))[:60]
         ml_payload = {
             "title": _titulo,
+            "family_name": (data.get("family_name") or _titulo)[:60],
             "category_id": data.get("mlCategoryId", "") or "MLB3530",
             "price": preco,
             "currency_id": "BRL",
