@@ -506,10 +506,40 @@ def _build_prompt(codigo, titles, prices, compatibilidade_oem=None,
     plist = ", ".join(f"R$ {p:.2f}" for p in prices) if prices else "(sem preços coletados — estime com base em concorrentes reais)"
 
     if compatibilidade_oem:
+        # Monta lista de veículos confirmados para uso nos exemplos
+        veiculos_lista = []
+        for c in compatibilidade_oem:
+            v = c.get('veiculo', '?')
+            a = c.get('anos', '')
+            anos_list = a.split() if a else []
+            ano_ini = anos_list[0] if anos_list else ''
+            ano_fim = anos_list[-1] if anos_list else ''
+            faixa = f"{ano_ini}/{ano_fim}" if ano_ini and ano_fim and ano_ini != ano_fim else ano_ini
+            veiculos_lista.append({'veiculo': v, 'anos': a, 'faixa': faixa, 'detalhes': c.get('detalhes', '')})
+
         linhas_oem = "\n".join(
-            f"  {i+1}. {c.get('veiculo','?')} | anos: {c.get('anos','?')}"
-            for i, c in enumerate(compatibilidade_oem)
+            f"  {i+1}. {v['veiculo']} | anos: {v['anos']}"
+            for i, v in enumerate(veiculos_lista)
         )
+
+        # Extrai modelos únicos para exemplos de títulos
+        modelos_unicos = list(dict.fromkeys(
+            v['veiculo'].split()[1] if len(v['veiculo'].split()) > 1 else v['veiculo']
+            for v in veiculos_lista
+        ))
+        marcas_unicas = list(dict.fromkeys(v['veiculo'].split()[0] for v in veiculos_lista))
+        marca_ex = marcas_unicas[0] if marcas_unicas else 'Marca'
+        modelo_ex1 = modelos_unicos[0] if modelos_unicos else 'Modelo'
+        modelo_ex2 = modelos_unicos[1] if len(modelos_unicos) > 1 else modelo_ex1
+        faixa_ex = veiculos_lista[0]['faixa'] if veiculos_lista else '2021/2024'
+        nome_ex = nome_peca_confirmado or 'Peça OEM'
+
+        # Monta lista de bullets para descricao_completa
+        bullets_desc = "\n".join(
+            f"• {v['veiculo']} {v['faixa']}"
+            for v in veiculos_lista
+        )
+
         bloco_compat = (
             "╔══════════════════════════════════════════╗\n"
             "║  COMPATIBILIDADE OEM CONFIRMADA          ║\n"
@@ -517,28 +547,61 @@ def _build_prompt(codigo, titles, prices, compatibilidade_oem=None,
             "Fonte: catálogo oficial / base interna validada.\n\n"
             f"{linhas_oem}\n\n"
             "REGRA ABSOLUTA: use SOMENTE estes veículos em 'compatibilidades_confirmadas'.\n"
-            "PROIBIDO adicionar qualquer outro veículo — mesmo que apareça em anúncios do ML,\n"
-            "títulos, descrições ou seja sugerido por SEO, IA ou inferência própria.\n"
+            "PROIBIDO adicionar qualquer outro veículo.\n"
         )
+
         regra_compat_json = (
             "- compatibilidades_confirmadas: SOMENTE os veículos da lista OEM acima, sem adicionar nem remover"
         )
+
+        regra_titulos = f"""
+REGRAS OBRIGATÓRIAS DE TÍTULO (compatibilidade OEM confirmada):
+
+━━━ PROIBIDO ━━━
+✗ Títulos genéricos sem veículo: "Filtro De Ar Original Motor Performance Premium"
+✗ Adjetivos vazios sem referência de veículo: "Qualidade Superior", "Premium", "Original" sozinhos
+✗ Título com apenas o código OEM
+✗ Código OEM em mais de 1 dos 4 títulos
+
+━━━ OBRIGATÓRIO ━━━
+✓ Cada título DEVE conter: Nome da Peça + Marca + Modelo (da lista OEM confirmada)
+✓ Com múltiplos modelos: distribuir entre os 4 títulos, cobrindo todos os veículos
+
+━━━ EXEMPLOS COM OS DADOS DESTE OEM ━━━
+CORRETO: "{nome_ex} {marca_ex} {modelo_ex1} {modelo_ex2} {faixa_ex}"
+CORRETO: "{nome_ex} {marca_ex} {modelo_ex1} {faixa_ex} OEM {codigo}"
+CORRETO: "{nome_ex} {marca_ex} {modelo_ex2} {faixa_ex} Original"
+CORRETO: "{nome_ex} {marca_ex} {modelo_ex1} {modelo_ex2} Código {codigo}"
+
+━━━ DISTRIBUIÇÃO DOS 4 TÍTULOS ━━━
+- Título 1: nome_peca + modelo principal + faixa de anos
+- Título 2: nome_peca + segundo modelo (se houver) + motor
+- Título 3: nome_peca + todos os modelos abreviados + código OEM (1x)
+- Título 4: nome_peca + marca + motor + faixa de anos
+
+━━━ BULLETS PARA descricao_completa ━━━
+Use exatamente esta lista de compatibilidades (uma por linha):
+{bullets_desc}
+"""
     else:
         bloco_compat = (
             "╔══════════════════════════════════════════╗\n"
             "║  SEM COMPATIBILIDADE OEM FORNECIDA       ║\n"
             "╚══════════════════════════════════════════╝\n\n"
             "Nenhuma compatibilidade confirmada foi recebida para este código.\n"
-            "REGRA ABSOLUTA: NÃO deduza compatibilidade a partir de:\n"
-            "  - anúncios do Mercado Livre\n"
-            "  - títulos ou descrições de vendedores\n"
-            "  - SEO, palavras semelhantes, modelos parecidos\n"
-            "  - conhecimento geral ou inferência própria\n\n"
-            "Se não há confirmação OEM, retorne 'compatibilidades_confirmadas' como lista vazia.\n"
+            "REGRA ABSOLUTA: NÃO deduza compatibilidade a partir de anúncios,\n"
+            "títulos, SEO ou inferência própria.\n"
+            "Retorne 'compatibilidades_confirmadas' como lista vazia.\n"
         )
         regra_compat_json = (
             "- compatibilidades_confirmadas: lista VAZIA [] quando não há confirmação OEM"
         )
+        bullets_desc = "(sem compatibilidade confirmada)"
+        regra_titulos = """
+TÍTULOS SEM COMPATIBILIDADE CONFIRMADA:
+- Use apenas: nome da peça + variações (Original, OEM, Novo, código)
+- Não inventar veículos
+"""
 
     if nome_peca_confirmado:
         bloco_nome = (
@@ -547,9 +610,8 @@ def _build_prompt(codigo, titles, prices, compatibilidade_oem=None,
             "╚══════════════════════════════════════════╝\n\n"
             f"Nome confirmado pelo Mercado Livre via correspondência OEM exata:\n"
             f"  → {nome_peca_confirmado}\n\n"
-            "REGRA ABSOLUTA: use ESTE nome no campo 'nome_peca'. NÃO altere, NÃO substitua,\n"
-            "NÃO use conhecimento próprio para mudar a identificação da peça.\n"
-            "Os títulos gerados devem usar este nome como base.\n"
+            "REGRA ABSOLUTA: use ESTE nome no campo 'nome_peca'. NÃO altere, NÃO substitua.\n"
+            "Todos os títulos devem usar este nome como base.\n"
         )
     else:
         bloco_nome = (
@@ -574,40 +636,43 @@ ANÚNCIOS COLETADOS DO MERCADO LIVRE (referência de preço SOMENTE):
 PREÇOS ENCONTRADOS:
 {plist}
 
-Ignorar como referência de preço: concessionárias, montadoras, fabricantes oficiais.
+Ignorar: concessionárias, montadoras, fabricantes oficiais.
 Usar: vendedores independentes com boa reputação.
 Calcular 4 faixas: médio mercado, competitivo, venda rápida, premium.
 
 ═══════════════════════════════════════
-ETAPA 3 — TÍTULOS
+ETAPA 3 — TÍTULOS MERCADO LIVRE
 ═══════════════════════════════════════
-
-MERCADO LIVRE — exatamente 4 títulos, entre 55 e 60 caracteres cada:
-- Prioridade: PEÇA > VEÍCULO CONFIRMADO > MOTOR > ANOS > LADO > CÓDIGO
-- Use somente veículos da lista OEM confirmada nos títulos
-- Se não há compatibilidade confirmada, use apenas peça + variações (Original, Novo, OEM, etc.)
-- PROIBIDO: título que seja APENAS o código OEM (ex: "4605885905" é inválido como título)
-- PROIBIDO: repetir o mesmo código OEM em todos os 4 títulos
-- O código OEM pode aparecer no máximo em 1 dos 4 títulos, como complemento no final
-- Não repetir palavras entre títulos; não usar emojis
-- Anos: resumir como 2021/2026 ou 21/26
-- Se você não souber o nome da peça, use "Peça Automotiva" + descrição genérica
-
-SHOPEE — 1 título, até 100 caracteres, mais descritivo que ML.
-
-OLX — 1 título, até 100 caracteres, tom comercial.
+{regra_titulos}
+SHOPEE — 1 título, até 100 caracteres, descritivo, com veículo e código OEM.
+OLX — 1 título, até 100 caracteres, tom comercial, com veículo.
 
 ═══════════════════════════════════════
-VALIDAÇÃO FINAL ANTES DE RESPONDER
+ETAPA 4 — DESCRIÇÃO COMPLETA
 ═══════════════════════════════════════
 
-Verifique cada item antes de retornar:
-1. Todos os veículos em compatibilidades_confirmadas têm confirmação OEM?
-2. Existe algum veículo inferido de anúncio ou dedução própria? Se sim, REMOVA.
-3. Os títulos usam somente veículos confirmados?
-4. O campo grau_de_confianca reflete corretamente a certeza sobre nome e compatibilidade?
+Gere o campo "descricao_completa" com este formato EXATO (substitua os valores):
 
-Se qualquer dúvida sobre compatibilidade: retorne compatibilidades_confirmadas vazio e grau_de_confianca abaixo de 90.
+CÓDIGO OEM:
+{codigo}
+
+APLICAÇÃO:
+[função específica da peça no veículo — 1 linha técnica objetiva]
+
+COMPATIBILIDADE:
+{bullets_desc}
+
+OBSERVAÇÕES:
+[notas técnicas relevantes: lado, variantes, revisão manual se necessário]
+
+═══════════════════════════════════════
+VALIDAÇÃO FINAL
+═══════════════════════════════════════
+
+1. Os títulos contêm marca + modelo do OEM confirmado? (se não, REESCREVA)
+2. Existe veículo inferido em compatibilidades_confirmadas? (se sim, REMOVA)
+3. O código OEM aparece em no máximo 1 dos 4 títulos?
+4. descricao_completa usa o formato exato solicitado?
 
 ═══════════════════════════════════════
 SAÍDA — JSON PURO
@@ -619,19 +684,19 @@ Retorne SOMENTE o JSON abaixo, sem texto antes ou depois:
   "nome_peca": "Nome comercial da peça identificada pelo código OEM",
   "oem": "{codigo}",
   "compatibilidades_confirmadas": [
-    {{"veiculo": "Marca Modelo Versão Motor", "anos": "2021 2022 2023 2024 2025 2026", "detalhes": "1.6 Flex Automático"}}
+    {{"veiculo": "Marca Modelo Versão Motor", "anos": "2021 2022 2023 2024", "detalhes": "1.3 Turbo Flex"}}
   ],
   "grau_de_confianca": 95,
   "mercado_livre": [
-    "Título ML 1 (55-60 chars)",
-    "Título ML 2 (55-60 chars)",
-    "Título ML 3 (55-60 chars)",
-    "Título ML 4 (55-60 chars)"
+    "Título ML 1 com veículo (55-60 chars)",
+    "Título ML 2 com veículo (55-60 chars)",
+    "Título ML 3 com veículo (55-60 chars)",
+    "Título ML 4 com veículo (55-60 chars)"
   ],
-  "shopee": "Título Shopee (máx 100 chars)",
-  "olx": "Título OLX (máx 100 chars)",
+  "shopee": "Título Shopee com veículo e OEM (máx 100 chars)",
+  "olx": "Título OLX com veículo (máx 100 chars)",
   "titulos_otimizados": ["cópia de mercado_livre[0]", "cópia [1]", "cópia [2]", "cópia [3]"],
-  "titulo_ia": "Cópia de mercado_livre[1] com código {codigo} no final (máx 60 chars)",
+  "titulo_ia": "Cópia de mercado_livre[0] com código {codigo} no final (máx 60 chars)",
   "preco_sugerido": 0.00,
   "preco_medio_mercado": 0.00,
   "preco_competitivo": 0.00,
@@ -639,21 +704,25 @@ Retorne SOMENTE o JSON abaixo, sem texto antes ou depois:
   "preco_premium": 0.00,
   "explicacao": "O que é a peça e para que serve (2 linhas máximo)",
   "funcao": "Função técnica resumida em 1 linha",
-  "categoria": "Categoria ML",
+  "descricao_completa": "CÓDIGO OEM:\\n{codigo}\\n\\nAPLICAÇÃO:\\n...\\n\\nCOMPATIBILIDADE:\\n• ...\\n\\nOBSERVAÇÕES:\\n...",
+  "categoria": "Categoria ML exata",
   "ncm": "",
-  "seo_palavras_chave": ["palavra1", "palavra2"],
-  "observacoes": "Observações sobre lado, fabricante, revisão necessária se confiança < 90"
+  "cest": "",
+  "seo_palavras_chave": ["palavra com veículo", "OEM e modelo", "marca modelo peça"],
+  "observacoes": "Notas técnicas (lado, variantes, OEM original vs similar)"
 }}
 
 REGRAS DO JSON:
-- mercado_livre: EXATAMENTE 4 títulos entre 55 e 60 chars, todos diferentes
+- mercado_livre: EXATAMENTE 4 títulos entre 55 e 60 chars, todos diferentes, TODOS com veículo da lista OEM
 - shopee: máximo 100 chars
 - olx: máximo 100 chars
-- titulos_otimizados: cópia de mercado_livre (compatibilidade legado)
+- titulos_otimizados: cópia exata de mercado_livre
 - titulo_ia: máximo 60 chars, código {codigo} SEMPRE no final
 {regra_compat_json}
 - compatibilidades_confirmadas[].anos: cada ano INDIVIDUAL separado por espaço (NUNCA "a" ou "-")
-- grau_de_confianca: 0-100; abaixo de 90 indica necessidade de revisão manual
+- descricao_completa: campo obrigatório no formato CÓDIGO OEM / APLICAÇÃO / COMPATIBILIDADE / OBSERVAÇÕES
+- seo_palavras_chave: inclua marca, modelo e código OEM nas keywords
+- grau_de_confianca: 0-100
 - preco_sugerido = preco_competitivo
 - Responda SOMENTE JSON válido, sem markdown, sem explicações"""
 
