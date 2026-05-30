@@ -534,11 +534,17 @@ def _build_prompt(codigo, titles, prices, compatibilidade_oem=None,
         faixa_ex = veiculos_lista[0]['faixa'] if veiculos_lista else '2021/2024'
         nome_ex = nome_peca_confirmado or 'Peça OEM'
 
-        # Monta lista de bullets para descricao_completa
-        bullets_desc = "\n".join(
-            f"• {v['veiculo']} {v['faixa']}"
-            for v in veiculos_lista
-        )
+        # Monta bullets expandidos por ano (um por linha) para descricao_completa
+        import re as _re
+        bullets_grupos = []
+        for v in veiculos_lista:
+            anos_indiv = [a for a in v['anos'].split() if _re.match(r'^(19|20)\d{2}$', a)]
+            if anos_indiv:
+                grupo = "\n".join(f"• {v['veiculo']} {ano}" for ano in anos_indiv)
+            else:
+                grupo = f"• {v['veiculo']} {v['faixa']}"
+            bullets_grupos.append(grupo)
+        bullets_desc = "\n\n".join(bullets_grupos)  # linha em branco entre veículos diferentes
 
         bloco_compat = (
             "╔══════════════════════════════════════════╗\n"
