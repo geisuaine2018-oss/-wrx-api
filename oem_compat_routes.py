@@ -583,7 +583,7 @@ def register_routes(app, cfg_fn):
             confianca = cache[0].get("confianca", 0)
             compat = [
                 {
-                    "veiculo": f"{row.get('marca','')} {row.get('modelo','')}".strip(),
+                    "veiculo": f"{row.get('marca') or ''} {row.get('modelo') or ''}".strip(),
                     "anos": (f"{row['ano_inicial']} - {row['ano_final']}"
                              if row.get("ano_inicial") and row.get("ano_final")
                              else str(row.get("ano_inicial", "") or "")),

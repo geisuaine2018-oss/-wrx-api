@@ -775,15 +775,22 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
         print(f"[WRX] OEM pesquisado: {codigo}")
         print(f"[WRX] OEM não encontrado por correspondência exata no ML ({len(titles)} títulos sem match)")
 
-        # ── ETAPA 2: OEM não encontrado → tenta por nome da peça (IA identifica) ──
-        if not ml_achou:
-            nome_peca_ia = _identificar_nome_peca(codigo)
-            if nome_peca_ia:
-                print(f"[WRX] Buscando ML por nome (IA): {nome_peca_ia}")
-                t2, n2, u2 = buscar_ml(nome_peca_ia)
-                if t2 or n2 or u2:
-                    titles, novos, usados = t2, n2, u2
-                    ml_achou = True
+        # Se não há OEM confirmado no ML nem equivalência OEM fornecida pelo frontend,
+        # interrompe aqui — não gera descrição baseada em IA sem confirmação.
+        if not compatibilidade_oem and not nome_peca_fixo:
+            print(f"[WRX] Bloqueando geração: OEM {codigo} não confirmado e sem equivalência fornecida")
+            return {
+                "ok": False,
+                "erro": "OEM não encontrado para geração automática.",
+                "oem_pesquisado": codigo,
+                "oem_encontrado": False,
+                "fonte_resultado": "nao_encontrado",
+                "grau_de_confianca": 0,
+                "nome_peca": "",
+                "titulos_otimizados": [],
+                "mercado_livre": [],
+                "compatibilidades_confirmadas": [],
+            }
 
         fonte_resultado = "ml_sem_oem_exato" if ml_achou else "ia_pura"
         grau_confianca  = 50 if ml_achou else 30
