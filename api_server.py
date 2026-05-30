@@ -249,6 +249,23 @@ def _chromium_exec():
             return p
     return None
 
+_STEALTH_JS = """
+    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+    Object.defineProperty(navigator, 'plugins', {get: () => [
+        {filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
+        {filename: 'internal-nacl-plugin', description: 'Native Client'},
+    ]});
+    Object.defineProperty(navigator, 'languages', {get: () => ['pt-BR', 'pt', 'en-US', 'en']});
+    window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}, app: {}};
+    try {
+        const orig = window.navigator.permissions.query;
+        window.navigator.permissions.query = (p) =>
+            p.name === 'notifications'
+                ? Promise.resolve({state: Notification.permission})
+                : orig(p);
+    } catch(e) {}
+"""
+
 def _buscar_playwright_python(urls):
     try:
         import asyncio
@@ -256,7 +273,6 @@ def _buscar_playwright_python(urls):
         exec_path = _chromium_exec()
 
         async def _dismiss_cookies(page):
-            """Fecha o banner de cookies do ML se estiver visível."""
             seletores = [
                 "button:has-text('Aceitar cookies')",
                 "button[data-testid='action:understood-button']",
@@ -268,76 +284,88 @@ def _buscar_playwright_python(urls):
                     btn = await page.query_selector(sel)
                     if btn and await btn.is_visible():
                         await btn.click()
-                        print(f"[PW] Banner de cookies fechado via seletor: {sel}")
+                        print(f"[PW] Banner cookies fechado: {sel}")
                         await page.wait_for_timeout(800)
                         return True
                 except Exception:
                     continue
-            print("[PW] Banner de cookies não encontrado (ou já aceito)")
+            print("[PW] Banner de cookies não encontrado")
             return False
 
         async def _run():
             async with async_playwright() as p:
                 launch_args = dict(
                     headless=True,
-                    args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu","--disable-setuid-sandbox"]
+                    args=[
+                        "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                        "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled",
+                        "--window-size=1280,800",
+                    ]
                 )
                 if exec_path:
                     launch_args["executable_path"] = exec_path
                 browser = await p.chromium.launch(**launch_args)
-                ctx = await browser.new_context(locale="pt-BR", user_agent=_UA_ML)
+                ctx = await browser.new_context(
+                    locale="pt-BR",
+                    user_agent=_UA_ML,
+                    viewport={"width": 1280, "height": 800},
+                    java_script_enabled=True,
+                )
+                await ctx.add_init_script(_STEALTH_JS)
                 page = await ctx.new_page()
+
                 for url in urls:
                     try:
                         t0 = __import__("time").time()
-                        print(f"[PW] Navegando para: {url}")
-                        await page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                        print(f"[PW] Navegando: {url}")
+                        await page.goto(url, timeout=35000, wait_until="domcontentloaded")
                         final_url = page.url
-                        print(f"[PW] URL final após redirecionamentos: {final_url}")
+                        print(f"[PW] URL final: {final_url}")
+
+                        html_inicial = await page.content()
+                        print(f"[PW] HTML após domcontentloaded: {len(html_inicial)} bytes")
 
                         await _dismiss_cookies(page)
 
-                        print("[PW] Aguardando seletor li.ui-search-layout__item ...")
+                        print("[PW] Aguardando resultados (li.ui-search-layout__item) ...")
                         try:
                             await page.wait_for_selector(
                                 "li.ui-search-layout__item, div.ui-search-result",
-                                timeout=15000
+                                timeout=18000
                             )
-                            print("[PW] Seletor encontrado — página com resultados")
+                            print("[PW] Seletor encontrado")
                         except Exception as e_sel:
-                            print(f"[PW] Timeout aguardando seletor: {e_sel}")
-                            # Salva screenshot de debug
+                            print(f"[PW] Seletor não encontrado após 18s: {e_sel}")
+                            html_vazio = await page.content()
+                            print(f"[PW] HTML após timeout: {len(html_vazio)} bytes")
                             try:
                                 ss_path = os.path.join(_DIR, f"pw_debug_{int(__import__('time').time())}.png")
                                 await page.screenshot(path=ss_path, full_page=False)
                                 print(f"[PW] Screenshot salvo: {ss_path}")
                             except Exception as e_ss:
-                                print(f"[PW] Falha ao salvar screenshot: {e_ss}")
-                            html_vazio = await page.content()
-                            print(f"[PW] HTML recebido após timeout: {len(html_vazio)} bytes")
+                                print(f"[PW] Screenshot falhou: {e_ss}")
                             continue
 
                         html = await page.content()
                         elapsed = round(__import__("time").time() - t0, 2)
-                        print(f"[PW] HTML obtido: {len(html)} bytes em {elapsed}s")
-
                         n_items = html.count("ui-search-layout__item")
-                        print(f"[PW] Ocorrências de ui-search-layout__item: {n_items}")
+                        print(f"[PW] HTML final: {len(html)} bytes | itens: {n_items} | tempo: {elapsed}s")
 
                         await browser.close()
                         if _has_resultados(html):
                             return [html]
-                        print("[PW] _has_resultados=False mesmo com seletor encontrado")
+                        print("[PW] _has_resultados=False com seletor presente")
                     except Exception as e:
-                        print(f"[PW] Erro ao processar {url}: {e}")
+                        print(f"[PW] Erro em {url}: {e}")
                         continue
+
                 print("[PW] Nenhuma URL retornou resultados")
                 await browser.close()
             return []
 
         return asyncio.run(_run())
     except Exception as e:
-        print(f"[PW] Exceção geral em _buscar_playwright_python: {e}")
+        print(f"[PW] Exceção geral: {e}")
         return []
 
 # ─── Camada 4: requests direto + extração JSON embarcado ─────────────────────
@@ -1033,24 +1061,34 @@ if USE_FLASK:
             import asyncio
             async def _pw_test():
                 async with async_playwright() as p:
-                    browser = await p.chromium.launch(headless=True, args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"])
-                    page = await browser.new_page()
-                    await page.set_extra_http_headers({"Accept-Language": "pt-BR"})
-                    url_pw = f"https://lista.mercadolivre.com.br/acessorios-veiculos/{q.replace(' ','-')}"
-                    await page.goto(url_pw, timeout=30000, wait_until="domcontentloaded")
+                    browser = await p.chromium.launch(
+                        headless=True,
+                        args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+                              "--disable-setuid-sandbox","--disable-blink-features=AutomationControlled"]
+                    )
+                    ctx2 = await browser.new_context(
+                        locale="pt-BR", user_agent=_UA_ML,
+                        viewport={"width": 1280, "height": 800}
+                    )
+                    await ctx2.add_init_script(_STEALTH_JS)
+                    page = await ctx2.new_page()
+                    url_pw = f"https://lista.mercadolivre.com.br/{q.replace(' ','-')}"
+                    await page.goto(url_pw, timeout=35000, wait_until="domcontentloaded")
+                    html_init = await page.content()
                     try:
-                        await page.wait_for_selector("li.ui-search-layout__item", timeout=8000)
+                        await page.wait_for_selector("li.ui-search-layout__item", timeout=15000)
                         items = await page.query_selector_all("li.ui-search-layout__item")
                         html = await page.content()
                         await browser.close()
-                        return len(items), len(html)
+                        return len(items), len(html), html_init[:200]
                     except Exception as e2:
                         html = await page.content()
                         await browser.close()
-                        return 0, len(html)
-            nitens, tam = asyncio.run(_pw_test())
+                        return 0, len(html), html_init[:200]
+            nitens, tam, html_preview = asyncio.run(_pw_test())
             resultado["camadas"]["playwright"]["itens_encontrados"] = nitens
             resultado["camadas"]["playwright"]["tamanho_html"] = tam
+            resultado["camadas"]["playwright"]["html_preview"] = html_preview
         except ImportError:
             resultado["camadas"]["playwright"] = {"instalado": False}
         except Exception as e:
