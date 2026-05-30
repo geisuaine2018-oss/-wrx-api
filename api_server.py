@@ -2150,12 +2150,15 @@ if USE_FLASK:
             try:
                 _r = requests.post(
                     f"{_SHOPEE_BASE}{path}",
+                    params={
+                        "partner_id": SHOPEE_PARTNER_ID,
+                        "timestamp": ts,
+                        "sign": sign,
+                    },
                     json={
                         "partner_id": SHOPEE_PARTNER_ID,
                         "refresh_token": t.get("refresh_token", ""),
                         "shop_id": int(key),
-                        "sign": sign,
-                        "timestamp": ts,
                     },
                     timeout=15
                 )
@@ -2228,12 +2231,15 @@ if USE_FLASK:
         try:
             _r = requests.post(
                 f"{_SHOPEE_BASE}{path}",
+                params={
+                    "partner_id": SHOPEE_PARTNER_ID,
+                    "timestamp": ts,
+                    "sign": sign,
+                },
                 json={
                     "code": code,
                     "shop_id": int(shop_id),
                     "partner_id": SHOPEE_PARTNER_ID,
-                    "sign": sign,
-                    "timestamp": ts,
                 },
                 timeout=15
             )
