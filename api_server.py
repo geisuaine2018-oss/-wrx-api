@@ -255,6 +255,27 @@ def _buscar_playwright_python(urls):
         from playwright.async_api import async_playwright
         exec_path = _chromium_exec()
 
+        async def _dismiss_cookies(page):
+            """Fecha o banner de cookies do ML se estiver visível."""
+            seletores = [
+                "button:has-text('Aceitar cookies')",
+                "button[data-testid='action:understood-button']",
+                "button:has-text('Entendi')",
+                "[class*='cookie'] button",
+            ]
+            for sel in seletores:
+                try:
+                    btn = await page.query_selector(sel)
+                    if btn and await btn.is_visible():
+                        await btn.click()
+                        print(f"[PW] Banner de cookies fechado via seletor: {sel}")
+                        await page.wait_for_timeout(800)
+                        return True
+                except Exception:
+                    continue
+            print("[PW] Banner de cookies não encontrado (ou já aceito)")
+            return False
+
         async def _run():
             async with async_playwright() as p:
                 launch_args = dict(
@@ -268,22 +289,55 @@ def _buscar_playwright_python(urls):
                 page = await ctx.new_page()
                 for url in urls:
                     try:
-                        await page.goto(url, timeout=25000, wait_until="domcontentloaded")
-                        await page.wait_for_selector(
-                            "li.ui-search-layout__item, div.ui-search-result",
-                            timeout=10000
-                        )
+                        t0 = __import__("time").time()
+                        print(f"[PW] Navegando para: {url}")
+                        await page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                        final_url = page.url
+                        print(f"[PW] URL final após redirecionamentos: {final_url}")
+
+                        await _dismiss_cookies(page)
+
+                        print("[PW] Aguardando seletor li.ui-search-layout__item ...")
+                        try:
+                            await page.wait_for_selector(
+                                "li.ui-search-layout__item, div.ui-search-result",
+                                timeout=15000
+                            )
+                            print("[PW] Seletor encontrado — página com resultados")
+                        except Exception as e_sel:
+                            print(f"[PW] Timeout aguardando seletor: {e_sel}")
+                            # Salva screenshot de debug
+                            try:
+                                ss_path = os.path.join(_DIR, f"pw_debug_{int(__import__('time').time())}.png")
+                                await page.screenshot(path=ss_path, full_page=False)
+                                print(f"[PW] Screenshot salvo: {ss_path}")
+                            except Exception as e_ss:
+                                print(f"[PW] Falha ao salvar screenshot: {e_ss}")
+                            html_vazio = await page.content()
+                            print(f"[PW] HTML recebido após timeout: {len(html_vazio)} bytes")
+                            continue
+
                         html = await page.content()
+                        elapsed = round(__import__("time").time() - t0, 2)
+                        print(f"[PW] HTML obtido: {len(html)} bytes em {elapsed}s")
+
+                        n_items = html.count("ui-search-layout__item")
+                        print(f"[PW] Ocorrências de ui-search-layout__item: {n_items}")
+
                         await browser.close()
                         if _has_resultados(html):
                             return [html]
-                    except Exception:
+                        print("[PW] _has_resultados=False mesmo com seletor encontrado")
+                    except Exception as e:
+                        print(f"[PW] Erro ao processar {url}: {e}")
                         continue
+                print("[PW] Nenhuma URL retornou resultados")
                 await browser.close()
             return []
 
         return asyncio.run(_run())
-    except Exception:
+    except Exception as e:
+        print(f"[PW] Exceção geral em _buscar_playwright_python: {e}")
         return []
 
 # ─── Camada 4: requests direto + extração JSON embarcado ─────────────────────
