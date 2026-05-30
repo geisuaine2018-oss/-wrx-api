@@ -1387,16 +1387,23 @@ if USE_FLASK:
     def _ph_save_tokens_remote(ml_tokens):
         jwt = _ph_get_jwt()
         if not jwt:
-            return
+            print("[ML-TOKENS] ERRO: falha ao obter JWT do Supabase — tokens nao persistidos remotamente")
+            return False
         try:
-            requests.put(
+            r = requests.put(
                 f"https://{_PH_HOST}/auth/v1/user",
                 json={"data": {"wrx_ml_tokens": ml_tokens}},
                 headers={"apikey": _PH_ANON, "Authorization": f"Bearer {jwt}", "Content-Type": "application/json"},
-                timeout=10
+                timeout=15
             )
-        except Exception:
-            pass
+            if r.status_code == 200:
+                print(f"[ML-TOKENS] Supabase: tokens salvos. Contas: {list(ml_tokens.keys())}")
+                return True
+            print(f"[ML-TOKENS] ERRO Supabase ao salvar: HTTP {r.status_code} — {r.text[:200]}")
+            return False
+        except Exception as e:
+            print(f"[ML-TOKENS] ERRO Supabase (excecao): {e}")
+            return False
 
     def _ph_load_tokens_remote():
         jwt = _ph_get_jwt()
@@ -1423,37 +1430,50 @@ if USE_FLASK:
                 loaded = json.load(_f)
                 if loaded:
                     _ml_tokens_mem = loaded
+                    print(f"[ML-TOKENS] Carregado do arquivo local. Contas: {list(loaded.keys())}")
                     return _ml_tokens_mem
         except Exception:
             pass
-        # Arquivo local vazio/inexistente — busca no Supabase (sobrevive a redeployments)
+        # Arquivo local vazio/inexistente — busca no Supabase (fonte primária entre redeployments)
+        print("[ML-TOKENS] Arquivo local ausente. Buscando no Supabase...")
         remote = _ph_load_tokens_remote()
         if remote:
             _ml_tokens_mem = remote
+            print(f"[ML-TOKENS] Carregado do Supabase. Contas: {list(remote.keys())}")
             try:
                 with open(_ML_TOKENS_FILE, "w") as _f:
                     json.dump(remote, _f)
             except Exception:
                 pass
+        else:
+            print("[ML-TOKENS] Supabase sem tokens. Nenhuma conta autorizada.")
         return _ml_tokens_mem
 
     def _ml_save_tokens(tokens):
         global _ml_tokens_mem
         _ml_tokens_mem = tokens
+        contas = list(tokens.keys())
+        # Arquivo local (secundário — /tmp é efêmero no Railway sem volume configurado)
         try:
             with open(_ML_TOKENS_FILE, "w") as _f:
                 json.dump(tokens, _f)
-        except Exception:
-            pass
-        # Persiste no Supabase em background (tokens sobrevivem a redeployments)
-        threading.Thread(target=_ph_save_tokens_remote, args=(tokens,), daemon=True).start()
+            print(f"[ML-TOKENS] Arquivo local salvo: {_ML_TOKENS_FILE}. Contas: {contas}")
+        except Exception as e:
+            print(f"[ML-TOKENS] Aviso: arquivo local nao salvo ({e})")
+        # Supabase — fonte primária de persistência entre redeployments (síncrono)
+        ok = _ph_save_tokens_remote(tokens)
+        if not ok:
+            print(f"[ML-TOKENS] FALHA CRITICA: tokens NAO persistidos no Supabase. Contas em risco: {contas}")
+        return ok
 
     def _ml_get_user_token(conta="default"):
         tokens = _ml_load_tokens()
         t = tokens.get(conta, {})
         if not t.get("access_token"):
+            print(f"[ML-TOKENS] Conta '{conta}' nao autorizada. Contas disponiveis: {list(tokens.keys())}")
             return None
         if t.get("expires_at", 0) - time.time() < 300:
+            print(f"[ML-TOKENS] Token da conta '{conta}' expirando. Iniciando refresh...")
             try:
                 _r = requests.post("https://api.mercadolibre.com/oauth/token", data={
                     "grant_type": "refresh_token",
@@ -1468,12 +1488,16 @@ if USE_FLASK:
                     t["expires_at"] = time.time() + _d.get("expires_in", 21600)
                     tokens[conta] = t
                     _ml_save_tokens(tokens)
+                    print(f"[ML-TOKENS] Token da conta '{conta}' renovado com sucesso.")
                 else:
+                    print(f"[ML-TOKENS] ERRO ao renovar token '{conta}': HTTP {_r.status_code} — {_r.text[:200]}")
                     del tokens[conta]
                     _ml_save_tokens(tokens)
                     return None
-            except Exception:
+            except Exception as e:
+                print(f"[ML-TOKENS] ERRO (excecao) ao renovar token '{conta}': {e}")
                 return None
+        print(f"[ML-TOKENS] Conta '{conta}' autorizada. Token valido.")
         return t.get("access_token")
 
     def _options_resp():
@@ -1537,12 +1561,16 @@ if USE_FLASK:
                 "expires_at": time.time() + _d.get("expires_in", 21600),
                 "user_id": str(_d.get("user_id", ""))
             }
-            _ml_save_tokens(tokens)
+            ok_sb = _ml_save_tokens(tokens)
+            print(f"[ML-OAUTH] Conta '{conta}' autorizada. Supabase: {'OK' if ok_sb else 'FALHOU'}")
+            sb_cor = "#22c55e" if ok_sb else "#f59e0b"
+            sb_msg = "Backup no Supabase: salvo ✓" if ok_sb else "⚠ Backup no Supabase falhou — verifique os logs"
             return (
                 "<html><body style='font-family:sans-serif;text-align:center;padding:40px;"
                 "background:#0f172a;color:#fff'>"
                 "<h2 style='color:#22c55e'>&#10003; Mercado Livre conectado!</h2>"
                 f"<p>Conta: <strong>{conta}</strong></p>"
+                f"<p style='color:{sb_cor};font-size:13px'>{sb_msg}</p>"
                 "<p style='color:#9ca3af'>Pode fechar esta janela.</p>"
                 "</body></html>"
             )
