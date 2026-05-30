@@ -1430,8 +1430,8 @@ if USE_FLASK:
     OLX_REDIRECT_URI = os.environ.get("OLX_REDIRECT_URI", "https://glowing-pastelito-6e4556.netlify.app/olx-callback.html")
     OLX_TELEFONE = os.environ.get("OLX_TELEFONE", "21964449123")
     OLX_CEP = os.environ.get("OLX_CEP", "22725001")
-    SHOPEE_PARTNER_ID = int(os.environ.get("SHOPEE_PARTNER_ID", "1234546"))
-    SHOPEE_PARTNER_KEY = os.environ.get("SHOPEE_PARTNER_KEY", "shpk76666558496143524c7a474e416c59517651744a49766976425459796265")
+    SHOPEE_PARTNER_ID = int(os.environ.get("SHOPEE_PARTNER_ID", "2035574"))
+    SHOPEE_PARTNER_KEY = os.environ.get("SHOPEE_PARTNER_KEY", "shpk4458415353465759486e516147454957414d4c444761414a577570795655")
 
     # ── PartHub Supabase — persistência de tokens entre redeployments ──────────
     _PH_HOST  = "iftzoceaalhpyckuznae.supabase.co"
