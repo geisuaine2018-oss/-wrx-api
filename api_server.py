@@ -2078,25 +2078,241 @@ if USE_FLASK:
             return jsonify({"ok": False, "erro": str(_e)}), 500
 
     # ─── Shopee ───────────────────────────────────────────────────────────────────
+    import hmac as _hmac
+
+    _SHOPEE_REDIRECT_URI = os.environ.get(
+        "SHOPEE_REDIRECT_URI",
+        "https://wrx-api-production.up.railway.app/integracoes/shopee/oauth/callback"
+    )
+    _SHOPEE_BASE = "https://partner.shopeemobile.com"
+    _shopee_tokens_mem = {}
+    _SHOPEE_TOKENS_FILE = os.path.join(_INTEG_DIR, "wrx_shopee_tokens.json")
+
+    def _shopee_sign(path, timestamp, access_token="", shop_id=0):
+        base = f"{SHOPEE_PARTNER_ID}{path}{timestamp}{access_token}{shop_id}"
+        return _hmac.new(
+            SHOPEE_PARTNER_KEY.encode(), base.encode(), _hashlib.sha256
+        ).hexdigest()
+
+    def _shopee_load_tokens():
+        global _shopee_tokens_mem
+        if _shopee_tokens_mem:
+            return _shopee_tokens_mem
+        try:
+            with open(_SHOPEE_TOKENS_FILE) as _f:
+                loaded = json.load(_f)
+                if loaded:
+                    _shopee_tokens_mem = loaded
+                    print(f"[SHOPEE-TOKENS] Carregado do arquivo local. Shops: {list(loaded.keys())}")
+                    return _shopee_tokens_mem
+        except Exception:
+            pass
+        print("[SHOPEE-TOKENS] Sem tokens salvos.")
+        return _shopee_tokens_mem
+
+    def _shopee_save_tokens(tokens):
+        global _shopee_tokens_mem
+        _shopee_tokens_mem = tokens
+        try:
+            with open(_SHOPEE_TOKENS_FILE, "w") as _f:
+                json.dump(tokens, _f)
+            print(f"[SHOPEE-TOKENS] Salvo. Shops: {list(tokens.keys())}")
+        except Exception as e:
+            print(f"[SHOPEE-TOKENS] Erro ao salvar: {e}")
+
+    def _shopee_get_token(shop_id=None):
+        tokens = _shopee_load_tokens()
+        key = str(shop_id) if shop_id else (list(tokens.keys())[0] if tokens else None)
+        if not key:
+            return None, None
+        t = tokens.get(key, {})
+        if not t.get("access_token"):
+            print(f"[SHOPEE-TOKENS] Shop '{key}' nao autorizado.")
+            return None, None
+        # Refresh se expira em menos de 10 min
+        if t.get("expires_at", 0) - time.time() < 600:
+            print(f"[SHOPEE-TOKENS] Token shop '{key}' expirando. Refresh...")
+            ts = int(time.time())
+            path = "/api/v2/auth/access_token/get"
+            sign = _shopee_sign(path, ts)
+            try:
+                _r = requests.post(
+                    f"{_SHOPEE_BASE}{path}",
+                    json={
+                        "partner_id": SHOPEE_PARTNER_ID,
+                        "refresh_token": t.get("refresh_token", ""),
+                        "shop_id": int(key),
+                        "sign": sign,
+                        "timestamp": ts,
+                    },
+                    timeout=15
+                )
+                if _r.status_code == 200 and not _r.json().get("error"):
+                    _d = _r.json()
+                    t["access_token"] = _d["access_token"]
+                    t["refresh_token"] = _d.get("refresh_token", t["refresh_token"])
+                    t["expires_at"] = time.time() + _d.get("expire_in", 14400)
+                    tokens[key] = t
+                    _shopee_save_tokens(tokens)
+                    print(f"[SHOPEE-TOKENS] Token shop '{key}' renovado.")
+                else:
+                    print(f"[SHOPEE-TOKENS] Refresh falhou: {_r.text[:200]}")
+                    return None, None
+            except Exception as e:
+                print(f"[SHOPEE-TOKENS] Erro no refresh: {e}")
+                return None, None
+        return t.get("access_token"), int(key)
+
     @app.route("/integracoes/shopee/config", methods=["GET", "OPTIONS"])
     def shopee_config():
         if request.method == "OPTIONS":
             return _options_resp()
+        tokens = _shopee_load_tokens()
+        em_sandbox = SHOPEE_PARTNER_ID == 1234546
+        ts = int(time.time())
+        path = "/api/v2/shop/auth_partner"
+        sign = _shopee_sign(path, ts)
+        auth_url = (
+            f"{_SHOPEE_BASE}{path}"
+            f"?partner_id={SHOPEE_PARTNER_ID}"
+            f"&timestamp={ts}"
+            f"&sign={sign}"
+            f"&redirect={_urlparse.quote(_SHOPEE_REDIRECT_URI, safe='')}"
+        )
         return jsonify({
             "configured": True,
             "partner_id": SHOPEE_PARTNER_ID,
-            "modo": "sandbox" if SHOPEE_PARTNER_ID == 1234546 else "producao",
-            "aviso": "App em modo Developing (sandbox). Solicite Go-Live no open.shopee.com.br para publicar de verdade."
+            "modo": "sandbox" if em_sandbox else "producao",
+            "tokenSaved": bool(tokens),
+            "shops": list(tokens.keys()),
+            "authUrl": auth_url,
+            "aviso": "Credenciais sandbox. Configure SHOPEE_PARTNER_ID e SHOPEE_PARTNER_KEY reais no Railway para publicar em producao." if em_sandbox else None,
         })
+
+    @app.route("/integracoes/shopee/oauth")
+    def shopee_oauth():
+        from flask import redirect as _redir
+        ts = int(time.time())
+        path = "/api/v2/shop/auth_partner"
+        sign = _shopee_sign(path, ts)
+        url = (
+            f"{_SHOPEE_BASE}{path}"
+            f"?partner_id={SHOPEE_PARTNER_ID}"
+            f"&timestamp={ts}"
+            f"&sign={sign}"
+            f"&redirect={_urlparse.quote(_SHOPEE_REDIRECT_URI, safe='')}"
+        )
+        return _redir(url)
+
+    @app.route("/integracoes/shopee/oauth/callback")
+    def shopee_oauth_callback():
+        code = request.args.get("code", "")
+        shop_id = request.args.get("shop_id", "")
+        if not code or not shop_id:
+            return jsonify({"erro": "code ou shop_id ausente"}), 400
+        ts = int(time.time())
+        path = "/api/v2/auth/token/get"
+        sign = _shopee_sign(path, ts)
+        try:
+            _r = requests.post(
+                f"{_SHOPEE_BASE}{path}",
+                json={
+                    "code": code,
+                    "shop_id": int(shop_id),
+                    "partner_id": SHOPEE_PARTNER_ID,
+                    "sign": sign,
+                    "timestamp": ts,
+                },
+                timeout=15
+            )
+            if _r.status_code != 200 or _r.json().get("error"):
+                return jsonify({"erro": f"Shopee {_r.status_code}: {_r.text[:300]}"}), 400
+            _d = _r.json()
+            tokens = _shopee_load_tokens()
+            tokens[str(shop_id)] = {
+                "access_token": _d["access_token"],
+                "refresh_token": _d.get("refresh_token", ""),
+                "expires_at": time.time() + _d.get("expire_in", 14400),
+                "shop_id": int(shop_id),
+            }
+            _shopee_save_tokens(tokens)
+            print(f"[SHOPEE-OAUTH] Shop '{shop_id}' autorizado.")
+            return (
+                "<html><body style='font-family:sans-serif;text-align:center;padding:40px;"
+                "background:#0f172a;color:#fff'>"
+                "<h2 style='color:#ee4d2d'>&#10003; Shopee conectada!</h2>"
+                f"<p>Shop ID: <strong>{shop_id}</strong></p>"
+                "<p style='color:#9ca3af'>Pode fechar esta janela.</p>"
+                "</body></html>"
+            )
+        except Exception as _e:
+            return jsonify({"erro": str(_e)}), 500
 
     @app.route("/integracoes/shopee/publicar", methods=["POST", "OPTIONS"])
     def shopee_publicar():
         if request.method == "OPTIONS":
             return _options_resp()
-        return jsonify({
-            "ok": False,
-            "erro": "Shopee em modo sandbox (Developing). OAuth nao disponivel ate aprovacao do app. Solicite Go-Live em open.shopee.com.br > seu app > Versao ao vivo."
-        }), 501
+        data = request.get_json(force=True) or {}
+        shop_id_param = data.get("shop_id")
+        access_token, shop_id = _shopee_get_token(shop_id_param)
+        if not access_token:
+            tokens = _shopee_load_tokens()
+            em_sandbox = SHOPEE_PARTNER_ID == 1234546
+            if em_sandbox:
+                return jsonify({
+                    "ok": False,
+                    "erro": "Shopee em modo sandbox. Configure SHOPEE_PARTNER_ID e SHOPEE_PARTNER_KEY reais no Railway e reautorize.",
+                }), 401
+            return jsonify({
+                "ok": False,
+                "erro": "Shopee nao autorizada. Acesse /integracoes/shopee/oauth para conectar.",
+                "authUrl": f"{request.host_url}integracoes/shopee/oauth",
+            }), 401
+
+        sku = data.get("sku", "")
+        titulo = data.get("titulo", "")
+        preco = data.get("preco", 0)
+        descricao = data.get("descricao", titulo)
+        condicao = data.get("condicao", "new")
+        fotos = data.get("fotos", [])
+        if not sku or not titulo:
+            return jsonify({"ok": False, "erro": "sku e titulo sao obrigatorios"}), 400
+
+        ts = int(time.time())
+        path = "/api/v2/product/add_item"
+        sign = _shopee_sign(path, ts, access_token, shop_id)
+        payload_shopee = {
+            "partner_id": SHOPEE_PARTNER_ID,
+            "shop_id": shop_id,
+            "sign": sign,
+            "timestamp": ts,
+            "access_token": access_token,
+            "item_name": titulo[:120],
+            "description": descricao[:2000],
+            "price_info": [{"currency": "BRL", "original_price": float(preco)}],
+            "stock_info_v2": {"seller_stock": [{"stock": 1}]},
+            "condition": "NEW" if condicao == "new" else "USED",
+            "category_id": 100644,  # Peças e acessórios automotivos — ajustar por produto
+            "image": {"image_url_list": fotos[:9]},
+            "logistics_info": [{"logistic_id": 10038, "enabled": True}],
+            "weight": 1.0,
+        }
+        try:
+            _r = requests.post(
+                f"{_SHOPEE_BASE}{path}",
+                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts, "access_token": access_token, "shop_id": shop_id, "sign": sign},
+                json=payload_shopee,
+                timeout=20
+            )
+            _d = _r.json()
+            if _r.status_code == 200 and not _d.get("error"):
+                item_id = _d.get("response", {}).get("item_id", "")
+                print(f"[SHOPEE] SKU '{sku}' publicado. item_id={item_id}")
+                return jsonify({"ok": True, "item_id": item_id, "sku": sku})
+            print(f"[SHOPEE] Erro ao publicar SKU '{sku}': {_d}")
+            return jsonify({"ok": False, "erro": _d.get("message", _r.text[:300]), "raw": _d}), 400
+        except Exception as _e:
+            return jsonify({"ok": False, "erro": str(_e)}), 500
 
     def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace") if hasattr(sys.stdout, "reconfigure") else None
