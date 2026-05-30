@@ -2095,7 +2095,13 @@ if USE_FLASK:
     _SHOPEE_TOKENS_FILE = os.path.join(_INTEG_DIR, "wrx_shopee_tokens.json")
 
     def _shopee_sign(path, timestamp, access_token="", shop_id=0):
-        base = f"{SHOPEE_PARTNER_ID}{path}{timestamp}{access_token}{shop_id}"
+        # Shopee API v2: base = partner_id + path + timestamp [+ access_token + shop_id]
+        # access_token e shop_id só entram em chamadas autenticadas (não na URL de auth)
+        base = f"{SHOPEE_PARTNER_ID}{path}{timestamp}"
+        if access_token:
+            base += access_token
+        if shop_id:
+            base += str(shop_id)
         return _hmac.new(
             SHOPEE_PARTNER_KEY.encode(), base.encode(), _hashlib.sha256
         ).hexdigest()
