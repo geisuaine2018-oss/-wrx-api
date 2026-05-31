@@ -3160,8 +3160,55 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
     def ml_criar_e_vincular():
         if request.method == "OPTIONS":
             return _options_resp()
-        # Desativado por ora: o sistema não cria peças automaticamente.
-        return jsonify({"ok": False, "erro": "Criação de peça desativada por enquanto"}), 501
+        data = request.get_json(silent=True) or {}
+        sku = str(data.get("sku", "")).strip()
+        nome = str(data.get("nome", "")).strip()
+        if not sku or not nome:
+            return jsonify({"ok": False, "erro": "nome e sku obrigatorios"}), 400
+        ml_id = data.get("mlId", "")
+        conta = data.get("nomeConta", "default")
+        # Quantidade nasce com o estoque do anúncio no ML (busca na tabela ml_anuncios)
+        qtd = int(data.get("qtd") or 1)
+        if ml_id:
+            try:
+                rq = requests.get(
+                    f"{_WRX_SB_URL}/rest/v1/ml_anuncios"
+                    f"?select=estoque&ml_id=eq.{ml_id}&conta=eq.{conta}&limit=1",
+                    headers=_wrx_headers(), timeout=10
+                )
+                if rq.status_code == 200 and rq.json():
+                    qtd = int(rq.json()[0].get("estoque") or qtd)
+            except Exception:
+                pass
+        # Cria/atualiza a peça (SKU duplicado -> atualiza via merge-duplicates)
+        peca = {
+            "sku": sku,
+            "titulo": nome,
+            "preco": float(data.get("preco") or 0),
+            "qtd": qtd,
+            "atualizado": _datetime.utcnow().isoformat() + "Z",
+        }
+        try:
+            rc = requests.post(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque",
+                headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates"},
+                json=peca, timeout=15
+            )
+            if rc.status_code not in (200, 201, 204):
+                return jsonify({"ok": False, "erro": f"falha ao criar peça: {rc.text[:200]}"}), rc.status_code
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 500
+        # Vincula o anúncio à peça
+        if ml_id:
+            try:
+                requests.patch(
+                    f"{_WRX_SB_URL}/rest/v1/ml_anuncios?ml_id=eq.{ml_id}&conta=eq.{conta}",
+                    headers=_wrx_headers(),
+                    json={"sku": sku, "vinculado": True}, timeout=15
+                )
+            except Exception:
+                pass
+        return jsonify({"ok": True})
 
     @app.route("/integracoes/mercadolivre/video", methods=["POST", "OPTIONS"])
     def ml_video():
