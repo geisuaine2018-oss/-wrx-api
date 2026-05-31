@@ -1400,7 +1400,7 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
                     await ctx.add_init_script(_STEALTH_JS)
                     page = await ctx.new_page()
 
-                    # Passo 1: carregar página de lista e extrair URLs dos PDPs
+                    # Passo 1: carregar página de lista e extrair URLs via JS (mais confiável que BS4)
                     urls_pdp = list(extra_pdp)
                     for url_lista in urls_lista:
                         try:
@@ -1413,16 +1413,27 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
                                 )
                             except Exception:
                                 pass
-                            html_lista = await page.content()
-                            print(f"[PW3] Lista HTML: {len(html_lista)} bytes")
-                            if _has_resultados(html_lista):
-                                novos_pdp = _extrair_urls_da_lista_html(html_lista)
-                                print(f"[PW3] URLs extraídas da lista: {len(novos_pdp)}")
-                                for u in novos_pdp:
-                                    if u not in urls_pdp:
-                                        urls_pdp.append(u)
-                                if urls_pdp:
-                                    break
+                            # Extrai URLs via JavaScript — muito mais rápido que BeautifulSoup em 1MB HTML
+                            js_urls = await page.evaluate("""() => {
+                                const urls = new Set();
+                                document.querySelectorAll(
+                                    'li.ui-search-layout__item a, .poly-card a, a.poly-component__title, a[href*="mercadolivre.com.br"]'
+                                ).forEach(a => {
+                                    try {
+                                        const h = a.href.split('?')[0].split('#')[0];
+                                        if (/mercadolivre\\.com\\.br/.test(h) && /MLB[A-Z]?\\d+/.test(h)) {
+                                            urls.add(h);
+                                        }
+                                    } catch(e) {}
+                                });
+                                return Array.from(urls).slice(0, 8);
+                            }""")
+                            print(f"[PW3] URLs via JS: {len(js_urls)}")
+                            for u in js_urls:
+                                if u not in urls_pdp:
+                                    urls_pdp.append(u)
+                            if urls_pdp:
+                                break
                         except Exception as e:
                             print(f"[PW3] Erro lista {url_lista}: {e}")
                             continue
