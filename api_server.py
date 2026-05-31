@@ -1313,7 +1313,7 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
     items_com_oem = [i for i in items_api if codigo.upper().replace(" ","") in i["titulo"].upper().replace(" ","")]
     print(f"[WRX] API: {len(items_api)} resultados | {len(items_com_oem)} com OEM no título")
 
-    # Fallback: se API não retornou nada, tenta buscar_ml() com HTML scraping multicamada
+    # Fallback 1: se API não retornou nada, tenta buscar_ml() com HTML scraping multicamada
     if not items_api:
         print(f"[WRX] API sem resultados — fallback para buscar_ml() (HTML scraping)...")
         titulos_fb, novos_fb, usados_fb = buscar_ml(codigo)
@@ -1322,6 +1322,17 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
             precos_novos.extend(novos_fb)
             precos_usados.extend(usados_fb)
             print(f"[WRX] buscar_ml() encontrou {len(titulos_fb)} títulos | novos={len(novos_fb)} usados={len(usados_fb)}")
+
+    # Fallback 2: busca por nome_peca na API (se OEM ainda sem resultados)
+    if not items_api and nome_peca_fixo:
+        print(f"[WRX] OEM sem resultados — buscando por nome: {nome_peca_fixo!r}...")
+        items_por_nome = _buscar_api_ml_detalhado(nome_peca_fixo)
+        if items_por_nome:
+            items_api = items_por_nome
+            titulos_ml.extend(i["titulo"] for i in items_por_nome if i["titulo"] and i["titulo"] not in titulos_ml)
+            precos_novos.extend(i["preco"] for i in items_por_nome if i.get("condicao") == "new"  and i["preco"] > 5)
+            precos_usados.extend(i["preco"] for i in items_por_nome if i.get("condicao") == "used" and i["preco"] > 5)
+            print(f"[WRX] Busca por nome: {len(items_por_nome)} resultados | títulos: {len(titulos_ml)}")
 
     # ── ETAPA 2: Detalhes completos dos itens com OEM confirmado via API ─────
     anuncios = []
