@@ -1392,6 +1392,21 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
     consolidado = _consolidar_e_score(anuncios, codigo)
 
     oem_confirmado_ml = bool(items_com_oem)
+
+    # Também confirma OEM se aparecer em título, atributos ou descrição das páginas raspadas
+    if not oem_confirmado_ml:
+        oem_clean = codigo.upper().replace(" ", "")
+        for a in anuncios:
+            texto = " ".join([
+                a.get("titulo", ""),
+                a.get("descricao", ""),
+                " ".join(str(v) for v in a.get("atributos", {}).values())
+            ]).upper().replace(" ", "")
+            if oem_clean in texto:
+                oem_confirmado_ml = True
+                print(f"[WRX] OEM confirmado via PDP: {a.get('titulo','')[:60]}")
+                break
+
     compat_consolidada = (consolidado or {}).get("compatibilidade", [])
 
     if compat_consolidada:
