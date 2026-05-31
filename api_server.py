@@ -2720,6 +2720,50 @@ if USE_FLASK:
         _ml_anuncios_cache_save(por_sku)
         return jsonify({"ok": True, "totalSkus": len(por_sku), "totalAnuncios": total_anuncios, "erros": erros})
 
+    @app.route("/integracoes/mercadolivre/debug-sync", methods=["GET", "OPTIONS"])
+    def ml_debug_sync():
+        """Diagnóstico: conta itens antes dos filtros de SKU/estoque."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        tokens_data = _ml_load_tokens()
+        if not tokens_data:
+            return jsonify({"erro": "sem tokens"}), 401
+        resultado = []
+        for conta_nome in list(tokens_data.keys()):
+            token = _ml_get_user_token(conta_nome)
+            if not token:
+                resultado.append({"conta": conta_nome, "erro": "token invalido"})
+                continue
+            user_id = tokens_data.get(conta_nome, {}).get("user_id", "")
+            if not user_id:
+                try:
+                    _r = requests.get("https://api.mercadolibre.com/users/me",
+                                      headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                    if _r.status_code == 200:
+                        user_id = str(_r.json().get("id", ""))
+                except Exception:
+                    pass
+            if not user_id:
+                resultado.append({"conta": conta_nome, "erro": "user_id nao encontrado"})
+                continue
+            ids = _ml_buscar_todos_ids(token, user_id, "active")
+            # Busca amostra de 5 itens para ver atributos
+            amostra = _ml_buscar_detalhes_lote(token, ids[:5]) if ids else []
+            sem_sku = sum(1 for a in amostra if not a.get("seller_sku"))
+            sem_estoque = sum(1 for a in amostra if (a.get("available_quantity") or 0) <= 0)
+            resultado.append({
+                "conta": conta_nome,
+                "user_id": user_id,
+                "total_ids_ativos": len(ids),
+                "amostra_5_itens": [
+                    {"id": a.get("id"), "sku": a.get("seller_sku"), "estoque": a.get("available_quantity"), "titulo": a.get("title","")[:40]}
+                    for a in amostra
+                ],
+                "sem_sku_na_amostra": sem_sku,
+                "sem_estoque_na_amostra": sem_estoque,
+            })
+        return jsonify({"resultado": resultado})
+
     @app.route("/integracoes/mercadolivre/video", methods=["POST", "OPTIONS"])
     def ml_video():
         if request.method == "OPTIONS":
