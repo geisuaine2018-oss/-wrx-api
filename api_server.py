@@ -2411,6 +2411,24 @@ if USE_FLASK:
             return True
         return False
 
+    @app.route("/integracoes/shopee/verificar-seguranca", methods=["POST", "OPTIONS"])
+    def shopee_verificar_seguranca():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        titulo = data.get("titulo", "")
+        categoria = data.get("categoria", "")
+        condicao = data.get("condicao", "used")
+        somente_novo = _shopee_item_somente_novo(titulo, categoria)
+        condicao_final = "new" if somente_novo else condicao
+        return jsonify({
+            "titulo": titulo,
+            "condicao_enviada": condicao,
+            "condicao_aplicada": condicao_final,
+            "somente_novo_por_seguranca": somente_novo,
+            "mensagem": "Item de segurança: será publicado como NOVO mesmo que selecionado USADO." if somente_novo and condicao == "used" else "Condição mantida conforme selecionado.",
+        })
+
     @app.route("/integracoes/shopee/publicar", methods=["POST", "OPTIONS"])
     def shopee_publicar():
         if request.method == "OPTIONS":
