@@ -1413,8 +1413,8 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
                                 )
                             except Exception:
                                 pass
-                            # Extrai URLs via JS — OEM passado como argumento (sem f-string)
-                            js_urls = await page.evaluate("""(oem) => {
+                            # Extrai URLs via JS — retorna mais URLs, ordenação feita em Python
+                            js_urls = await page.evaluate("""() => {
                                 const urls = [];
                                 const vistos = new Set();
                                 document.querySelectorAll(
@@ -1428,9 +1428,10 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
                                         }
                                     } catch(e) {}
                                 });
-                                urls.sort((a, b) => (a.includes(oem) ? -1 : 1) - (b.includes(oem) ? -1 : 1));
-                                return urls.slice(0, 8);
-                            }""", codigo)
+                                return urls.slice(0, 20);
+                            }""")
+                            # Ordenação em Python: URLs com OEM no slug vêm primeiro
+                            js_urls = sorted(js_urls or [], key=lambda u: (0 if codigo in u else 1))[:8]
                             print(f"[PW3] URLs via JS: {len(js_urls)}")
                             for u in js_urls:
                                 if u not in urls_pdp:
