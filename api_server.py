@@ -1890,6 +1890,17 @@ if USE_FLASK:
     SHOPEE_PARTNER_ID = int(os.environ.get("SHOPEE_PARTNER_ID", "2035574"))
     SHOPEE_PARTNER_KEY = os.environ.get("SHOPEE_PARTNER_KEY", "shpk4458415353465759486e516147454957414d4c444761414a577570795655")
 
+    # ── Supabase do usuário (pecas_estoque, shopee_anuncios) ────────────────────
+    _WRX_SB_URL = "https://uthsiihzpsgarargegcw.supabase.co"
+    _WRX_SB_KEY = "sb_publishable_gOQgHrv2IVRgbiVV2Myhzg_BmzCXmXe"
+
+    def _wrx_headers():
+        return {
+            "apikey": _WRX_SB_KEY,
+            "Authorization": f"Bearer {_WRX_SB_KEY}",
+            "Content-Type": "application/json",
+        }
+
     # ── PartHub Supabase — persistência de tokens entre redeployments ──────────
     _PH_HOST  = "iftzoceaalhpyckuznae.supabase.co"
     _PH_ANON  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlmdHpvY2VhYWxocHlja3V6bmFlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA0MzMwNjcsImV4cCI6MjA3NjAwOTA2N30.VZY9NLFvRMX-lr9FQUlOkMfE0RfdGxk0HVpslxMYDYg"
@@ -2887,6 +2898,519 @@ if USE_FLASK:
             "condicao_aplicada": condicao_shopee,
             "somente_novo_por_seguranca": somente_novo,
         })
+
+    # ── Shopee: helpers de listagem e detalhes ───────────────────────────────────
+
+    def _shopee_list_items_all(access_token, shop_id_int, status="NORMAL"):
+        items = []
+        offset = 0
+        for _ in range(50):
+            ts = int(time.time())
+            path = "/api/v2/product/get_item_list"
+            sign = _shopee_sign(path, ts, access_token, shop_id_int)
+            r = requests.get(
+                f"{_SHOPEE_BASE}{path}",
+                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                        "access_token": access_token, "shop_id": shop_id_int,
+                        "sign": sign, "offset": offset, "page_size": 100,
+                        "item_status": status},
+                timeout=20
+            )
+            d = r.json()
+            if d.get("error") or r.status_code != 200:
+                print(f"[SHOPEE-LIST] Erro: {d.get('message', r.text[:200])}")
+                break
+            resp = d.get("response", {})
+            items.extend(resp.get("item", []))
+            if not resp.get("has_next_page", False):
+                break
+            offset = resp.get("next_offset", offset + 100)
+        return items
+
+    def _shopee_get_item_details(access_token, shop_id_int, item_ids):
+        results = []
+        for i in range(0, len(item_ids), 50):
+            lote = item_ids[i:i+50]
+            ts = int(time.time())
+            path = "/api/v2/product/get_item_base_info"
+            sign = _shopee_sign(path, ts, access_token, shop_id_int)
+            r = requests.get(
+                f"{_SHOPEE_BASE}{path}",
+                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                        "access_token": access_token, "shop_id": shop_id_int,
+                        "sign": sign, "item_id_list": ",".join(str(x) for x in lote)},
+                timeout=30
+            )
+            d = r.json()
+            if r.status_code == 200 and not d.get("error"):
+                results.extend(d.get("response", {}).get("item_list", []))
+        return results
+
+    def _shopee_extract_sku(item):
+        sku = (item.get("seller_sku") or "").strip()
+        if sku:
+            return sku
+        for attr in item.get("attribute_list", []):
+            if attr.get("attribute_name", "").lower() in ("seller sku", "sku"):
+                vals = attr.get("attribute_value_list", [])
+                if vals:
+                    return vals[0].get("value", "").strip()
+        return ""
+
+    def _shopee_extract_preco(item):
+        pi = item.get("price_info", [])
+        return float((pi[0].get("current_price") or pi[0].get("original_price") or 0) if pi else 0)
+
+    def _shopee_extract_estoque(item):
+        ss = item.get("stock_info_v2", {}).get("seller_stock", [{}])
+        return int(ss[0].get("stock", 0)) if ss else 0
+
+    # ── Shopee: listar anúncios ativos direto da API ──────────────────────────────
+
+    @app.route("/integracoes/shopee/listar-anuncios", methods=["GET", "OPTIONS"])
+    def shopee_listar_anuncios():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        tokens = _shopee_load_tokens()
+        if not tokens:
+            return jsonify({"ok": False, "erro": "Shopee nao autorizada"}), 401
+        shop_id_param = request.args.get("shop_id")
+        shop_ids = [str(shop_id_param)] if shop_id_param else list(tokens.keys())
+        todos = []
+        for sid in shop_ids:
+            access_token, shop_id_int = _shopee_get_token(sid)
+            if not access_token:
+                continue
+            item_refs = _shopee_list_items_all(access_token, shop_id_int, status="NORMAL")
+            item_ids = [x["item_id"] for x in item_refs if x.get("item_id")]
+            if not item_ids:
+                continue
+            for item in _shopee_get_item_details(access_token, shop_id_int, item_ids):
+                todos.append({
+                    "shop_id": sid,
+                    "item_id": item.get("item_id"),
+                    "titulo": item.get("item_name", ""),
+                    "sku": _shopee_extract_sku(item),
+                    "preco": _shopee_extract_preco(item),
+                    "estoque": _shopee_extract_estoque(item),
+                    "status": item.get("item_status", "NORMAL"),
+                    "fotos": item.get("image", {}).get("image_url_list", [])[:3],
+                })
+        return jsonify({"ok": True, "total": len(todos), "itens": todos})
+
+    # ── Shopee: sync completo → Supabase ─────────────────────────────────────────
+
+    @app.route("/integracoes/shopee/sincronizar", methods=["POST", "OPTIONS"])
+    def shopee_sincronizar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        tokens = _shopee_load_tokens()
+        if not tokens:
+            return jsonify({"ok": False, "erro": "Shopee nao autorizada"}), 401
+        data = request.get_json(force=True) or {}
+        shop_id_param = data.get("shop_id")
+        shop_ids = [str(shop_id_param)] if shop_id_param else list(tokens.keys())
+
+        r_pecas = requests.get(
+            f"{_WRX_SB_URL}/rest/v1/pecas_estoque?select=sku&limit=20000",
+            headers=_wrx_headers(), timeout=15
+        )
+        skus_sistema = set()
+        if r_pecas.status_code == 200:
+            for p in r_pecas.json():
+                if p.get("sku"):
+                    skus_sistema.add(str(p["sku"]).strip().upper())
+
+        total_importados = 0
+        total_vinculados = 0
+        erros = []
+
+        for sid in shop_ids:
+            access_token, shop_id_int = _shopee_get_token(sid)
+            if not access_token:
+                erros.append(f"shop {sid}: token invalido")
+                continue
+            print(f"[SHOPEE-SYNC] Listando shop {sid}...")
+            item_refs = _shopee_list_items_all(access_token, shop_id_int, status="NORMAL")
+            item_ids = [x["item_id"] for x in item_refs if x.get("item_id")]
+            if not item_ids:
+                continue
+            detalhes = _shopee_get_item_details(access_token, shop_id_int, item_ids)
+            print(f"[SHOPEE-SYNC] Shop {sid}: {len(detalhes)} itens")
+            now_iso = _datetime.utcnow().isoformat() + "Z"
+            upsert_rows = []
+            for item in detalhes:
+                est = _shopee_extract_estoque(item)
+                if est <= 0:
+                    continue
+                sku_raw = _shopee_extract_sku(item)
+                sku_up = sku_raw.upper() if sku_raw else ""
+                sku_vinculado = sku_raw if sku_up in skus_sistema else None
+                if sku_vinculado:
+                    total_vinculados += 1
+                fotos = item.get("image", {}).get("image_url_list", [])[:9]
+                upsert_rows.append({
+                    "shop_id": str(sid),
+                    "item_id": str(item.get("item_id", "")),
+                    "sku": sku_vinculado or sku_raw,
+                    "titulo": (item.get("item_name") or "")[:500],
+                    "preco": _shopee_extract_preco(item),
+                    "estoque": est,
+                    "status": item.get("item_status", "NORMAL"),
+                    "fotos": json.dumps(fotos),
+                    "sync_at": now_iso,
+                })
+            for i in range(0, len(upsert_rows), 100):
+                lote = upsert_rows[i:i+100]
+                r_up = requests.post(
+                    f"{_WRX_SB_URL}/rest/v1/shopee_anuncios",
+                    headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates"},
+                    json=lote, timeout=30
+                )
+                if r_up.status_code not in (200, 201, 204):
+                    erros.append(f"shop {sid}: {r_up.status_code} {r_up.text[:150]}")
+            total_importados += len(upsert_rows)
+
+        return jsonify({"ok": True, "importados": total_importados, "vinculados": total_vinculados, "erros": erros})
+
+    @app.route("/integracoes/shopee/anuncios-db", methods=["GET", "OPTIONS"])
+    def shopee_anuncios_db():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        r = requests.get(
+            f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?select=*&order=sync_at.desc&limit=5000",
+            headers=_wrx_headers(), timeout=15
+        )
+        if r.status_code != 200:
+            return jsonify({"ok": False, "erro": r.text[:200]}), 400
+        dados = r.json()
+        return jsonify({"ok": True, "itens": dados, "total": len(dados)})
+
+    # ── Shopee: atualizar estoque ─────────────────────────────────────────────────
+
+    @app.route("/integracoes/shopee/atualizar-estoque", methods=["POST", "OPTIONS"])
+    def shopee_atualizar_estoque():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        tokens = _shopee_load_tokens()
+        if not tokens:
+            return jsonify({"ok": False, "erro": "Shopee nao autorizada"}), 401
+        data = request.get_json(force=True) or {}
+        item_id = data.get("item_id")
+        shop_id = str(data.get("shop_id", ""))
+        estoque = int(data.get("estoque", 0))
+        sku = data.get("sku", "")
+        if not item_id or not shop_id:
+            return jsonify({"ok": False, "erro": "item_id e shop_id obrigatorios"}), 400
+        access_token, shop_id_int = _shopee_get_token(shop_id)
+        if not access_token:
+            return jsonify({"ok": False, "erro": "token invalido"}), 401
+        ts = int(time.time())
+        path = "/api/v2/product/update_stock"
+        sign = _shopee_sign(path, ts, access_token, shop_id_int)
+        r = requests.post(
+            f"{_SHOPEE_BASE}{path}",
+            params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                    "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
+            json={"item_id": int(item_id), "stock_list": [{"model_id": 0, "seller_stock": [{"stock": max(0, estoque)}]}]},
+            timeout=20
+        )
+        d = r.json()
+        ok = r.status_code == 200 and not d.get("error")
+        print(f"[SHOPEE-ESTOQUE] item {item_id} SKU '{sku}' -> {estoque}: {'OK' if ok else d.get('message','?')}")
+        if ok:
+            requests.patch(
+                f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?shop_id=eq.{shop_id}&item_id=eq.{item_id}",
+                headers=_wrx_headers(),
+                json={"estoque": estoque, "sync_at": _datetime.utcnow().isoformat() + "Z"},
+                timeout=10
+            )
+        return jsonify({"ok": ok, "erro": d.get("message", "") if not ok else ""})
+
+    # ── Shopee: atualizar preço ────────────────────────────────────────────────────
+
+    @app.route("/integracoes/shopee/atualizar-preco", methods=["POST", "OPTIONS"])
+    def shopee_atualizar_preco():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        tokens = _shopee_load_tokens()
+        if not tokens:
+            return jsonify({"ok": False, "erro": "Shopee nao autorizada"}), 401
+        data = request.get_json(force=True) or {}
+        item_id = data.get("item_id")
+        shop_id = str(data.get("shop_id", ""))
+        preco = float(data.get("preco", 0))
+        if not item_id or not shop_id:
+            return jsonify({"ok": False, "erro": "item_id e shop_id obrigatorios"}), 400
+        access_token, shop_id_int = _shopee_get_token(shop_id)
+        if not access_token:
+            return jsonify({"ok": False, "erro": "token invalido"}), 401
+        ts = int(time.time())
+        path = "/api/v2/product/update_price"
+        sign = _shopee_sign(path, ts, access_token, shop_id_int)
+        r = requests.post(
+            f"{_SHOPEE_BASE}{path}",
+            params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                    "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
+            json={"item_id": int(item_id), "price_list": [{"model_id": 0, "original_price": preco}]},
+            timeout=20
+        )
+        d = r.json()
+        ok = r.status_code == 200 and not d.get("error")
+        if ok:
+            requests.patch(
+                f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?shop_id=eq.{shop_id}&item_id=eq.{item_id}",
+                headers=_wrx_headers(),
+                json={"preco": preco, "sync_at": _datetime.utcnow().isoformat() + "Z"},
+                timeout=10
+            )
+        return jsonify({"ok": ok, "erro": d.get("message", "") if not ok else ""})
+
+    # ── Shopee: pausar/despausar item ─────────────────────────────────────────────
+
+    @app.route("/integracoes/shopee/pausar-item", methods=["POST", "OPTIONS"])
+    def shopee_pausar_item():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        tokens = _shopee_load_tokens()
+        if not tokens:
+            return jsonify({"ok": False, "erro": "Shopee nao autorizada"}), 401
+        data = request.get_json(force=True) or {}
+        item_id = data.get("item_id")
+        shop_id = str(data.get("shop_id", ""))
+        pausar = data.get("pausar", True)
+        if not item_id or not shop_id:
+            return jsonify({"ok": False, "erro": "item_id e shop_id obrigatorios"}), 400
+        access_token, shop_id_int = _shopee_get_token(shop_id)
+        if not access_token:
+            return jsonify({"ok": False, "erro": "token invalido"}), 401
+        ts = int(time.time())
+        path = "/api/v2/product/unlist_item"
+        sign = _shopee_sign(path, ts, access_token, shop_id_int)
+        r = requests.post(
+            f"{_SHOPEE_BASE}{path}",
+            params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                    "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
+            json={"item_list": [{"item_id": int(item_id), "unlist": bool(pausar)}]},
+            timeout=20
+        )
+        d = r.json()
+        ok = r.status_code == 200 and not d.get("error")
+        novo_status = "UNLIST" if pausar else "NORMAL"
+        if ok:
+            requests.patch(
+                f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?shop_id=eq.{shop_id}&item_id=eq.{item_id}",
+                headers=_wrx_headers(),
+                json={"status": novo_status, "sync_at": _datetime.utcnow().isoformat() + "Z"},
+                timeout=10
+            )
+        return jsonify({"ok": ok, "status": novo_status if ok else None, "erro": d.get("message", "") if not ok else ""})
+
+    # ── Shopee: vendas (pedidos) ──────────────────────────────────────────────────
+
+    @app.route("/integracoes/shopee/vendas", methods=["GET", "OPTIONS"])
+    def shopee_vendas():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        tokens = _shopee_load_tokens()
+        if not tokens:
+            return jsonify({"ok": False, "erro": "Shopee nao autorizada"}), 401
+        shop_id_param = request.args.get("shop_id")
+        dias = int(request.args.get("dias", "7"))
+        shop_ids = [str(shop_id_param)] if shop_id_param else list(tokens.keys())
+        todas = []
+        for sid in shop_ids:
+            access_token, shop_id_int = _shopee_get_token(sid)
+            if not access_token:
+                continue
+            time_to = int(time.time())
+            time_from = time_to - dias * 86400
+            ts = int(time.time())
+            path = "/api/v2/order/get_order_list"
+            sign = _shopee_sign(path, ts, access_token, shop_id_int)
+            r = requests.get(
+                f"{_SHOPEE_BASE}{path}",
+                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                        "access_token": access_token, "shop_id": shop_id_int, "sign": sign,
+                        "time_range_field": "create_time", "time_from": time_from,
+                        "time_to": time_to, "page_size": 100},
+                timeout=20
+            )
+            d = r.json()
+            if r.status_code == 200 and not d.get("error"):
+                for o in d.get("response", {}).get("order_list", []):
+                    todas.append({
+                        "marketplace": "shopee",
+                        "shop_id": sid,
+                        "order_sn": o.get("order_sn", ""),
+                        "status": o.get("order_status", ""),
+                        "criar_em": o.get("create_time", 0),
+                        "total": o.get("total_amount", 0),
+                        "itens": o.get("item_list", []),
+                    })
+        todas.sort(key=lambda x: x.get("criar_em", 0), reverse=True)
+        return jsonify({"ok": True, "vendas": todas, "total": len(todas)})
+
+    # ── Shopee: mensagens (chat) ──────────────────────────────────────────────────
+
+    @app.route("/integracoes/shopee/mensagens", methods=["GET", "OPTIONS"])
+    def shopee_mensagens():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        tokens = _shopee_load_tokens()
+        if not tokens:
+            return jsonify({"ok": False, "erro": "Shopee nao autorizada"}), 401
+        shop_id_param = request.args.get("shop_id")
+        shop_ids = [str(shop_id_param)] if shop_id_param else list(tokens.keys())
+        todas = []
+        for sid in shop_ids:
+            access_token, shop_id_int = _shopee_get_token(sid)
+            if not access_token:
+                continue
+            ts = int(time.time())
+            path = "/api/v2/sellerchat/get_conversation_list"
+            sign = _shopee_sign(path, ts, access_token, shop_id_int)
+            r = requests.get(
+                f"{_SHOPEE_BASE}{path}",
+                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                        "access_token": access_token, "shop_id": shop_id_int,
+                        "sign": sign, "filter": "all", "page_size": 25},
+                timeout=20
+            )
+            d = r.json()
+            if r.status_code == 200 and not d.get("error"):
+                for c in d.get("response", {}).get("conversations", []):
+                    todas.append({
+                        "marketplace": "shopee",
+                        "shop_id": sid,
+                        "conversation_id": c.get("conversation_id", ""),
+                        "comprador": c.get("to_name", ""),
+                        "ultima_msg": c.get("last_message", {}).get("content", {}).get("text", ""),
+                        "nao_lidas": c.get("unread_count", 0),
+                        "timestamp": c.get("last_message", {}).get("created_timestamp", 0),
+                    })
+        todas.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+        return jsonify({"ok": True, "mensagens": todas, "total": len(todas)})
+
+    # ── Shopee: webhook push notifications ───────────────────────────────────────
+
+    @app.route("/integracoes/shopee/webhook", methods=["POST", "OPTIONS"])
+    def shopee_webhook():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        code = data.get("code", 0)
+        shop_id = str(data.get("shop_id", ""))
+        print(f"[SHOPEE-WEBHOOK] code={code} shop={shop_id}")
+        if code == 3:
+            order_status = data.get("data", {}).get("status", "")
+            order_sn = data.get("data", {}).get("ordersn", "")
+            if order_status in ("READY_TO_SHIP", "COMPLETED"):
+                try:
+                    _shopee_processar_venda_webhook(shop_id, order_sn)
+                except Exception as _we:
+                    print(f"[SHOPEE-WEBHOOK] Erro: {_we}")
+        return jsonify({"ok": True})
+
+    def _shopee_processar_venda_webhook(shop_id, order_sn):
+        access_token, shop_id_int = _shopee_get_token(str(shop_id))
+        if not access_token:
+            return
+        ts = int(time.time())
+        path = "/api/v2/order/get_order_detail"
+        sign = _shopee_sign(path, ts, access_token, shop_id_int)
+        r = requests.get(
+            f"{_SHOPEE_BASE}{path}",
+            params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                    "access_token": access_token, "shop_id": shop_id_int,
+                    "sign": sign, "order_sn_list": order_sn,
+                    "response_optional_fields": "item_list"},
+            timeout=20
+        )
+        d = r.json()
+        if r.status_code != 200 or d.get("error"):
+            return
+        for order in d.get("response", {}).get("order_list", []):
+            for item in order.get("item_list", []):
+                sku = (item.get("model_sku") or "").strip()
+                qty = int(item.get("model_quantity_purchased", 1))
+                if not sku:
+                    continue
+                r_p = requests.get(
+                    f"{_WRX_SB_URL}/rest/v1/pecas_estoque?sku=eq.{sku}&select=sku,qtd",
+                    headers=_wrx_headers(), timeout=10
+                )
+                if r_p.status_code == 200 and r_p.json():
+                    peca = r_p.json()[0]
+                    nova_qtd = max(0, int(peca.get("qtd", 0)) - qty)
+                    requests.patch(
+                        f"{_WRX_SB_URL}/rest/v1/pecas_estoque?sku=eq.{sku}",
+                        headers=_wrx_headers(),
+                        json={"qtd": nova_qtd, "atualizado": _datetime.utcnow().isoformat() + "Z"},
+                        timeout=10
+                    )
+                    print(f"[SHOPEE-WEBHOOK] SKU {sku}: {peca.get('qtd')} -> {nova_qtd}")
+                    if nova_qtd == 0:
+                        _shopee_pausar_por_sku(sku)
+
+    def _shopee_pausar_por_sku(sku):
+        tokens = _shopee_load_tokens()
+        if not tokens:
+            return
+        r = requests.get(
+            f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?sku=eq.{sku}&select=shop_id,item_id",
+            headers=_wrx_headers(), timeout=10
+        )
+        if r.status_code != 200:
+            return
+        for row in r.json():
+            sid = row.get("shop_id", "")
+            iid = row.get("item_id", "")
+            if not sid or not iid:
+                continue
+            access_token, shop_id_int = _shopee_get_token(sid)
+            if not access_token:
+                continue
+            ts = int(time.time())
+            path = "/api/v2/product/unlist_item"
+            sign = _shopee_sign(path, ts, access_token, shop_id_int)
+            requests.post(
+                f"{_SHOPEE_BASE}{path}",
+                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                        "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
+                json={"item_list": [{"item_id": int(iid), "unlist": True}]},
+                timeout=15
+            )
+            print(f"[SHOPEE] SKU {sku} pausado shop {sid}")
+
+    # ── Shopee: venda manual (cascata) ───────────────────────────────────────────
+
+    @app.route("/integracoes/shopee/venda-cascata", methods=["POST", "OPTIONS"])
+    def shopee_venda_cascata():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        sku = (data.get("sku") or "").strip()
+        qty = int(data.get("qty", 1))
+        if not sku:
+            return jsonify({"ok": False, "erro": "sku obrigatorio"}), 400
+        r_p = requests.get(
+            f"{_WRX_SB_URL}/rest/v1/pecas_estoque?sku=eq.{sku}&select=sku,qtd",
+            headers=_wrx_headers(), timeout=10
+        )
+        if r_p.status_code != 200 or not r_p.json():
+            return jsonify({"ok": False, "erro": f"SKU {sku} nao encontrado"}), 404
+        peca = r_p.json()[0]
+        nova_qtd = max(0, int(peca.get("qtd", 0)) - qty)
+        requests.patch(
+            f"{_WRX_SB_URL}/rest/v1/pecas_estoque?sku=eq.{sku}",
+            headers=_wrx_headers(),
+            json={"qtd": nova_qtd, "atualizado": _datetime.utcnow().isoformat() + "Z"},
+            timeout=10
+        )
+        if nova_qtd == 0:
+            _shopee_pausar_por_sku(sku)
+        return jsonify({"ok": True, "sku": sku, "qtd_anterior": peca.get("qtd"), "qtd_nova": nova_qtd, "zerado": nova_qtd == 0})
 
     def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace") if hasattr(sys.stdout, "reconfigure") else None
