@@ -2425,6 +2425,139 @@ if USE_FLASK:
             resultado[conta_nome] = {"ok": bool(token)}
         return jsonify({"ok": True, "contas": resultado})
 
+    # Cache local de anúncios ML por SKU
+    _ML_ANUNCIOS_CACHE_FILE = os.path.join(_INTEG_DIR, "wrx_ml_anuncios.json")
+    _ml_anuncios_mem = {}
+
+    def _ml_anuncios_cache_load():
+        global _ml_anuncios_mem
+        if _ml_anuncios_mem:
+            return _ml_anuncios_mem
+        try:
+            with open(_ML_ANUNCIOS_CACHE_FILE, encoding="utf-8") as f:
+                _ml_anuncios_mem = json.load(f)
+        except Exception:
+            _ml_anuncios_mem = {}
+        return _ml_anuncios_mem
+
+    def _ml_anuncios_cache_save(por_sku):
+        global _ml_anuncios_mem
+        _ml_anuncios_mem = por_sku
+        try:
+            with open(_ML_ANUNCIOS_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(por_sku, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"[ML-CACHE] Aviso: nao salvou ({e})")
+
+    def _ml_buscar_todos_ids(token, user_id, status="active"):
+        """Busca todos os IDs de anúncios ML do vendedor paginando."""
+        ids = []
+        offset = 0
+        limit = 100
+        while True:
+            r = requests.get(
+                f"https://api.mercadolibre.com/users/{user_id}/items/search",
+                params={"status": status, "limit": limit, "offset": offset},
+                headers={"Authorization": f"Bearer {token}"}, timeout=15
+            )
+            if r.status_code != 200:
+                break
+            d = r.json()
+            batch = d.get("results", [])
+            ids.extend(batch)
+            total = d.get("paging", {}).get("total", 0)
+            offset += limit
+            if offset >= total or not batch:
+                break
+        return ids
+
+    def _ml_buscar_detalhes_lote(token, ids):
+        """Busca detalhes de até 20 itens por vez."""
+        itens = []
+        for i in range(0, len(ids), 20):
+            lote = ids[i:i+20]
+            r = requests.get(
+                "https://api.mercadolibre.com/items",
+                params={"ids": ",".join(lote),
+                        "attributes": "id,title,price,available_quantity,seller_sku,status,thumbnail"},
+                headers={"Authorization": f"Bearer {token}"}, timeout=20
+            )
+            if r.status_code != 200:
+                continue
+            for entry in r.json():
+                if entry.get("code") == 200:
+                    itens.append(entry.get("body", {}))
+        return itens
+
+    @app.route("/integracoes/mercadolivre/anuncios-db", methods=["GET", "OPTIONS"])
+    def ml_anuncios_db():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        # Retorna cache local sem forçar sync
+        cache = _ml_anuncios_cache_load()
+        total = sum(len(v) for v in cache.values())
+        return jsonify({"ok": True, "anunciosPorSku": cache, "totalSkus": len(cache), "totalAnuncios": total, "fonte": "cache"})
+
+    @app.route("/integracoes/mercadolivre/sincronizar-anuncios", methods=["POST", "GET", "OPTIONS"])
+    def ml_sincronizar_anuncios():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        tokens_data = _ml_load_tokens()
+        if not tokens_data:
+            return jsonify({"ok": False, "erro": "Mercado Livre nao autorizado"}), 401
+
+        por_sku = {}
+        total_anuncios = 0
+        erros = []
+
+        for conta_nome in list(tokens_data.keys()):
+            token = _ml_get_user_token(conta_nome)
+            if not token:
+                erros.append(f"{conta_nome}: token invalido")
+                continue
+            # Buscar user_id
+            user_id = tokens_data.get(conta_nome, {}).get("user_id", "")
+            if not user_id:
+                try:
+                    _r = requests.get("https://api.mercadolibre.com/users/me",
+                                      headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                    if _r.status_code == 200:
+                        user_id = str(_r.json().get("id", ""))
+                        tokens_data[conta_nome]["user_id"] = user_id
+                        _ml_save_tokens(tokens_data)
+                except Exception:
+                    pass
+            if not user_id:
+                erros.append(f"{conta_nome}: user_id nao encontrado")
+                continue
+            print(f"[ML-SYNC] Buscando anuncios conta={conta_nome} user={user_id}")
+            ids_ativos = _ml_buscar_todos_ids(token, user_id, "active")
+            ids_pausados = _ml_buscar_todos_ids(token, user_id, "paused")
+            todos_ids = ids_ativos + ids_pausados
+            print(f"[ML-SYNC] {conta_nome}: {len(ids_ativos)} ativos + {len(ids_pausados)} pausados")
+            itens = _ml_buscar_detalhes_lote(token, todos_ids)
+            for item in itens:
+                sku = str(item.get("seller_sku") or "").strip().upper()
+                if not sku:
+                    continue
+                if sku not in por_sku:
+                    por_sku[sku] = []
+                por_sku[sku].append({
+                    "externalListingId": item.get("id", ""),
+                    "mlId": item.get("id", ""),
+                    "titulo": item.get("title", ""),
+                    "preco": item.get("price", 0),
+                    "estoque": item.get("available_quantity", 0),
+                    "status": item.get("status", ""),
+                    "thumbnail": item.get("thumbnail", ""),
+                    "integrationId": conta_nome,
+                    "marketplace": "ml",
+                })
+                total_anuncios += 1
+
+        _ml_anuncios_cache_save(por_sku)
+        return jsonify({"ok": True, "totalSkus": len(por_sku), "totalAnuncios": total_anuncios, "erros": erros})
+
     @app.route("/integracoes/mercadolivre/video", methods=["POST", "OPTIONS"])
     def ml_video():
         if request.method == "OPTIONS":
