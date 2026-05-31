@@ -1307,40 +1307,53 @@ def _identificar_nome_peca(codigo):
 # ─── Lógica principal de busca ────────────────────────────────────────────────
 def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
     """
-    FLUXO CORRETO:
-    1. Lista ML pelo OEM exato → lista.mercadolivre.com.br/{oem}
-    2. Abre anúncios relevantes individualmente via API + Playwright
-    3. Lê título, atributos, descrição de cada um
-    4. Consolida + score de compatibilidade
-    5. IA apenas formata (títulos, descrição, SEO) — NUNCA deduz compat
+    FLUXO OBRIGATÓRIO:
+    OEM → Mercado Livre → Raspagem → Validação → Score → Compatibilidades aprovadas → IA
+    A IA NÃO infere compatibilidade — somente formata dados aprovados pela raspagem.
     """
-    print(f"\n[WRX] ══ BUSCA: {codigo} ══")
+    _t0 = time.time()
+    print(f"\n{'='*60}")
+    print(f"[OEM BUSCA] codigo={codigo!r} | nome_fixo={nome_peca_fixo!r} | compat_oem={bool(compatibilidade_oem)}")
+    print(f"{'='*60}")
+
+    # Rastreamento de fonte por dado
+    fonte_dados = {
+        "titulos":        "nenhum",
+        "compatibilidade":"nenhum",
+        "precos":         "nenhum",
+        "nome_peca":      "nenhum",
+    }
 
     # ── ETAPA 1: ML API busca rápida com atributos básicos ───────────────────
-    print(f"[WRX] ETAPA 1: ML API search...")
+    print(f"[OEM BUSCA] ETAPA 1 — ML API search: {codigo}")
     items_api = _buscar_api_ml_detalhado(codigo)
     titulos_ml   = [i["titulo"] for i in items_api if i["titulo"]]
     precos_novos = [i["preco"] for i in items_api if i.get("condicao") == "new"  and i["preco"] > 5]
     precos_usados= [i["preco"] for i in items_api if i.get("condicao") == "used" and i["preco"] > 5]
     items_com_oem = [i for i in items_api if codigo.upper().replace(" ","") in i["titulo"].upper().replace(" ","")]
-    print(f"[WRX] API: {len(items_api)} resultados | {len(items_com_oem)} com OEM no título")
+    print(f"[OEM BUSCA] API ML: {len(items_api)} resultados | {len(items_com_oem)} com OEM no título")
+    if items_api:
+        fonte_dados["titulos"] = "api_ml"
+        fonte_dados["precos"]  = "api_ml"
+    if items_com_oem:
+        print(f"[OEM CONFIRMADO] via API ML — título: {items_com_oem[0]['titulo'][:70]}")
 
     # Fallback 1: se API não retornou nada, tenta buscar_ml() — sem Playwright aqui
     # (ETAPA 3 já usará Playwright; dois asyncio.run() no mesmo thread causam falha silenciosa)
     if not items_api:
-        print(f"[WRX] API sem resultados — fallback para buscar_ml() (sem Playwright)...")
+        print(f"[OEM BUSCA] API sem resultados — fallback buscar_ml() sem Playwright...")
         titulos_fb, novos_fb, usados_fb = buscar_ml(codigo, usar_playwright=False)
         if titulos_fb:
             titulos_ml.extend(t for t in titulos_fb if t not in titulos_ml)
             precos_novos.extend(novos_fb)
             precos_usados.extend(usados_fb)
-            print(f"[WRX] buscar_ml() encontrou {len(titulos_fb)} títulos | novos={len(novos_fb)} usados={len(usados_fb)}")
+            fonte_dados["titulos"] = "requests_html"
+            print(f"[OEM BUSCA] buscar_ml() encontrou {len(titulos_fb)} títulos")
 
     # Fallback 2 (seguro): busca "nome + OEM" juntos na API — nunca só pelo nome
-    # Isso filtra peças com mesmo nome mas OEM diferente
     if not items_api and nome_peca_fixo:
         query_segura = f"{nome_peca_fixo} {codigo}"
-        print(f"[WRX] Fallback seguro: buscando '{query_segura}'...")
+        print(f"[OEM BUSCA] Fallback seguro: '{query_segura}'...")
         items_por_nome = _buscar_api_ml_detalhado(query_segura)
         if items_por_nome:
             items_api = items_por_nome
@@ -1348,7 +1361,9 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
             titulos_ml.extend(i["titulo"] for i in items_por_nome if i["titulo"] and i["titulo"] not in titulos_ml)
             precos_novos.extend(i["preco"] for i in items_por_nome if i.get("condicao") == "new"  and i["preco"] > 5)
             precos_usados.extend(i["preco"] for i in items_por_nome if i.get("condicao") == "used" and i["preco"] > 5)
-            print(f"[WRX] Fallback nome+OEM: {len(items_por_nome)} resultados | {len(items_com_oem)} com OEM no título")
+            fonte_dados["titulos"] = "api_ml_nome_oem"
+            fonte_dados["precos"]  = "api_ml_nome_oem"
+            print(f"[OEM BUSCA] Fallback nome+OEM: {len(items_por_nome)} resultados | {len(items_com_oem)} com OEM")
 
     # ── ETAPA 2: Detalhes completos dos itens com OEM confirmado via API ─────
     anuncios = []
@@ -1372,7 +1387,7 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
         return False
 
     if not _tem_compat_nos_atributos(anuncios):
-        print(f"[WRX] ETAPA 3: Playwright lista + PDPs em sessão única...")
+        print(f"[OEM BUSCA] ETAPA 3 — Playwright lista + PDPs (sem atributos suficientes)...")
         urls_lista = [
             f"https://lista.mercadolivre.com.br/{codigo}",
             f"https://lista.mercadolivre.com.br/acessorios-veiculos/{codigo}",
@@ -1473,9 +1488,12 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
                 parsed = _parse_pagina_anuncio(item["html"], item["url"])
                 if parsed.get("atributos") or parsed.get("titulo"):
                     anuncios.append(parsed)
-                    print(f"[WRX] PDP: {len(parsed.get('atributos',{}))} attrs | {parsed.get('titulo','')[:50]}")
+                    fonte_dados["titulos"] = "raspagem_playwright"
+                    if parsed.get("atributos"):
+                        fonte_dados["compatibilidade"] = "raspagem_playwright"
+                    print(f"[OEM BUSCA] PDP raspado: {len(parsed.get('atributos',{}))} attrs | {parsed.get('titulo','')[:60]}")
         except Exception as e:
-            print(f"[WRX] ETAPA 3 erro: {e}")
+            print(f"[OEM BUSCA] ETAPA 3 ERRO: {e}")
             # Fallback: requests para PDPs com permalinks da API
             for h in _buscar_requests_html(urls_lista):
                 for url in _extrair_urls_da_lista_html(h):
@@ -1486,7 +1504,7 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
             print(f"[WRX] ETAPA 3: Sem dados de PDPs")
 
     # ── ETAPA 4: Consolida e cria score ──────────────────────────────────────
-    print(f"[WRX] ETAPA 4: Consolidando {len(anuncios)} anúncios...")
+    print(f"[OEM BUSCA] ETAPA 4 — Consolidando {len(anuncios)} anúncios...")
     consolidado = _consolidar_e_score(anuncios, codigo)
 
     oem_confirmado_ml = bool(items_com_oem)
@@ -1502,17 +1520,29 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
             ]).upper().replace(" ", "")
             if oem_clean in texto:
                 oem_confirmado_ml = True
-                print(f"[WRX] OEM confirmado via PDP: {a.get('titulo','')[:60]}")
+                print(f"[OEM CONFIRMADO] via raspagem PDP — título: {a.get('titulo','')[:70]}")
                 break
+
+    if not oem_confirmado_ml:
+        print(f"[OEM NAO CONFIRMADO] codigo={codigo!r} — não encontrado em nenhum anúncio ML")
 
     compat_consolidada = (consolidado or {}).get("compatibilidade", [])
 
+    # Log de score por compatibilidade
     if compat_consolidada:
-        print(f"[WRX] Compat consolidada: {len(compat_consolidada)} veículo(s)")
+        print(f"[SCORE] {len(compat_consolidada)} compatibilidades consolidadas:")
         for c in compat_consolidada:
-            print(f"  → {c['veiculo']} {c.get('motor','')} | {c['anos']} | x{c.get('ocorrencias',1)}")
+            score_pct = int(c.get("confianca", 0) * 100)
+            print(f"  [COMPATIBILIDADE APROVADA] {c['veiculo']} | anos={c['anos']} | score={score_pct}% | x{c.get('ocorrencias',1)}")
+        if fonte_dados["compatibilidade"] == "nenhum":
+            fonte_dados["compatibilidade"] = "consolidacao_anuncios"
+    else:
+        print(f"[SCORE] Nenhuma compatibilidade consolidada dos anúncios")
 
     # Compatibilidade fornecida pelo frontend tem prioridade absoluta
+    if compatibilidade_oem:
+        print(f"[COMPATIBILIDADE APROVADA] {len(compatibilidade_oem)} veículos do frontend (usuário validou)")
+        fonte_dados["compatibilidade"] = "frontend_usuario"
     compat_final = compatibilidade_oem or compat_consolidada
 
     # Fonte e confiança
@@ -1529,11 +1559,11 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
         fonte_resultado = "ia_pura" if (nome_peca_fixo or titulos_ml) else "nao_encontrado"
         grau_confianca  = 30 if (nome_peca_fixo or titulos_ml) else 0
 
-    # OEM não confirmado em nenhum anúncio E sem compat do frontend → bloquear
-    # nome_peca_fixo NÃO é exceção: evita gerar anúncio com dados errados
-    # (só compatibilidade_oem enviada pelo frontend é exceção, pois o usuário validou)
+    print(f"[SCORE] fonte_resultado={fonte_resultado} | grau_confianca={grau_confianca}%")
+
+    # OEM não confirmado E sem compat do frontend → bloquear IA
     if not oem_confirmado_ml and not compat_final:
-        print(f"[WRX] Bloqueando: OEM {codigo!r} não confirmado em nenhum anúncio ML")
+        print(f"[OEM NAO CONFIRMADO] BLOQUEANDO IA — OEM {codigo!r} não confirmado, sem compat do frontend")
         return {
             "ok": False,
             "erro": f"OEM {codigo} não confirmado em nenhum anúncio do Mercado Livre.",
@@ -1553,20 +1583,29 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
     nome_peca_confirmado = nome_peca_fixo
     if not nome_peca_confirmado and items_com_oem:
         nome_peca_confirmado = _extrair_nome_oem_do_titulo(items_com_oem[0]["titulo"], codigo)
+        if nome_peca_confirmado:
+            fonte_dados["nome_peca"] = "api_ml_oem_exato"
     if not nome_peca_confirmado and titulos_ml:
         nome_peca_confirmado = _extrair_nome_oem_do_titulo(titulos_ml[0], codigo) or titulos_ml[0]
+        if nome_peca_confirmado:
+            fonte_dados["nome_peca"] = "api_ml_titulo"
+    if nome_peca_fixo:
+        fonte_dados["nome_peca"] = "cadastro_usuario"
 
-    print(f"[WRX] Nome peça: {nome_peca_confirmado!r}")
-    print(f"[WRX] Fonte: {fonte_resultado} | Confiança: {grau_confianca}")
+    print(f"[OEM BUSCA] Nome peça: {nome_peca_confirmado!r} | fonte_nome={fonte_dados['nome_peca']}")
 
     # ── ETAPA 5: IA apenas para formatação — nunca para inferir compat ────────
     precos = sorted(set(round(p,2) for p in precos_novos))[:15] or \
              sorted(set(round(p,2) for p in precos_usados))[:15]
     if consolidado and consolidado.get("precos"):
         precos = precos or consolidado["precos"]
+    if precos:
+        if fonte_dados["precos"] == "nenhum":
+            fonte_dados["precos"] = "consolidacao_anuncios"
     preco_ref = calcular_preco_sugerido(precos)
 
-    print(f"[WRX] ETAPA 5: Enviando para IA (formatação apenas)...")
+    print(f"[IA GERANDO ANUNCIO] titulos_ml={len(titulos_ml)} | precos={len(precos)} | compat={len(compat_final or [])} | fonte_compat={fonte_dados['compatibilidade']}")
+    print(f"[IA GERANDO ANUNCIO] REGRA: IA formata SOMENTE — NÃO infere compatibilidade")
     prompt = _build_prompt(
         codigo, titulos_ml, precos[:10],
         compatibilidade_oem=compat_final,
@@ -1619,10 +1658,13 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
     data["ml_titulos_encontrados"] = len(titulos_ml)
     data["precos_novos"]           = precos_novos
     data["precos_usados"]          = precos_usados
+    data["fonte_dados"]            = fonte_dados
     # legado
     data["fonte"] = fonte_resultado
 
-    print(f"[WRX] Resultado: nome={data.get('nome_peca')!r} | fonte={fonte_resultado} | conf={data['grau_de_confianca']}")
+    _elapsed = round(time.time() - _t0, 1)
+    print(f"[OEM BUSCA] CONCLUÍDO em {_elapsed}s | nome={data.get('nome_peca')!r} | fonte={fonte_resultado} | conf={data['grau_de_confianca']}%")
+    print(f"[OEM BUSCA] fonte_dados={fonte_dados}")
     return data
 
 # ─── Servidor HTTP ────────────────────────────────────────────────────────────
@@ -1680,11 +1722,33 @@ if USE_FLASK:
         # Nome da peça já cadastrado no sistema — tem prioridade absoluta sobre ML
         nome_peca_fixo = request.args.get("nome_peca", "").strip()[:80] or None
         if nome_peca_fixo:
-            print(f"[WRX-API] Nome fixo recebido do frontend: {nome_peca_fixo!r}")
-        print(f"[WRX-API] Buscando: {codigo}" + (f" | OEM compat: {len(compatibilidade_oem)} veículos" if compatibilidade_oem else ""))
+            print(f"[OEM BUSCA] nome_peca_fixo recebido: {nome_peca_fixo!r}")
+        print(f"[OEM BUSCA] Request: codigo={codigo!r}" + (f" | compat_oem={len(compatibilidade_oem)} veículos" if compatibilidade_oem else ""))
         resultado = executar_busca(codigo, compatibilidade_oem=compatibilidade_oem, nome_peca_fixo=nome_peca_fixo)
-        print(f"[WRX-API] Concluído: {codigo}")
         return jsonify(resultado)
+
+    @app.route("/limpar-cache", methods=["GET", "POST", "OPTIONS"])
+    def limpar_cache():
+        if request.method == "OPTIONS":
+            return _cors(app.response_class(status=204))
+        import glob as _glob
+        removidos = []
+        erros = []
+        _cache_files = [
+            os.path.join(_INTEG_DIR, "wrx_ml_anuncios.json"),
+            os.path.join(_INTEG_DIR, "wrx_shopee_anuncios.json"),
+        ] if "_INTEG_DIR" in dir() else []
+        for f in _cache_files:
+            try:
+                if os.path.exists(f):
+                    os.remove(f)
+                    removidos.append(os.path.basename(f))
+                    print(f"[LIMPAR-CACHE] Removido: {f}")
+            except Exception as e:
+                erros.append(f"{os.path.basename(f)}: {e}")
+        print(f"[LIMPAR-CACHE] Concluído — removidos={removidos} | erros={erros}")
+        return jsonify({"ok": True, "removidos": removidos, "erros": erros,
+                        "mensagem": f"{len(removidos)} arquivo(s) de cache removido(s)"})
 
     @app.route("/ping", methods=["GET", "OPTIONS"])
     def ping():
@@ -2272,8 +2336,15 @@ if USE_FLASK:
         try:
             me = requests.get("https://api.mercadolibre.com/users/me",
                               headers={"Authorization": f"Bearer {token}"}, timeout=10).json()
-            cats = requests.get("https://api.mercadolibre.com/users/me/items/search?status=active&limit=5",
-                                headers={"Authorization": f"Bearer {token}"}, timeout=10).json()
+            user_id_real = str(me.get("id", ""))
+            cats = requests.get(f"https://api.mercadolibre.com/users/{user_id_real}/items/search",
+                                params={"status": "active", "limit": 5},
+                                headers={"Authorization": f"Bearer {token}"}, timeout=10)
+            cats_all = requests.get(f"https://api.mercadolibre.com/users/{user_id_real}/items/search",
+                                params={"limit": 5},
+                                headers={"Authorization": f"Bearer {token}"}, timeout=10)
+            cats_json = cats.json()
+            cats_all_json = cats_all.json()
             test_payload = {
                 "title": "Teste API",
                 "family_name": "Teste API",
@@ -2297,7 +2368,9 @@ if USE_FLASK:
                 "seller_reputation": me.get("seller_reputation", {}).get("level_id"),
                 "test_post_status": test_r.status_code,
                 "test_post_response": test_r.json() if test_r.headers.get("content-type","").startswith("application/json") else test_r.text[:300],
-                "active_items": cats.get("results", [])[:5]
+                "active_items_search": cats_json,
+                "all_items_search": cats_all_json,
+                "active_items_http": cats.status_code
             })
         except Exception as _e:
             return jsonify({"erro": str(_e)}), 500
