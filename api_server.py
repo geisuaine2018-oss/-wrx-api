@@ -735,7 +735,7 @@ def _buscar_requests_html(urls):
     return []
 
 # ─── Orquestrador ─────────────────────────────────────────────────────────────
-def buscar_ml(codigo):
+def buscar_ml(codigo, usar_playwright=True):
     titles, novos, usados = [], [], []
     query    = re.sub(r'\s+', '-', codigo.strip())
     urls_html = [
@@ -761,8 +761,9 @@ def buscar_ml(codigo):
                 _absorver(*_parse_html_ml(html_ps))
                 break
 
-    # Camada 3b: Playwright Python (Railway/Linux)
-    if not novos and not usados:
+    # Camada 3b: Playwright Python (Railway/Linux) — desabilitado quando chamado de executar_busca()
+    # para evitar dupla chamada asyncio.run() no mesmo thread (ETAPA 3 já usa Playwright)
+    if usar_playwright and not novos and not usados:
         for h in _buscar_playwright_python(urls_html):
             _absorver(*_parse_html_ml(h))
 
@@ -1323,10 +1324,11 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
     items_com_oem = [i for i in items_api if codigo.upper().replace(" ","") in i["titulo"].upper().replace(" ","")]
     print(f"[WRX] API: {len(items_api)} resultados | {len(items_com_oem)} com OEM no título")
 
-    # Fallback 1: se API não retornou nada, tenta buscar_ml() com HTML scraping multicamada
+    # Fallback 1: se API não retornou nada, tenta buscar_ml() — sem Playwright aqui
+    # (ETAPA 3 já usará Playwright; dois asyncio.run() no mesmo thread causam falha silenciosa)
     if not items_api:
-        print(f"[WRX] API sem resultados — fallback para buscar_ml() (HTML scraping)...")
-        titulos_fb, novos_fb, usados_fb = buscar_ml(codigo)
+        print(f"[WRX] API sem resultados — fallback para buscar_ml() (sem Playwright)...")
+        titulos_fb, novos_fb, usados_fb = buscar_ml(codigo, usar_playwright=False)
         if titulos_fb:
             titulos_ml.extend(t for t in titulos_fb if t not in titulos_ml)
             precos_novos.extend(novos_fb)
