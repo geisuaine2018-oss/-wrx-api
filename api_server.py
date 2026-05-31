@@ -2611,24 +2611,31 @@ if USE_FLASK:
             print(f"[ML-CACHE] Aviso: nao salvou ({e})")
 
     def _ml_buscar_todos_ids(token, user_id, status="active"):
-        """Busca todos os IDs de anúncios ML do vendedor paginando."""
+        """Busca todos os IDs de anúncios ML do vendedor.
+
+        Usa search_type=scan (scroll_id) porque a paginação por offset da API
+        do ML trava em 1000 — vendedores maiores perdiam anúncios acima disso.
+        """
         ids = []
-        offset = 0
-        limit = 100
+        scroll_id = None
         while True:
+            params = {"status": status, "search_type": "scan", "limit": 100}
+            if scroll_id:
+                params["scroll_id"] = scroll_id
             r = requests.get(
                 f"https://api.mercadolibre.com/users/{user_id}/items/search",
-                params={"status": status, "limit": limit, "offset": offset},
+                params=params,
                 headers={"Authorization": f"Bearer {token}"}, timeout=15
             )
             if r.status_code != 200:
                 break
             d = r.json()
             batch = d.get("results", [])
+            if not batch:
+                break
             ids.extend(batch)
-            total = d.get("paging", {}).get("total", 0)
-            offset += limit
-            if offset >= total or not batch:
+            scroll_id = d.get("scroll_id")
+            if not scroll_id:
                 break
         return ids
 
@@ -2640,7 +2647,7 @@ if USE_FLASK:
             r = requests.get(
                 "https://api.mercadolibre.com/items",
                 params={"ids": ",".join(lote),
-                        "attributes": "id,title,price,available_quantity,seller_sku,status,thumbnail"},
+                        "attributes": "id,title,price,available_quantity,seller_sku,seller_custom_field,status,thumbnail"},
                 headers={"Authorization": f"Bearer {token}"}, timeout=20
             )
             if r.status_code != 200:
@@ -2654,10 +2661,71 @@ if USE_FLASK:
     def ml_anuncios_db():
         if request.method == "OPTIONS":
             return _options_resp()
-        # Retorna cache local sem forçar sync
+        # Tenta Supabase primeiro
+        try:
+            r = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/ml_anuncios?select=*&order=sync_at.desc&limit=5000",
+                headers=_wrx_headers(), timeout=10
+            )
+            if r.status_code == 200:
+                dados = r.json()
+                # Agrupa por SKU para manter compatibilidade com o formato do cache
+                por_sku = {}
+                for d in dados:
+                    sku = (d.get("sku") or "").upper()
+                    if sku not in por_sku:
+                        por_sku[sku] = []
+                    por_sku[sku].append({
+                        "mlId": d.get("ml_id", ""),
+                        "externalListingId": d.get("ml_id", ""),
+                        "titulo": d.get("titulo", ""),
+                        "preco": d.get("preco", 0),
+                        "estoque": d.get("estoque", 0),
+                        "status": d.get("status", "active"),
+                        "thumbnail": d.get("thumbnail", ""),
+                        "integrationId": d.get("conta", ""),
+                        "marketplace": "ml",
+                        "vinculado": d.get("vinculado", False),
+                    })
+                return jsonify({"ok": True, "anunciosPorSku": por_sku, "totalSkus": len(por_sku), "totalAnuncios": len(dados), "fonte": "supabase"})
+        except Exception:
+            pass
+        # Fallback: cache local
         cache = _ml_anuncios_cache_load()
         total = sum(len(v) for v in cache.values())
         return jsonify({"ok": True, "anunciosPorSku": cache, "totalSkus": len(cache), "totalAnuncios": total, "fonte": "cache"})
+
+    @app.route("/integracoes/mercadolivre/setup-tabela", methods=["POST", "GET", "OPTIONS"])
+    def ml_setup_tabela():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+        sql = """
+CREATE TABLE IF NOT EXISTS ml_anuncios (
+  id BIGSERIAL PRIMARY KEY,
+  ml_id TEXT NOT NULL,
+  conta TEXT NOT NULL DEFAULT 'default',
+  sku TEXT,
+  titulo TEXT,
+  preco FLOAT DEFAULT 0,
+  estoque INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'active',
+  thumbnail TEXT,
+  vinculado BOOLEAN DEFAULT FALSE,
+  sync_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(ml_id, conta)
+);
+CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
+"""
+        if service_key:
+            r = requests.post(
+                f"{_WRX_SB_URL}/rest/v1/rpc/exec",
+                headers={"apikey": service_key, "Authorization": f"Bearer {service_key}", "Content-Type": "application/json"},
+                json={"sql": sql}, timeout=15
+            )
+            if r.status_code in (200, 201, 204):
+                return jsonify({"ok": True, "msg": "Tabela ml_anuncios criada com sucesso"})
+        return jsonify({"ok": False, "msg": "Execute o SQL manualmente no Supabase", "sql": sql})
 
     @app.route("/integracoes/mercadolivre/sincronizar-anuncios", methods=["POST", "GET", "OPTIONS"])
     def ml_sincronizar_anuncios():
@@ -2667,16 +2735,36 @@ if USE_FLASK:
         if not tokens_data:
             return jsonify({"ok": False, "erro": "Mercado Livre nao autorizado"}), 401
 
+        # Filtro opcional por conta (?conta=default ou body {"conta": "geisa"})
+        filtro_conta = request.args.get("conta") or (request.get_json(silent=True) or {}).get("conta") or ""
+
+        # Carrega SKUs do sistema para fazer vínculo
+        skus_sistema = set()
+        try:
+            r_pecas = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque?select=sku&limit=20000",
+                headers=_wrx_headers(), timeout=15
+            )
+            if r_pecas.status_code == 200:
+                for p in r_pecas.json():
+                    if p.get("sku"):
+                        skus_sistema.add(str(p["sku"]).strip().upper())
+        except Exception:
+            pass
+
         por_sku = {}
         total_anuncios = 0
+        total_vinculados = 0
         erros = []
+        todos_itens_sb = []  # para salvar no Supabase
+        now_iso = _datetime.utcnow().isoformat() + "Z"
 
-        for conta_nome in list(tokens_data.keys()):
+        contas_alvo = [filtro_conta] if filtro_conta and filtro_conta in tokens_data else list(tokens_data.keys())
+        for conta_nome in contas_alvo:
             token = _ml_get_user_token(conta_nome)
             if not token:
                 erros.append(f"{conta_nome}: token invalido")
                 continue
-            # Buscar user_id
             user_id = tokens_data.get(conta_nome, {}).get("user_id", "")
             if not user_id:
                 try:
@@ -2696,29 +2784,72 @@ if USE_FLASK:
             print(f"[ML-SYNC] {conta_nome}: {len(ids_ativos)} ativos")
             itens = _ml_buscar_detalhes_lote(token, ids_ativos)
             for item in itens:
-                sku = str(item.get("seller_sku") or "").strip().upper()
-                if not sku:
-                    continue
+                # Tenta seller_sku primeiro, depois seller_custom_field como fallback
+                sku_raw = str(item.get("seller_sku") or item.get("seller_custom_field") or "").strip()
+                sku = sku_raw.upper()
                 estoque = item.get("available_quantity", 0)
                 if estoque <= 0:
                     continue  # só com estoque
-                if sku not in por_sku:
-                    por_sku[sku] = []
-                por_sku[sku].append({
-                    "externalListingId": item.get("id", ""),
-                    "mlId": item.get("id", ""),
-                    "titulo": item.get("title", ""),
-                    "preco": item.get("price", 0),
+                status_item = item.get("status", "active")
+                if status_item != "active":
+                    continue  # só ativos (ignora pausados/finalizados)
+                vinculado = bool(sku) and sku in skus_sistema
+                if vinculado:
+                    total_vinculados += 1
+                # Cache local é indexado por SKU; só entra quem tem SKU
+                if sku:
+                    if sku not in por_sku:
+                        por_sku[sku] = []
+                    por_sku[sku].append({
+                        "externalListingId": item.get("id", ""),
+                        "mlId": item.get("id", ""),
+                        "titulo": item.get("title", ""),
+                        "preco": item.get("price", 0),
+                        "estoque": estoque,
+                        "status": status_item,
+                        "thumbnail": item.get("thumbnail", ""),
+                        "integrationId": conta_nome,
+                        "marketplace": "ml",
+                        "vinculado": vinculado,
+                    })
+                # Supabase recebe TODOS os ativos (com e sem SKU)
+                todos_itens_sb.append({
+                    "ml_id": item.get("id", ""),
+                    "conta": conta_nome,
+                    "sku": sku_raw,
+                    "titulo": (item.get("title") or "")[:500],
+                    "preco": float(item.get("price") or 0),
                     "estoque": estoque,
-                    "status": item.get("status", "active"),
+                    "status": status_item,
                     "thumbnail": item.get("thumbnail", ""),
-                    "integrationId": conta_nome,
-                    "marketplace": "ml",
+                    "vinculado": vinculado,
+                    "sync_at": now_iso,
                 })
                 total_anuncios += 1
 
         _ml_anuncios_cache_save(por_sku)
-        return jsonify({"ok": True, "totalSkus": len(por_sku), "totalAnuncios": total_anuncios, "erros": erros})
+
+        # Salva no Supabase (silencioso se tabela nao existir)
+        try:
+            for i in range(0, len(todos_itens_sb), 100):
+                lote = todos_itens_sb[i:i+100]
+                r_up = requests.post(
+                    f"{_WRX_SB_URL}/rest/v1/ml_anuncios",
+                    headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates"},
+                    json=lote, timeout=30
+                )
+                if r_up.status_code not in (200, 201, 204):
+                    break
+        except Exception:
+            pass
+
+        return jsonify({
+            "ok": True,
+            "totalSkus": len(por_sku),
+            "totalAnuncios": total_anuncios,
+            "totalVinculados": total_vinculados,
+            "erros": erros,
+        })
 
     @app.route("/integracoes/mercadolivre/debug-sync", methods=["GET", "OPTIONS"])
     def ml_debug_sync():
@@ -2775,6 +2906,262 @@ if USE_FLASK:
                 "sem_estoque_na_amostra": sem_estoque,
             })
         return jsonify({"resultado": resultado})
+
+    # ── ML: helpers de vínculo/painel ────────────────────────────────────────
+    def _sb_count(r):
+        try:
+            return int(r.headers.get("Content-Range", "").split("/")[-1])
+        except Exception:
+            return 0
+
+    def _ml_norm_txt(s):
+        return " ".join(str(s or "").lower().replace("*", " ").split())
+
+    def _ml_conta_user_id(conta, token):
+        tokens = _ml_load_tokens()
+        user_id = tokens.get(conta, {}).get("user_id", "")
+        if not user_id:
+            try:
+                _r = requests.get("https://api.mercadolibre.com/users/me",
+                                  headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                if _r.status_code == 200:
+                    user_id = str(_r.json().get("id", ""))
+            except Exception:
+                pass
+        return user_id
+
+    @app.route("/integracoes/mercadolivre/status", methods=["GET", "OPTIONS"])
+    def ml_status():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta = request.args.get("conta", "default")
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "conectado": False, "erro": "conta nao autorizada"}), 404
+        return jsonify({"ok": True, "conectado": True, "conta": conta})
+
+    @app.route("/integracoes/mercadolivre/totais", methods=["GET", "OPTIONS"])
+    def ml_totais():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta = request.args.get("conta", "default")
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": "conta nao autorizada"}), 404
+        user_id = _ml_conta_user_id(conta, token)
+        total_ml = 0
+        ativos = 0
+        try:
+            ra = requests.get(f"https://api.mercadolibre.com/users/{user_id}/items/search",
+                              params={"status": "active", "limit": 1},
+                              headers={"Authorization": f"Bearer {token}"}, timeout=15)
+            if ra.status_code == 200:
+                ativos = ra.json().get("paging", {}).get("total", 0)
+            rt = requests.get(f"https://api.mercadolibre.com/users/{user_id}/items/search",
+                              params={"limit": 1},
+                              headers={"Authorization": f"Bearer {token}"}, timeout=15)
+            if rt.status_code == 200:
+                total_ml = rt.json().get("paging", {}).get("total", 0)
+        except Exception:
+            pass
+        sincronizados = 0
+        com_sku = 0
+        try:
+            rs = requests.get(f"{_WRX_SB_URL}/rest/v1/ml_anuncios?select=ml_id&conta=eq.{conta}",
+                              headers={**_wrx_headers(), "Prefer": "count=exact", "Range": "0-0"}, timeout=15)
+            sincronizados = _sb_count(rs)
+            rv = requests.get(f"{_WRX_SB_URL}/rest/v1/ml_anuncios?select=ml_id&conta=eq.{conta}&vinculado=eq.true",
+                              headers={**_wrx_headers(), "Prefer": "count=exact", "Range": "0-0"}, timeout=15)
+            com_sku = _sb_count(rv)
+        except Exception:
+            pass
+        return jsonify({"ok": True, "totalML": total_ml, "ativos": ativos,
+                        "comSku": com_sku, "sincronizados": sincronizados})
+
+    @app.route("/integracoes/mercadolivre/anuncios", methods=["GET", "OPTIONS"])
+    def ml_anuncios():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta = request.args.get("conta", "default")
+        try:
+            limit = int(request.args.get("limit", 80))
+        except Exception:
+            limit = 80
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": "conta nao autorizada"}), 404
+        user_id = _ml_conta_user_id(conta, token)
+        # Somente anúncios ATIVOS (pausados/finalizados ignorados por ora)
+        grupos = []
+        ids = []
+        total = 0
+        try:
+            r = requests.get(f"https://api.mercadolibre.com/users/{user_id}/items/search",
+                             params={"status": "active", "limit": min(limit, 50), "offset": 0},
+                             headers={"Authorization": f"Bearer {token}"}, timeout=15)
+            if r.status_code == 200:
+                d = r.json()
+                ids = d.get("results", [])
+                total = d.get("paging", {}).get("total", 0)
+        except Exception:
+            pass
+        itens = []
+        if ids:
+            for it in _ml_buscar_detalhes_lote(token, ids[:limit]):
+                itens.append({
+                    "mlId": it.get("id", ""),
+                    "titulo": it.get("title", ""),
+                    "preco": it.get("price", 0),
+                    "estoque": it.get("available_quantity", 0),
+                    "status": it.get("status", "active"),
+                    "grupo": "active",
+                    "thumbnail": it.get("thumbnail", ""),
+                    "sku": (it.get("seller_sku") or it.get("seller_custom_field") or ""),
+                })
+        grupos.append({"key": "active", "label": "Ativos", "total": total, "itens": itens})
+        return jsonify({"ok": True, "grupos": grupos})
+
+    @app.route("/integracoes/mercadolivre/sem-vinculo", methods=["GET", "OPTIONS"])
+    def ml_sem_vinculo():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta = request.args.get("conta", "default")
+        itens = []
+        try:
+            r = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/ml_anuncios"
+                f"?select=ml_id,titulo,sku,preco,estoque&conta=eq.{conta}"
+                f"&vinculado=eq.false&status=eq.active&limit=2000",
+                headers=_wrx_headers(), timeout=20
+            )
+            if r.status_code == 200:
+                for d in r.json():
+                    itens.append({
+                        "mlId": d.get("ml_id", ""),
+                        "titulo": d.get("titulo", ""),
+                        "sku": d.get("sku", ""),
+                        "preco": d.get("preco", 0),
+                    })
+        except Exception:
+            pass
+        return jsonify({"ok": True, "itens": itens})
+
+    @app.route("/integracoes/mercadolivre/buscar-produto", methods=["GET", "OPTIONS"])
+    def ml_buscar_produto():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        q = request.args.get("q", "").strip()
+        if not q:
+            return jsonify([])
+        out = []
+        try:
+            r = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque",
+                params={"select": "sku,titulo",
+                        "or": f"(titulo.ilike.*{q}*,sku.ilike.*{q}*)",
+                        "limit": 20},
+                headers=_wrx_headers(), timeout=15
+            )
+            if r.status_code == 200:
+                for p in r.json():
+                    out.append({"titulo": p.get("titulo", ""), "sku": p.get("sku", "")})
+        except Exception:
+            pass
+        return jsonify(out)
+
+    @app.route("/integracoes/mercadolivre/associar", methods=["POST", "OPTIONS"])
+    def ml_associar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(silent=True) or {}
+        ml_id = data.get("mlId", "")
+        sku = data.get("skuInterno", "")
+        conta = data.get("nome", "default")
+        if not ml_id or not sku:
+            return jsonify({"ok": False, "erro": "mlId e skuInterno obrigatorios"}), 400
+        try:
+            r = requests.patch(
+                f"{_WRX_SB_URL}/rest/v1/ml_anuncios?ml_id=eq.{ml_id}&conta=eq.{conta}",
+                headers=_wrx_headers(),
+                json={"sku": sku, "vinculado": True}, timeout=15
+            )
+            if r.status_code in (200, 204):
+                return jsonify({"ok": True})
+            return jsonify({"ok": False, "erro": r.text[:200]}), r.status_code
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 500
+
+    @app.route("/integracoes/mercadolivre/vincular-titulo", methods=["POST", "GET", "OPTIONS"])
+    def ml_vincular_titulo():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta = request.args.get("conta", "default")
+        # Peças do sistema (somente liga a peças que JÁ existem)
+        pecas = []
+        try:
+            rp = requests.get(f"{_WRX_SB_URL}/rest/v1/pecas_estoque?select=sku,titulo&limit=20000",
+                              headers=_wrx_headers(), timeout=20)
+            if rp.status_code == 200:
+                for p in rp.json():
+                    nome = _ml_norm_txt(p.get("titulo"))
+                    if nome and len(nome) >= 4:
+                        pecas.append((p.get("sku", ""), nome))
+        except Exception:
+            pass
+        # Anúncios ativos ainda sem vínculo
+        ads = []
+        try:
+            ra = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/ml_anuncios"
+                f"?select=ml_id,titulo&conta=eq.{conta}&vinculado=eq.false&status=eq.active&limit=5000",
+                headers=_wrx_headers(), timeout=20
+            )
+            if ra.status_code == 200:
+                ads = ra.json()
+        except Exception:
+            pass
+        vinculados = 0
+        ambiguos = 0
+        sem_match = 0
+        for ad in ads:
+            t = _ml_norm_txt(ad.get("titulo"))
+            if not t:
+                sem_match += 1
+                continue
+            achados = {sku for (sku, nome) in pecas if nome in t or t in nome}
+            if len(achados) == 1:
+                sku = next(iter(achados))
+                try:
+                    requests.patch(
+                        f"{_WRX_SB_URL}/rest/v1/ml_anuncios?ml_id=eq.{ad['ml_id']}&conta=eq.{conta}",
+                        headers=_wrx_headers(),
+                        json={"sku": sku, "vinculado": True}, timeout=15
+                    )
+                    vinculados += 1
+                except Exception:
+                    sem_match += 1
+            elif len(achados) > 1:
+                ambiguos += 1
+            else:
+                sem_match += 1
+        ja_vinculados = 0
+        try:
+            rj = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/ml_anuncios?select=ml_id&conta=eq.{conta}&vinculado=eq.true",
+                headers={**_wrx_headers(), "Prefer": "count=exact", "Range": "0-0"}, timeout=15
+            )
+            ja_vinculados = _sb_count(rj)
+        except Exception:
+            pass
+        return jsonify({"ok": True, "vinculados": vinculados, "jaVinculados": ja_vinculados,
+                        "ambiguos": ambiguos, "semMatch": sem_match})
+
+    @app.route("/integracoes/mercadolivre/criar-e-vincular", methods=["POST", "OPTIONS"])
+    def ml_criar_e_vincular():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        # Desativado por ora: o sistema não cria peças automaticamente.
+        return jsonify({"ok": False, "erro": "Criação de peça desativada por enquanto"}), 501
 
     @app.route("/integracoes/mercadolivre/video", methods=["POST", "OPTIONS"])
     def ml_video():
