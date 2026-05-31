@@ -607,17 +607,80 @@ def register_routes(app, cfg_fn):
                 "tempo_s": round(time.time() - t0, 1)
             })
 
-        # 2. Sem dados reais — retorna sem_dados para o frontend chamar servidor local
-        print(f"[OEM-COMPAT] Sem dados no Supabase para OEM {oem} — retornando sem_dados")
-        return jsonify({
-            "ok": True,
-            "oem": oem,
-            "fonte": "sem_dados",
-            "compatibilidades_confirmadas": [],
-            "grau_de_confianca": 0,
-            "mensagem": "OEM sem dados no banco. Execute o servidor local para buscar no Mercado Livre.",
-            "tempo_s": round(time.time() - t0, 1)
-        })
+        # 2. Sem cache — scraping ML direto do Railway (sem depender de servidor local)
+        print(f"[OEM-COMPAT] Sem cache Supabase para {oem} — scraping ML direto...")
+        try:
+            import importlib
+            _api = importlib.import_module("api_server")
+            resultado = _api.executar_busca(oem)
+            compat_raw = resultado.get("compatibilidades_confirmadas") or resultado.get("compatibilidade") or []
+            versoes = resultado.get("versoes") or []
+            # Normaliza para o formato esperado pelo frontend
+            compat = []
+            for c in (compat_raw or versoes):
+                veiculo = c.get("veiculo", "")
+                marca_v  = c.get("marca") or (veiculo.split()[0] if veiculo else "")
+                modelo_v = c.get("modelo") or (" ".join(veiculo.split()[1:]) if veiculo else "")
+                anos_str = c.get("anos", "")
+                anos_list = [int(a) for a in str(anos_str).split() if a.isdigit() and 1990 <= int(a) <= 2035]
+                compat.append({
+                    "veiculo": veiculo or f"{marca_v} {modelo_v}".strip(),
+                    "anos": anos_str,
+                    "detalhes": c.get("detalhes") or c.get("motor") or "",
+                    "marca": marca_v,
+                    "modelo": modelo_v,
+                    "motor": c.get("motor") or c.get("detalhes") or "",
+                    "cambio": c.get("cambio") or "",
+                    "ano_inicial": min(anos_list) if anos_list else None,
+                    "ano_final": max(anos_list) if anos_list else None,
+                })
+            confianca = int(resultado.get("grau_de_confianca") or (90 if compat else 0))
+            fonte_ml = resultado.get("fonte_resultado", "ml_local")
+            print(f"[OEM-COMPAT] Scraping ML retornou {len(compat)} compat | fonte: {fonte_ml}")
+
+            # Salva no Supabase para cache futuro
+            if compat:
+                for c in compat[:20]:
+                    try:
+                        requests.post(
+                            f"https://{_CRM_HOST}/rest/v1/oem_compatibilidades",
+                            headers=_crm_headers(),
+                            json={
+                                "oem": oem,
+                                "marca": c.get("marca") or "",
+                                "modelo": c.get("modelo") or "",
+                                "motor": c.get("motor") or None,
+                                "cambio": c.get("cambio") or None,
+                                "ano_inicial": c.get("ano_inicial"),
+                                "ano_final": c.get("ano_final"),
+                                "fonte": "mercadolivre",
+                                "confianca": confianca,
+                                "data_validacao": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                            },
+                            timeout=5
+                        )
+                    except Exception:
+                        pass
+
+            return jsonify({
+                "ok": True,
+                "oem": oem,
+                "fonte": "ml_railway",
+                "compatibilidades_confirmadas": compat,
+                "grau_de_confianca": confianca,
+                "tempo_s": round(time.time() - t0, 1)
+            })
+        except Exception as e:
+            print(f"[OEM-COMPAT] Scraping ML falhou: {e}")
+            return jsonify({
+                "ok": True,
+                "oem": oem,
+                "fonte": "sem_dados",
+                "compatibilidades_confirmadas": [],
+                "grau_de_confianca": 0,
+                "mensagem": str(e),
+                "tempo_s": round(time.time() - t0, 1)
+            })
 
     @app.route("/compatibilidade/salvar", methods=["POST", "OPTIONS"])
     def compat_salvar():
