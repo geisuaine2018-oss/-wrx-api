@@ -1371,33 +1371,103 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
         return False
 
     if not _tem_compat_nos_atributos(anuncios):
-        print(f"[WRX] ETAPA 3: API sem atributos de compat → Playwright nas páginas...")
+        print(f"[WRX] ETAPA 3: Playwright lista + PDPs em sessão única...")
         urls_lista = [
             f"https://lista.mercadolivre.com.br/{codigo}",
             f"https://lista.mercadolivre.com.br/acessorios-veiculos/{codigo}",
         ]
-        htmls_lista = _buscar_playwright_python(urls_lista)
-        if not htmls_lista:
-            htmls_lista = _buscar_requests_html(urls_lista)
+        # URLs de fallback: permalinks da API
+        extra_pdp = [i["permalink"] for i in (items_com_oem or items_api)[:3]
+                     if i.get("permalink")]
 
-        urls_pdp = []
-        for h in htmls_lista:
-            urls_pdp.extend(_extrair_urls_da_lista_html(h))
-        # Adiciona permalinks da API
-        for i in (items_com_oem or items_api)[:3]:
-            if i.get("permalink") and i["permalink"] not in urls_pdp:
-                urls_pdp.append(i["permalink"])
-        urls_pdp = list(dict.fromkeys(urls_pdp))[:5]
+        # Uma única sessão Playwright: lista → extrai URLs → abre PDPs
+        try:
+            import asyncio
+            from playwright.async_api import async_playwright
 
-        if urls_pdp:
-            print(f"[WRX] Scraping {len(urls_pdp)} páginas de anúncio...")
-            for item in _scrape_paginas_anuncio_playwright(urls_pdp):
+            async def _scrape_lista_e_pdps():
+                resultados = []
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=True, args=[
+                        "--no-sandbox","--disable-dev-shm-usage","--disable-gpu",
+                        "--disable-setuid-sandbox","--disable-blink-features=AutomationControlled",
+                        "--window-size=1280,800",
+                    ])
+                    ctx = await browser.new_context(
+                        locale="pt-BR", user_agent=_UA_ML,
+                        viewport={"width": 1280, "height": 800}, java_script_enabled=True,
+                    )
+                    await ctx.add_init_script(_STEALTH_JS)
+                    page = await ctx.new_page()
+
+                    # Passo 1: carregar página de lista e extrair URLs dos PDPs
+                    urls_pdp = list(extra_pdp)
+                    for url_lista in urls_lista:
+                        try:
+                            print(f"[PW3] Lista: {url_lista}")
+                            await page.goto(url_lista, timeout=35000, wait_until="domcontentloaded")
+                            try:
+                                await page.wait_for_selector(
+                                    "li.ui-search-layout__item, .poly-card, .poly-component__title",
+                                    timeout=20000
+                                )
+                            except Exception:
+                                pass
+                            html_lista = await page.content()
+                            print(f"[PW3] Lista HTML: {len(html_lista)} bytes")
+                            if _has_resultados(html_lista):
+                                novos_pdp = _extrair_urls_da_lista_html(html_lista)
+                                print(f"[PW3] URLs extraídas da lista: {len(novos_pdp)}")
+                                for u in novos_pdp:
+                                    if u not in urls_pdp:
+                                        urls_pdp.append(u)
+                                if urls_pdp:
+                                    break
+                        except Exception as e:
+                            print(f"[PW3] Erro lista {url_lista}: {e}")
+                            continue
+
+                    urls_pdp = list(dict.fromkeys(urls_pdp))[:5]
+                    print(f"[PW3] Total PDPs para scraping: {len(urls_pdp)}")
+
+                    # Passo 2: abrir cada PDP na MESMA sessão
+                    for url_pdp in urls_pdp:
+                        try:
+                            await page.goto(url_pdp, timeout=30000, wait_until="domcontentloaded")
+                            try:
+                                await page.wait_for_selector(
+                                    "h1.ui-pdp-title, .ui-pdp-title, .andes-table",
+                                    timeout=10000
+                                )
+                            except Exception:
+                                pass
+                            html_pdp = await page.content()
+                            if len(html_pdp) > 5000:
+                                resultados.append({"url": url_pdp, "html": html_pdp})
+                                print(f"[PW3] PDP OK: {url_pdp[:60]} → {len(html_pdp)} bytes")
+                        except Exception as e:
+                            print(f"[PW3] Erro PDP {url_pdp[:60]}: {e}")
+                            continue
+
+                    await browser.close()
+                return resultados
+
+            pdp_results = asyncio.run(_scrape_lista_e_pdps())
+            for item in pdp_results:
                 parsed = _parse_pagina_anuncio(item["html"], item["url"])
                 if parsed.get("atributos") or parsed.get("titulo"):
                     anuncios.append(parsed)
-                    print(f"[WRX]   PDP: {len(parsed['atributos'])} attrs | {parsed['titulo'][:50]}")
-        else:
-            print(f"[WRX] ETAPA 3: Sem URLs de anúncio para scraping")
+                    print(f"[WRX] PDP: {len(parsed.get('atributos',{}))} attrs | {parsed.get('titulo','')[:50]}")
+        except Exception as e:
+            print(f"[WRX] ETAPA 3 erro: {e}")
+            # Fallback: requests para PDPs com permalinks da API
+            for h in _buscar_requests_html(urls_lista):
+                for url in _extrair_urls_da_lista_html(h):
+                    if url not in [a.get("url","") for a in anuncios]:
+                        break
+
+        if not anuncios:
+            print(f"[WRX] ETAPA 3: Sem dados de PDPs")
 
     # ── ETAPA 4: Consolida e cria score ──────────────────────────────────────
     print(f"[WRX] ETAPA 4: Consolidando {len(anuncios)} anúncios...")
