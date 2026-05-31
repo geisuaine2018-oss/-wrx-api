@@ -2198,6 +2198,7 @@ if USE_FLASK:
         global _shopee_tokens_mem
         if _shopee_tokens_mem:
             return _shopee_tokens_mem
+        # Tenta arquivo local primeiro
         try:
             with open(_SHOPEE_TOKENS_FILE) as _f:
                 loaded = json.load(_f)
@@ -2207,6 +2208,23 @@ if USE_FLASK:
                     return _shopee_tokens_mem
         except Exception:
             pass
+        # Fallback: Supabase
+        jwt = _ph_get_jwt()
+        if jwt:
+            try:
+                _r = requests.get(
+                    f"https://{_PH_HOST}/auth/v1/user",
+                    headers={"apikey": _PH_ANON, "Authorization": f"Bearer {jwt}"},
+                    timeout=10
+                )
+                if _r.status_code == 200:
+                    remote = _r.json().get("user_metadata", {}).get("wrx_shopee_tokens", {})
+                    if remote:
+                        _shopee_tokens_mem = remote
+                        print(f"[SHOPEE-TOKENS] Carregado do Supabase. Shops: {list(remote.keys())}")
+                        return _shopee_tokens_mem
+            except Exception as e:
+                print(f"[SHOPEE-TOKENS] Erro ao carregar do Supabase: {e}")
         print("[SHOPEE-TOKENS] Sem tokens salvos.")
         return _shopee_tokens_mem
 
@@ -2216,9 +2234,25 @@ if USE_FLASK:
         try:
             with open(_SHOPEE_TOKENS_FILE, "w") as _f:
                 json.dump(tokens, _f)
-            print(f"[SHOPEE-TOKENS] Salvo. Shops: {list(tokens.keys())}")
+            print(f"[SHOPEE-TOKENS] Salvo localmente. Shops: {list(tokens.keys())}")
         except Exception as e:
-            print(f"[SHOPEE-TOKENS] Erro ao salvar: {e}")
+            print(f"[SHOPEE-TOKENS] Erro ao salvar local: {e}")
+        # Persiste no Supabase
+        jwt = _ph_get_jwt()
+        if jwt:
+            try:
+                r = requests.put(
+                    f"https://{_PH_HOST}/auth/v1/user",
+                    json={"data": {"wrx_shopee_tokens": tokens}},
+                    headers={"apikey": _PH_ANON, "Authorization": f"Bearer {jwt}", "Content-Type": "application/json"},
+                    timeout=15
+                )
+                if r.status_code == 200:
+                    print(f"[SHOPEE-TOKENS] Supabase: tokens salvos. Shops: {list(tokens.keys())}")
+                else:
+                    print(f"[SHOPEE-TOKENS] ERRO Supabase: HTTP {r.status_code} — {r.text[:200]}")
+            except Exception as e:
+                print(f"[SHOPEE-TOKENS] ERRO Supabase (excecao): {e}")
 
     def _shopee_get_token(shop_id=None):
         tokens = _shopee_load_tokens()
