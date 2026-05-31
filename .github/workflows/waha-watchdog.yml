@@ -1,0 +1,58 @@
+name: WAHA WhatsApp Watchdog
+
+# Vigia a sessao do WhatsApp no WAHA. Se cair (status != WORKING), reinicia
+# automaticamente e re-garante o webhook que avisa o n8n (bot "Marcelo").
+# Isso evita o bot ficar fora do ar sem ninguem perceber.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # a cada ~10 min (cron do GitHub Actions e best-effort)
+  workflow_dispatch: {}        # permite rodar manualmente pela aba Actions
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checar e reiniciar sessao WAHA se necessario
+        env:
+          WAHA_URL: https://evo.dominiodaspecas.com.br
+          SESSION: default
+          N8N_WEBHOOK: https://n8n.dominiodaspecas.com.br/webhook/marcelo
+          # A chave ja e publica (esta no crm.html servido publicamente).
+          # Para sobrescrever, defina o secret WAHA_API_KEY no repositorio.
+          WAHA_KEY: ${{ secrets.WAHA_API_KEY }}
+        run: |
+          set -euo pipefail
+          KEY="${WAHA_KEY:-DsmX@2026#Waha}"
+
+          status=$(curl -s -m 20 -H "X-Api-Key: $KEY" "$WAHA_URL/api/sessions/$SESSION" | jq -r '.status // "UNKNOWN"')
+          echo "Status atual da sessao: $status"
+
+          if [ "$status" = "WORKING" ]; then
+            echo "Sessao no ar. Nada a fazer."
+            exit 0
+          fi
+
+          echo "Sessao fora do ar ($status). Reiniciando e garantindo webhook..."
+
+          # PUT config: persiste o webhook e ja sobe a sessao (idempotente)
+          curl -s -m 30 -X PUT \
+            -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
+            -d "{\"config\":{\"webhooks\":[{\"url\":\"$N8N_WEBHOOK\",\"events\":[\"message\"]}]}}" \
+            "$WAHA_URL/api/sessions/$SESSION" > /dev/null || true
+
+          # Garante start caso a sessao estivesse STOPPED
+          curl -s -m 30 -X POST \
+            -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
+            -d "{\"name\":\"$SESSION\"}" \
+            "$WAHA_URL/api/sessions/$SESSION/start" > /dev/null || true
+
+          sleep 10
+          novo=$(curl -s -m 20 -H "X-Api-Key: $KEY" "$WAHA_URL/api/sessions/$SESSION" | jq -r '.status // "UNKNOWN"')
+          echo "Status apos reinicio: $novo"
+
+          if [ "$novo" = "WORKING" ] || [ "$novo" = "STARTING" ]; then
+            echo "Reconexao em andamento/concluida com sucesso."
+          else
+            echo "::warning::Sessao nao reconectou sozinha (status=$novo). Pode ser necessario reescanear o QR code no WAHA."
+          fi
