@@ -1313,6 +1313,16 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
     items_com_oem = [i for i in items_api if codigo.upper().replace(" ","") in i["titulo"].upper().replace(" ","")]
     print(f"[WRX] API: {len(items_api)} resultados | {len(items_com_oem)} com OEM no título")
 
+    # Fallback: se API não retornou nada, tenta buscar_ml() com HTML scraping multicamada
+    if not items_api:
+        print(f"[WRX] API sem resultados — fallback para buscar_ml() (HTML scraping)...")
+        titulos_fb, novos_fb, usados_fb = buscar_ml(codigo)
+        if titulos_fb:
+            titulos_ml.extend(t for t in titulos_fb if t not in titulos_ml)
+            precos_novos.extend(novos_fb)
+            precos_usados.extend(usados_fb)
+            print(f"[WRX] buscar_ml() encontrou {len(titulos_fb)} títulos | novos={len(novos_fb)} usados={len(usados_fb)}")
+
     # ── ETAPA 2: Detalhes completos dos itens com OEM confirmado via API ─────
     anuncios = []
     # Inclui os básicos da busca
@@ -1389,8 +1399,8 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
         fonte_resultado = "ml_sem_oem_exato"
         grau_confianca  = 50
     else:
-        fonte_resultado = "nao_encontrado"
-        grau_confianca  = 0
+        fonte_resultado = "ia_pura" if (nome_peca_fixo or titulos_ml) else "nao_encontrado"
+        grau_confianca  = 30 if (nome_peca_fixo or titulos_ml) else 0
 
     if not oem_confirmado_ml and not compat_final and not nome_peca_fixo:
         print(f"[WRX] Bloqueando: OEM {codigo} não confirmado e sem dados")
