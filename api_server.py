@@ -1323,16 +1323,19 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
             precos_usados.extend(usados_fb)
             print(f"[WRX] buscar_ml() encontrou {len(titulos_fb)} títulos | novos={len(novos_fb)} usados={len(usados_fb)}")
 
-    # Fallback 2: busca por nome_peca na API (se OEM ainda sem resultados)
+    # Fallback 2 (seguro): busca "nome + OEM" juntos na API — nunca só pelo nome
+    # Isso filtra peças com mesmo nome mas OEM diferente
     if not items_api and nome_peca_fixo:
-        print(f"[WRX] OEM sem resultados — buscando por nome: {nome_peca_fixo!r}...")
-        items_por_nome = _buscar_api_ml_detalhado(nome_peca_fixo)
+        query_segura = f"{nome_peca_fixo} {codigo}"
+        print(f"[WRX] Fallback seguro: buscando '{query_segura}'...")
+        items_por_nome = _buscar_api_ml_detalhado(query_segura)
         if items_por_nome:
             items_api = items_por_nome
+            items_com_oem = [i for i in items_por_nome if codigo.upper().replace(" ","") in i["titulo"].upper().replace(" ","")]
             titulos_ml.extend(i["titulo"] for i in items_por_nome if i["titulo"] and i["titulo"] not in titulos_ml)
             precos_novos.extend(i["preco"] for i in items_por_nome if i.get("condicao") == "new"  and i["preco"] > 5)
             precos_usados.extend(i["preco"] for i in items_por_nome if i.get("condicao") == "used" and i["preco"] > 5)
-            print(f"[WRX] Busca por nome: {len(items_por_nome)} resultados | títulos: {len(titulos_ml)}")
+            print(f"[WRX] Fallback nome+OEM: {len(items_por_nome)} resultados | {len(items_com_oem)} com OEM no título")
 
     # ── ETAPA 2: Detalhes completos dos itens com OEM confirmado via API ─────
     anuncios = []
@@ -1413,16 +1416,21 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
         fonte_resultado = "ia_pura" if (nome_peca_fixo or titulos_ml) else "nao_encontrado"
         grau_confianca  = 30 if (nome_peca_fixo or titulos_ml) else 0
 
-    if not oem_confirmado_ml and not compat_final and not nome_peca_fixo:
-        print(f"[WRX] Bloqueando: OEM {codigo} não confirmado e sem dados")
+    # OEM não confirmado em nenhum anúncio E sem compat do frontend → bloquear
+    # nome_peca_fixo NÃO é exceção: evita gerar anúncio com dados errados
+    # (só compatibilidade_oem enviada pelo frontend é exceção, pois o usuário validou)
+    if not oem_confirmado_ml and not compat_final:
+        print(f"[WRX] Bloqueando: OEM {codigo!r} não confirmado em nenhum anúncio ML")
         return {
             "ok": False,
-            "erro": "OEM não encontrado para geração automática.",
+            "erro": f"OEM {codigo} não confirmado em nenhum anúncio do Mercado Livre.",
+            "mensagem": "OEM não confirmado. Verifique o código ou cadastre manualmente.",
             "oem_pesquisado": codigo,
             "oem_encontrado": False,
-            "fonte_resultado": "nao_encontrado",
+            "fonte_resultado": "oem_nao_confirmado",
+            "fonte": "oem_nao_confirmado",
             "grau_de_confianca": 0,
-            "nome_peca": "",
+            "nome_peca": nome_peca_fixo or "",
             "titulos_otimizados": [],
             "mercado_livre": [],
             "compatibilidades_confirmadas": [],
@@ -2412,6 +2420,150 @@ if USE_FLASK:
             if _r.status_code in (200, 201):
                 return jsonify({"ok": True})
             return jsonify({"ok": False, "erro": _r.text[:200]}), _r.status_code
+        except Exception as _e:
+            return jsonify({"ok": False, "erro": str(_e)}), 500
+
+    # ── ML: perguntas dos compradores ────────────────────────────────────────────
+
+    @app.route("/integracoes/mercadolivre/perguntas", methods=["GET", "OPTIONS"])
+    def ml_perguntas():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta = request.args.get("conta", "default")
+        status = request.args.get("status", "UNANSWERED")
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": "conta nao autorizada"}), 401
+        tokens = _ml_load_tokens()
+        user_id = tokens.get(conta, {}).get("user_id", "")
+        if not user_id:
+            # Buscar user_id via /users/me
+            try:
+                _r = requests.get("https://api.mercadolibre.com/users/me",
+                                  headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                if _r.status_code == 200:
+                    user_id = str(_r.json().get("id", ""))
+                    tokens[conta]["user_id"] = user_id
+                    _ml_save_tokens(tokens)
+            except Exception:
+                pass
+        if not user_id:
+            return jsonify({"ok": False, "erro": "user_id nao encontrado"}), 400
+        try:
+            _r = requests.get(
+                "https://api.mercadolibre.com/questions/search",
+                params={"seller_id": user_id, "status": status,
+                        "sort_fields": "date_created", "sort_types": "DESC", "limit": 50},
+                headers={"Authorization": f"Bearer {token}"}, timeout=15
+            )
+            if _r.status_code != 200:
+                return jsonify({"ok": False, "erro": _r.text[:200]}), _r.status_code
+            d = _r.json()
+            perguntas = []
+            for q in d.get("questions", []):
+                # Buscar título do anúncio
+                item_title = ""
+                item_id = q.get("item_id", "")
+                if item_id:
+                    try:
+                        _ri = requests.get(f"https://api.mercadolibre.com/items/{item_id}?attributes=title",
+                                           headers={"Authorization": f"Bearer {token}"}, timeout=8)
+                        if _ri.status_code == 200:
+                            item_title = _ri.json().get("title", "")
+                    except Exception:
+                        pass
+                perguntas.append({
+                    "marketplace": "ml",
+                    "id": q.get("id"),
+                    "texto": q.get("text", ""),
+                    "status": q.get("status", ""),
+                    "item_id": item_id,
+                    "item_titulo": item_title,
+                    "comprador_id": q.get("from", {}).get("id", ""),
+                    "data": q.get("date_created", ""),
+                    "resposta": q.get("answer", {}).get("text", "") if q.get("answer") else None,
+                })
+            return jsonify({"ok": True, "total": len(perguntas), "perguntas": perguntas})
+        except Exception as _e:
+            return jsonify({"ok": False, "erro": str(_e)}), 500
+
+    @app.route("/integracoes/mercadolivre/responder-pergunta", methods=["POST", "OPTIONS"])
+    def ml_responder_pergunta():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        question_id = data.get("question_id")
+        resposta = data.get("resposta", "").strip()
+        conta = data.get("conta", "default")
+        if not question_id or not resposta:
+            return jsonify({"ok": False, "erro": "question_id e resposta obrigatorios"}), 400
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": "conta nao autorizada"}), 401
+        try:
+            _r = requests.post(
+                "https://api.mercadolibre.com/answers",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"question_id": question_id, "text": resposta},
+                timeout=15
+            )
+            if _r.status_code in (200, 201):
+                return jsonify({"ok": True})
+            return jsonify({"ok": False, "erro": _r.text[:200]}), _r.status_code
+        except Exception as _e:
+            return jsonify({"ok": False, "erro": str(_e)}), 500
+
+    @app.route("/integracoes/mercadolivre/vendas-recentes", methods=["GET", "OPTIONS"])
+    def ml_vendas_recentes():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta = request.args.get("conta", "default")
+        dias = int(request.args.get("dias", "30"))
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": "conta nao autorizada"}), 401
+        tokens = _ml_load_tokens()
+        user_id = tokens.get(conta, {}).get("user_id", "")
+        if not user_id:
+            try:
+                _r = requests.get("https://api.mercadolibre.com/users/me",
+                                  headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                if _r.status_code == 200:
+                    user_id = str(_r.json().get("id", ""))
+                    tokens[conta]["user_id"] = user_id
+                    _ml_save_tokens(tokens)
+            except Exception:
+                pass
+        if not user_id:
+            return jsonify({"ok": False, "erro": "user_id nao encontrado"}), 400
+        try:
+            from datetime import timedelta
+            date_from = (_datetime.utcnow() - timedelta(days=dias)).strftime("%Y-%m-%dT00:00:00.000-00:00")
+            _r = requests.get(
+                "https://api.mercadolibre.com/orders/search",
+                params={"seller": user_id, "sort": "date_desc", "limit": 50,
+                        "date_created.from": date_from},
+                headers={"Authorization": f"Bearer {token}"}, timeout=15
+            )
+            if _r.status_code != 200:
+                return jsonify({"ok": False, "erro": _r.text[:200]}), _r.status_code
+            d = _r.json()
+            vendas = []
+            for o in d.get("results", []):
+                itens = [{"titulo": i.get("item", {}).get("title", ""),
+                           "sku": i.get("item", {}).get("seller_sku", ""),
+                           "qty": i.get("quantity", 1),
+                           "preco": i.get("unit_price", 0)} for i in o.get("order_items", [])]
+                vendas.append({
+                    "marketplace": "ml",
+                    "order_id": o.get("id"),
+                    "status": o.get("status", ""),
+                    "data": o.get("date_created", ""),
+                    "total": o.get("total_amount", 0),
+                    "comprador": o.get("buyer", {}).get("nickname", ""),
+                    "itens": itens,
+                })
+            return jsonify({"ok": True, "vendas": vendas, "total": len(vendas)})
         except Exception as _e:
             return jsonify({"ok": False, "erro": str(_e)}), 500
 
