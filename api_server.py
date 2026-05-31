@@ -499,6 +499,80 @@ def _titulos_com_oem(titles, codigo):
     cod = codigo.lower().strip()
     return [t for t in titles if cod in t.lower()]
 
+
+def _extrair_compatibilidade_dos_titulos(titulos, codigo):
+    """
+    Extrai compatibilidade de veículos diretamente dos títulos ML raspados.
+    Agrupa por veículo e expande faixas de anos.
+    Retorna lista de dicts: [{"veiculo": "...", "anos": "2021 2022 2023", "detalhes": ""}]
+    """
+    _FAIXA = re.compile(
+        r'\b(20\d{2}|19\d{2})\s*(?:[aA]|\/|-)\s*(20\d{2}|19\d{2})\b'
+    )
+    _ANO   = re.compile(r'\b(20\d{2}|19\d{2})\b')
+    _LIXO  = re.compile(
+        r'\b(original|oem|genuina|genuíno|genuino|novo|nova|par|código|codigo|code|peça|peca)\b',
+        re.IGNORECASE
+    )
+
+    compat_map = {}  # key(lower) → {veiculo, anos: set}
+
+    for titulo in titulos:
+        # Remove o OEM do título
+        t = re.sub(re.escape(codigo), '', titulo, flags=re.IGNORECASE)
+        t = re.sub(r'\s+', ' ', t).strip()
+
+        # Localiza onde a marca/modelo começa
+        m_marca = _MARCAS_VEICULOS.search(t)
+        if not m_marca:
+            continue
+
+        trecho = t[m_marca.start():]  # "Jeep Compass Renegade 1.3 Turbo 2021 A 2024"
+
+        # Coleta anos (faixa tem prioridade)
+        anos: set = set()
+        for faixa in _FAIXA.finditer(trecho):
+            ini, fim = int(faixa.group(1)), int(faixa.group(2))
+            for a in range(ini, min(fim, ini + 15) + 1):
+                if 1990 <= a <= 2035:
+                    anos.add(str(a))
+        if not anos:
+            for m in _ANO.finditer(trecho):
+                a = int(m.group(1))
+                if 1990 <= a <= 2035:
+                    anos.add(str(a))
+
+        if not anos:
+            continue
+
+        # Isola o nome do veículo: remove anos, faixas e palavras lixo
+        veic = _FAIXA.sub('', trecho)
+        veic = _ANO.sub('', veic)
+        veic = _LIXO.sub('', veic)
+        veic = re.sub(r'[\-–/|\\,;:.]+$', '', veic.strip())
+        veic = re.sub(r'\s+', ' ', veic).strip()
+
+        if len(veic) < 4:
+            continue
+
+        key = veic.lower()
+        if key not in compat_map:
+            compat_map[key] = {'veiculo': veic, 'anos': set()}
+        compat_map[key]['anos'].update(anos)
+
+    result = []
+    for entry in sorted(compat_map.values(), key=lambda x: x['veiculo']):
+        anos_sorted = sorted(entry['anos'])
+        if anos_sorted:
+            result.append({
+                "veiculo": entry['veiculo'],
+                "anos": " ".join(anos_sorted),
+                "detalhes": ""
+            })
+
+    return result
+
+
 # ─── IA: prompt + ajuste + chamada ────────────────────────────────────────────
 def _build_prompt(codigo, titles, prices, compatibilidade_oem=None,
                   nome_peca_confirmado=None):
@@ -548,12 +622,13 @@ def _build_prompt(codigo, titles, prices, compatibilidade_oem=None,
 
         bloco_compat = (
             "╔══════════════════════════════════════════╗\n"
-            "║  COMPATIBILIDADE OEM CONFIRMADA          ║\n"
+            "║  COMPATIBILIDADE EXTRAÍDA DA RASPAGEM ML ║\n"
             "╚══════════════════════════════════════════╝\n\n"
-            "Fonte: catálogo oficial / base interna validada.\n\n"
+            "Fonte: títulos reais coletados do Mercado Livre via scraping.\n"
+            "Estes veículos aparecem NOS PRÓPRIOS ANÚNCIOS do OEM — são dados reais, não inferência.\n\n"
             f"{linhas_oem}\n\n"
             "REGRA ABSOLUTA: use SOMENTE estes veículos em 'compatibilidades_confirmadas'.\n"
-            "PROIBIDO adicionar qualquer outro veículo.\n"
+            "PROIBIDO adicionar qualquer outro veículo — mesmo que pareça óbvio ou relacionado.\n"
         )
 
         regra_compat_json = (
@@ -636,7 +711,7 @@ CÓDIGO OEM / PEÇA: {codigo}
 ETAPA 2 — PREÇOS (use os anúncios APENAS para preço)
 ═══════════════════════════════════════
 
-ANÚNCIOS COLETADOS DO MERCADO LIVRE (referência de preço SOMENTE):
+ANÚNCIOS COLETADOS DO MERCADO LIVRE (referência de PREÇO SOMENTE — a compatibilidade já foi extraída acima):
 {tlist}
 
 PREÇOS ENCONTRADOS:
@@ -645,6 +720,7 @@ PREÇOS ENCONTRADOS:
 Ignorar: concessionárias, montadoras, fabricantes oficiais.
 Usar: vendedores independentes com boa reputação.
 Calcular 4 faixas: médio mercado, competitivo, venda rápida, premium.
+NÃO use os anúncios acima para inferir compatibilidade — ela já está definida no bloco anterior.
 
 ═══════════════════════════════════════
 ETAPA 3 — TÍTULOS MERCADO LIVRE
@@ -928,6 +1004,18 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
         print(f"[WRX] OEM pesquisado: {codigo}")
         print(f"[WRX] OEM encontrado: {nome_peca_confirmado!r} | Título ML: {titulos_oem_exato[0]!r}")
         print(f"[WRX] Fonte: {fonte_resultado} | Confiança: {grau_confianca}")
+
+        # ── Extrai compatibilidade diretamente dos títulos raspados ──────────
+        # Usa TODOS os títulos (não só os com OEM) para capturar mais veículos
+        if not compatibilidade_oem:
+            compat_raspado = _extrair_compatibilidade_dos_titulos(titles, codigo)
+            if compat_raspado:
+                compatibilidade_oem = compat_raspado
+                print(f"[WRX] Compatibilidade extraída da raspagem ML: {len(compatibilidade_oem)} veículo(s)")
+                for c in compatibilidade_oem:
+                    print(f"  → {c['veiculo']} | anos: {c['anos']}")
+            else:
+                print(f"[WRX] Não foi possível extrair compatibilidade dos títulos ML")
     else:
         print(f"[WRX] OEM pesquisado: {codigo}")
         print(f"[WRX] OEM não encontrado por correspondência exata no ML ({len(titles)} títulos sem match)")
