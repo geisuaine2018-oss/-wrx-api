@@ -111,7 +111,8 @@ def _get_ml_token():
 # ─── Parsing HTML ─────────────────────────────────────────────────────────────
 def _has_resultados(html):
     return any(c in html for c in [
-        "ui-search-layout__item", "ui-search-result", "andes-money-amount__fraction"
+        "ui-search-layout__item", "ui-search-result", "andes-money-amount__fraction",
+        "poly-card", "poly-component__title", "resultados",
     ])
 
 def _parse_html_ml(html):
@@ -120,10 +121,11 @@ def _parse_html_ml(html):
     soup  = BeautifulSoup(html, "html.parser")
     items = (soup.select("li.ui-search-layout__item") or
              soup.select("div.ui-search-result") or
+             soup.select(".poly-card") or
              soup.select("[data-item-id]"))
     for item in items:
         t_tag = (item.find(class_="ui-search-item__title") or
-                 item.find(class_=re.compile(r"title|item__title|name")))
+                 item.find(class_=re.compile(r"poly-component__title|title|item__title|name")))
         if t_tag:
             t = t_tag.get_text(strip=True)
             if len(t) > 8 and t not in titles:
@@ -284,17 +286,25 @@ def _extrair_urls_da_lista_html(html):
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(html, "html.parser")
     urls = []
+    vistos = set()
+    # Seletores em ordem de prioridade — inclui novo layout poly-card do ML (2024+)
     for sel in [
+        ".poly-card a",
+        ".poly-component__title",
         "li.ui-search-layout__item a.ui-search-item__image-link",
         "li.ui-search-layout__item a[href*='MLB']",
         ".ui-search-result a[href*='MLB']",
-        "a[href*='mercadolivre.com.br/'][href*='MLB']",
+        "a[href*='mercadolivre.com.br/']",
     ]:
         for a in soup.select(sel):
             href = a.get("href", "")
-            if href and "MLB" in href and href not in urls:
-                href = href.split("?")[0].split("#")[0]
-                if "mercadolivre.com.br" in href:
+            if not href:
+                continue
+            href = href.split("?")[0].split("#")[0]
+            # Aceita MLB e MLBU (novo formato de URL)
+            if "mercadolivre.com.br" in href and re.search(r"MLB[A-Z]?\d+", href):
+                if href not in vistos:
+                    vistos.add(href)
                     urls.append(href)
         if len(urls) >= 5:
             break
@@ -636,10 +646,10 @@ def _buscar_playwright_python(urls):
 
                         await _dismiss_cookies(page)
 
-                        print("[PW] Aguardando resultados (li.ui-search-layout__item) ...")
+                        print("[PW] Aguardando resultados...")
                         try:
                             await page.wait_for_selector(
-                                "li.ui-search-layout__item, div.ui-search-result",
+                                "li.ui-search-layout__item, div.ui-search-result, .poly-card, .poly-component__title",
                                 timeout=18000
                             )
                             print("[PW] Seletor encontrado")
