@@ -2388,71 +2388,118 @@ if USE_FLASK:
         except Exception as _e:
             return jsonify({"erro": str(_e)}), 500
 
+    # Itens de segurança que devem ser sempre publicados como NOVO na Shopee
+    import re as _re
+    _SHOPEE_SOMENTE_NOVO = _re.compile(
+        r"airbag|air.?bag|cinto.?segur|freio|pastilha|disco.?fre|pinça|cilindro.?mestre"
+        r"|bomba.?fre|sensor.?abs|modulo.?abs|amortecedor|bandeja|suspensao|mola.?suspens"
+        r"|pivo|cubo.?roda|manga.?eixo|caixa.?direcao|coluna.?direcao|bomba.?direcao"
+        r"|hidrovacuo|servo.?fre|abs|veiculo.?freio",
+        _re.IGNORECASE
+    )
+    _SHOPEE_CAT_SOMENTE_NOVO = _re.compile(
+        r"freio|abs|suspensao|amortecedor|direcao|airbag|seguranca|cinto",
+        _re.IGNORECASE
+    )
+
+    def _shopee_item_somente_novo(nome, categoria=""):
+        if _SHOPEE_SOMENTE_NOVO.search(nome):
+            excecoes = _re.compile(r"tablier|suporte.?airbag|capa|cobertura|suporte", _re.IGNORECASE)
+            if not excecoes.search(nome):
+                return True
+        if _SHOPEE_CAT_SOMENTE_NOVO.search(categoria):
+            return True
+        return False
+
     @app.route("/integracoes/shopee/publicar", methods=["POST", "OPTIONS"])
     def shopee_publicar():
         if request.method == "OPTIONS":
             return _options_resp()
         data = request.get_json(force=True) or {}
-        shop_id_param = data.get("shop_id")
-        access_token, shop_id = _shopee_get_token(shop_id_param)
-        if not access_token:
-            tokens = _shopee_load_tokens()
-            em_sandbox = SHOPEE_PARTNER_ID == 1234546
+        tokens = _shopee_load_tokens()
+        em_sandbox = SHOPEE_PARTNER_ID == 1234546
+        if not tokens:
             if em_sandbox:
-                return jsonify({
-                    "ok": False,
-                    "erro": "Shopee em modo sandbox. Configure SHOPEE_PARTNER_ID e SHOPEE_PARTNER_KEY reais no Railway e reautorize.",
-                }), 401
-            return jsonify({
-                "ok": False,
-                "erro": "Shopee nao autorizada. Acesse /integracoes/shopee/oauth para conectar.",
-                "authUrl": f"{request.host_url}integracoes/shopee/oauth",
-            }), 401
+                return jsonify({"ok": False, "erro": "Shopee em modo sandbox. Configure SHOPEE_PARTNER_ID e SHOPEE_PARTNER_KEY reais no Railway e reautorize."}), 401
+            return jsonify({"ok": False, "erro": "Shopee nao autorizada.", "authUrl": f"{request.host_url}integracoes/shopee/oauth"}), 401
 
         sku = data.get("sku", "")
         titulo = data.get("titulo", "")
         preco = data.get("preco", 0)
         descricao = data.get("descricao", titulo)
-        condicao = data.get("condicao", "new")
+        condicao_recebida = data.get("condicao", "new")
+        categoria = data.get("categoria", "")
         fotos = data.get("fotos", [])
         if not sku or not titulo:
             return jsonify({"ok": False, "erro": "sku e titulo sao obrigatorios"}), 400
 
-        ts = int(time.time())
-        path = "/api/v2/product/add_item"
-        sign = _shopee_sign(path, ts, access_token, shop_id)
-        payload_shopee = {
-            "partner_id": SHOPEE_PARTNER_ID,
-            "shop_id": shop_id,
-            "sign": sign,
-            "timestamp": ts,
-            "access_token": access_token,
-            "item_name": titulo[:120],
-            "description": descricao[:2000],
-            "price_info": [{"currency": "BRL", "original_price": float(preco)}],
-            "stock_info_v2": {"seller_stock": [{"stock": 1}]},
-            "condition": "NEW" if condicao == "new" else "USED",
-            "category_id": 100644,  # Peças e acessórios automotivos — ajustar por produto
-            "image": {"image_url_list": fotos[:9]},
-            "logistics_info": [{"logistic_id": 10038, "enabled": True}],
-            "weight": 1.0,
-        }
-        try:
-            _r = requests.post(
-                f"{_SHOPEE_BASE}{path}",
-                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts, "access_token": access_token, "shop_id": shop_id, "sign": sign},
-                json=payload_shopee,
-                timeout=20
-            )
-            _d = _r.json()
-            if _r.status_code == 200 and not _d.get("error"):
-                item_id = _d.get("response", {}).get("item_id", "")
-                print(f"[SHOPEE] SKU '{sku}' publicado. item_id={item_id}")
-                return jsonify({"ok": True, "item_id": item_id, "sku": sku})
-            print(f"[SHOPEE] Erro ao publicar SKU '{sku}': {_d}")
-            return jsonify({"ok": False, "erro": _d.get("message", _r.text[:300]), "raw": _d}), 400
-        except Exception as _e:
-            return jsonify({"ok": False, "erro": str(_e)}), 500
+        # Regra de segurança: forçar NOVO independente do que o frontend enviou
+        somente_novo = _shopee_item_somente_novo(titulo, categoria)
+        condicao_final = "new" if somente_novo else condicao_recebida
+        condicao_shopee = "NEW" if condicao_final == "new" else "USED"
+        if somente_novo and condicao_recebida == "used":
+            print(f"[SHOPEE] Item de segurança '{titulo}' convertido para NOVO automaticamente.")
+
+        # Publica em todos os shops autorizados
+        shop_id_param = data.get("shop_id")
+        shop_ids = [str(shop_id_param)] if shop_id_param else list(tokens.keys())
+        resultados = []
+        erros = []
+        for sid in shop_ids:
+            access_token, shop_id_int = _shopee_get_token(sid)
+            if not access_token:
+                erros.append(f"shop {sid}: token invalido")
+                continue
+            ts = int(time.time())
+            path = "/api/v2/product/add_item"
+            sign = _shopee_sign(path, ts, access_token, shop_id_int)
+            payload_shopee = {
+                "partner_id": SHOPEE_PARTNER_ID,
+                "shop_id": shop_id_int,
+                "sign": sign,
+                "timestamp": ts,
+                "access_token": access_token,
+                "item_name": titulo[:120],
+                "description": descricao[:2000],
+                "price_info": [{"currency": "BRL", "original_price": float(preco)}],
+                "stock_info_v2": {"seller_stock": [{"stock": 1}]},
+                "condition": condicao_shopee,
+                "category_id": 100644,
+                "image": {"image_url_list": fotos[:9]},
+                "logistics_info": [{"logistic_id": 10038, "enabled": True}],
+                "weight": 1.0,
+            }
+            try:
+                _r = requests.post(
+                    f"{_SHOPEE_BASE}{path}",
+                    params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts, "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
+                    json=payload_shopee,
+                    timeout=20
+                )
+                _d = _r.json()
+                if _r.status_code == 200 and not _d.get("error"):
+                    item_id = _d.get("response", {}).get("item_id", "")
+                    print(f"[SHOPEE] SKU '{sku}' publicado no shop {sid}. item_id={item_id}, condicao={condicao_shopee}")
+                    resultados.append({"shop_id": sid, "item_id": item_id, "condicao": condicao_shopee})
+                else:
+                    msg = _d.get("message", _r.text[:200])
+                    print(f"[SHOPEE] Erro shop {sid} SKU '{sku}': {msg}")
+                    erros.append(f"shop {sid}: {msg}")
+            except Exception as _e:
+                erros.append(f"shop {sid}: {str(_e)}")
+
+        if not resultados and erros:
+            return jsonify({"ok": False, "erro": " | ".join(erros)}), 400
+        item_id = resultados[0]["item_id"] if resultados else ""
+        return jsonify({
+            "ok": True,
+            "item_id": item_id,
+            "sku": sku,
+            "shops": resultados,
+            "erros": erros,
+            "condicao_aplicada": condicao_shopee,
+            "somente_novo_por_seguranca": somente_novo,
+        })
 
     def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace") if hasattr(sys.stdout, "reconfigure") else None
