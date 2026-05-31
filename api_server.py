@@ -2532,14 +2532,15 @@ if USE_FLASK:
                 continue
             print(f"[ML-SYNC] Buscando anuncios conta={conta_nome} user={user_id}")
             ids_ativos = _ml_buscar_todos_ids(token, user_id, "active")
-            ids_pausados = _ml_buscar_todos_ids(token, user_id, "paused")
-            todos_ids = ids_ativos + ids_pausados
-            print(f"[ML-SYNC] {conta_nome}: {len(ids_ativos)} ativos + {len(ids_pausados)} pausados")
-            itens = _ml_buscar_detalhes_lote(token, todos_ids)
+            print(f"[ML-SYNC] {conta_nome}: {len(ids_ativos)} ativos")
+            itens = _ml_buscar_detalhes_lote(token, ids_ativos)
             for item in itens:
                 sku = str(item.get("seller_sku") or "").strip().upper()
                 if not sku:
                     continue
+                estoque = item.get("available_quantity", 0)
+                if estoque <= 0:
+                    continue  # só com estoque
                 if sku not in por_sku:
                     por_sku[sku] = []
                 por_sku[sku].append({
@@ -2547,8 +2548,8 @@ if USE_FLASK:
                     "mlId": item.get("id", ""),
                     "titulo": item.get("title", ""),
                     "preco": item.get("price", 0),
-                    "estoque": item.get("available_quantity", 0),
-                    "status": item.get("status", ""),
+                    "estoque": estoque,
+                    "status": item.get("status", "active"),
                     "thumbnail": item.get("thumbnail", ""),
                     "integrationId": conta_nome,
                     "marketplace": "ml",
