@@ -2747,19 +2747,31 @@ if USE_FLASK:
                 resultado.append({"conta": conta_nome, "erro": "user_id nao encontrado"})
                 continue
             ids = _ml_buscar_todos_ids(token, user_id, "active")
-            # Busca amostra de 5 itens para ver atributos
-            amostra = _ml_buscar_detalhes_lote(token, ids[:5]) if ids else []
-            sem_sku = sum(1 for a in amostra if not a.get("seller_sku"))
-            sem_estoque = sum(1 for a in amostra if (a.get("available_quantity") or 0) <= 0)
+            # Busca amostra de 5 itens com todos os campos incluindo seller_custom_field
+            amostra_ids = ids[:5]
+            amostra_raw = []
+            if amostra_ids:
+                _r2 = requests.get(
+                    "https://api.mercadolibre.com/items",
+                    params={"ids": ",".join(amostra_ids),
+                            "attributes": "id,title,price,available_quantity,seller_sku,seller_custom_field,status,thumbnail"},
+                    headers={"Authorization": f"Bearer {token}"}, timeout=20
+                )
+                if _r2.status_code == 200:
+                    for entry in _r2.json():
+                        if entry.get("code") == 200:
+                            amostra_raw.append(entry.get("body", {}))
+            sem_sku = sum(1 for a in amostra_raw if not a.get("seller_sku") and not a.get("seller_custom_field"))
+            sem_estoque = sum(1 for a in amostra_raw if (a.get("available_quantity") or 0) <= 0)
             resultado.append({
                 "conta": conta_nome,
                 "user_id": user_id,
                 "total_ids_ativos": len(ids),
                 "amostra_5_itens": [
-                    {"id": a.get("id"), "sku": a.get("seller_sku"), "estoque": a.get("available_quantity"), "titulo": a.get("title","")[:40]}
-                    for a in amostra
+                    {"id": a.get("id"), "sku": a.get("seller_sku"), "custom_field": a.get("seller_custom_field"), "estoque": a.get("available_quantity"), "titulo": a.get("title","")[:50]}
+                    for a in amostra_raw
                 ],
-                "sem_sku_na_amostra": sem_sku,
+                "sem_sku_e_custom_na_amostra": sem_sku,
                 "sem_estoque_na_amostra": sem_estoque,
             })
         return jsonify({"resultado": resultado})
