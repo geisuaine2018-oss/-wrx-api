@@ -1413,26 +1413,24 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
                                 )
                             except Exception:
                                 pass
-                            # Extrai URLs via JavaScript — prioriza URLs que contêm o OEM no slug
-                            js_urls = await page.evaluate(f"""() => {{
-                                const oem = '{codigo}';
+                            # Extrai URLs via JS — OEM passado como argumento (sem f-string)
+                            js_urls = await page.evaluate("""(oem) => {
                                 const urls = [];
                                 const vistos = new Set();
                                 document.querySelectorAll(
                                     'li.ui-search-layout__item a, .poly-card a, a[href*="mercadolivre.com.br"]'
-                                ).forEach(a => {{
-                                    try {{
+                                ).forEach(a => {
+                                    try {
                                         const h = a.href.split('?')[0].split('#')[0];
-                                        if (/mercadolivre\\.com\\.br/.test(h) && /MLB[A-Z]?\\d+/.test(h) && !vistos.has(h)) {{
+                                        if (/mercadolivre\\.com\\.br/.test(h) && /MLB[A-Z]?\\d+/.test(h) && !vistos.has(h)) {
                                             vistos.add(h);
                                             urls.push(h);
-                                        }}
-                                    }} catch(e) {{}}
-                                }});
-                                // OEM no slug primeiro
+                                        }
+                                    } catch(e) {}
+                                });
                                 urls.sort((a, b) => (a.includes(oem) ? -1 : 1) - (b.includes(oem) ? -1 : 1));
                                 return urls.slice(0, 8);
-                            }}""")
+                            }""", codigo)
                             print(f"[PW3] URLs via JS: {len(js_urls)}")
                             for u in js_urls:
                                 if u not in urls_pdp:
