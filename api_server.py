@@ -11,6 +11,7 @@ Rodar:
 
 import json, re, os, subprocess, time, threading, sys
 import requests
+from datetime import datetime as _datetime
 
 # Instala Chromium automaticamente no Railway se não existir
 def _ensure_playwright_chromium():
