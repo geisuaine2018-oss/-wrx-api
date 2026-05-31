@@ -3176,7 +3176,43 @@ if USE_FLASK:
                 })
         return jsonify({"ok": True, "total": len(todos), "itens": todos})
 
-    # ── Shopee: sync completo → Supabase ─────────────────────────────────────────
+    # ── Shopee: cache local (arquivo JSON) + Supabase opcional ───────────────────
+
+    _SHOPEE_CACHE_FILE = os.path.join(_INTEG_DIR, "wrx_shopee_anuncios.json")
+    _shopee_anuncios_mem = []
+
+    def _shopee_cache_load():
+        global _shopee_anuncios_mem
+        if _shopee_anuncios_mem:
+            return _shopee_anuncios_mem
+        try:
+            with open(_SHOPEE_CACHE_FILE, encoding="utf-8") as f:
+                _shopee_anuncios_mem = json.load(f)
+        except Exception:
+            _shopee_anuncios_mem = []
+        return _shopee_anuncios_mem
+
+    def _shopee_cache_save(itens):
+        global _shopee_anuncios_mem
+        _shopee_anuncios_mem = itens
+        try:
+            with open(_SHOPEE_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(itens, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"[SHOPEE-CACHE] Aviso: nao salvou arquivo ({e})")
+        # Tenta Supabase silenciosamente (sem parar se a tabela nao existir)
+        try:
+            for i in range(0, len(itens), 100):
+                lote = itens[i:i+100]
+                r_up = requests.post(
+                    f"{_WRX_SB_URL}/rest/v1/shopee_anuncios",
+                    headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates"},
+                    json=lote, timeout=30
+                )
+                if r_up.status_code not in (200, 201, 204):
+                    break  # tabela nao existe, para silenciosamente
+        except Exception:
+            pass
 
     @app.route("/integracoes/shopee/sincronizar", methods=["POST", "OPTIONS"])
     def shopee_sincronizar():
@@ -3202,6 +3238,7 @@ if USE_FLASK:
         total_importados = 0
         total_vinculados = 0
         erros = []
+        todos_itens = []
 
         for sid in shop_ids:
             access_token, shop_id_int = _shopee_get_token(sid)
@@ -3216,7 +3253,6 @@ if USE_FLASK:
             detalhes = _shopee_get_item_details(access_token, shop_id_int, item_ids)
             print(f"[SHOPEE-SYNC] Shop {sid}: {len(detalhes)} itens")
             now_iso = _datetime.utcnow().isoformat() + "Z"
-            upsert_rows = []
             for item in detalhes:
                 est = _shopee_extract_estoque(item)
                 if est <= 0:
@@ -3227,7 +3263,7 @@ if USE_FLASK:
                 if sku_vinculado:
                     total_vinculados += 1
                 fotos = item.get("image", {}).get("image_url_list", [])[:9]
-                upsert_rows.append({
+                todos_itens.append({
                     "shop_id": str(sid),
                     "item_id": str(item.get("item_id", "")),
                     "sku": sku_vinculado or sku_raw,
@@ -3238,31 +3274,29 @@ if USE_FLASK:
                     "fotos": json.dumps(fotos),
                     "sync_at": now_iso,
                 })
-            for i in range(0, len(upsert_rows), 100):
-                lote = upsert_rows[i:i+100]
-                r_up = requests.post(
-                    f"{_WRX_SB_URL}/rest/v1/shopee_anuncios",
-                    headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates"},
-                    json=lote, timeout=30
-                )
-                if r_up.status_code not in (200, 201, 204):
-                    erros.append(f"shop {sid}: {r_up.status_code} {r_up.text[:150]}")
-            total_importados += len(upsert_rows)
+            total_importados += len(todos_itens)
 
+        _shopee_cache_save(todos_itens)
         return jsonify({"ok": True, "importados": total_importados, "vinculados": total_vinculados, "erros": erros})
 
     @app.route("/integracoes/shopee/anuncios-db", methods=["GET", "OPTIONS"])
     def shopee_anuncios_db():
         if request.method == "OPTIONS":
             return _options_resp()
-        r = requests.get(
-            f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?select=*&order=sync_at.desc&limit=5000",
-            headers=_wrx_headers(), timeout=15
-        )
-        if r.status_code != 200:
-            return jsonify({"ok": False, "erro": r.text[:200]}), 400
-        dados = r.json()
-        return jsonify({"ok": True, "itens": dados, "total": len(dados)})
+        # Tenta Supabase primeiro
+        try:
+            r = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?select=*&order=sync_at.desc&limit=5000",
+                headers=_wrx_headers(), timeout=10
+            )
+            if r.status_code == 200:
+                dados = r.json()
+                return jsonify({"ok": True, "itens": dados, "total": len(dados), "fonte": "supabase"})
+        except Exception:
+            pass
+        # Fallback: cache local
+        dados = _shopee_cache_load()
+        return jsonify({"ok": True, "itens": dados, "total": len(dados), "fonte": "cache"})
 
     # ── Shopee: atualizar estoque ─────────────────────────────────────────────────
 
