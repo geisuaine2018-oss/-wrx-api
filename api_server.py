@@ -184,6 +184,315 @@ def _buscar_api_ml(codigo):
             break
     return titles, novos, usados
 
+def _buscar_api_ml_detalhado(codigo):
+    """Busca via ML API com atributos completos por item."""
+    items_detalhados = []
+    token = _get_ml_token()
+    headers = {"Accept": "application/json", "Accept-Language": "pt-BR,pt;q=0.9"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        r = requests.get(
+            "https://api.mercadolibre.com/sites/MLB/search",
+            params={"q": codigo, "limit": 20},
+            headers=headers, timeout=20
+        )
+        if r.status_code != 200:
+            return []
+        for item in r.json().get("results", []):
+            attrs = {}
+            for a in item.get("attributes", []):
+                nome = (a.get("name") or "").lower().strip()
+                valor = a.get("value_name") or ""
+                if nome and valor:
+                    if nome in attrs:
+                        attrs[nome] = attrs[nome] + ", " + valor
+                    else:
+                        attrs[nome] = valor
+            items_detalhados.append({
+                "id": item.get("id", ""),
+                "titulo": item.get("title", ""),
+                "preco": float(item.get("price") or 0),
+                "condicao": item.get("condition", "new"),
+                "permalink": item.get("permalink", ""),
+                "atributos": attrs,
+            })
+    except Exception as e:
+        print(f"[ML-API-DET] Erro: {e}")
+    return items_detalhados
+
+
+def _buscar_item_completo_api(item_id):
+    """Busca atributos completos + descrição de um item pelo ID."""
+    token = _get_ml_token()
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    resultado = {"id": item_id, "atributos": {}, "descricao": "", "titulo": "", "preco": 0}
+    try:
+        r = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            attrs = {}
+            for a in data.get("attributes", []):
+                nome = (a.get("name") or "").lower().strip()
+                # Agrega múltiplos valores do mesmo atributo
+                valores = [v.get("name", "") for v in a.get("values", []) if v.get("name")]
+                if not valores and a.get("value_name"):
+                    valores = [a["value_name"]]
+                if nome and valores:
+                    attrs[nome] = ", ".join(filter(None, valores))
+            resultado["atributos"] = attrs
+            resultado["titulo"] = data.get("title", "")
+            resultado["preco"] = float(data.get("price") or 0)
+            resultado["condicao"] = data.get("condition", "new")
+    except Exception as e:
+        print(f"[ML-API-ITEM] Erro {item_id}: {e}")
+    try:
+        r2 = requests.get(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, timeout=10)
+        if r2.status_code == 200:
+            resultado["descricao"] = (r2.json().get("plain_text") or "")[:3000]
+    except Exception:
+        pass
+    return resultado
+
+
+def _normalizar_chave_attr(chave):
+    """Normaliza nomes de atributos ML para chaves canônicas."""
+    c = chave.lower().strip()
+    mapa = {
+        "marca do veículo compatível": "marca", "marca do veiculo compativel": "marca",
+        "marca do veículo": "marca", "marca compatível": "marca", "marca": "marca",
+        "modelo do veículo compatível": "modelo", "modelo do veiculo compativel": "modelo",
+        "modelo": "modelo", "modelo do veículo": "modelo",
+        "ano do veículo": "ano", "ano de fabricação": "ano", "anos compatíveis": "ano",
+        "ano": "ano", "year": "ano",
+        "motor": "motor", "motor compatível": "motor", "tipo de motor": "motor",
+        "cilindrada": "motor",
+        "código oem": "oem", "código de peça": "oem", "número de peça": "oem",
+        "part number": "oem", "número oem": "oem", "referência oem": "oem",
+        "código da peça": "oem", "cod. oem": "oem",
+        "lado": "lado", "lado do veículo": "lado", "lado da instalação": "lado",
+        "posição": "posicao", "posição no veículo": "posicao", "posição de instalação": "posicao",
+        "tipo de peça": "tipo", "tipo": "tipo", "categoria": "tipo",
+    }
+    return mapa.get(c, c)
+
+
+def _extrair_urls_da_lista_html(html):
+    """Extrai URLs de anúncios do HTML da página de lista do ML."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
+    urls = []
+    for sel in [
+        "li.ui-search-layout__item a.ui-search-item__image-link",
+        "li.ui-search-layout__item a[href*='MLB']",
+        ".ui-search-result a[href*='MLB']",
+        "a[href*='mercadolivre.com.br/'][href*='MLB']",
+    ]:
+        for a in soup.select(sel):
+            href = a.get("href", "")
+            if href and "MLB" in href and href not in urls:
+                href = href.split("?")[0].split("#")[0]
+                if "mercadolivre.com.br" in href:
+                    urls.append(href)
+        if len(urls) >= 5:
+            break
+    return urls[:8]
+
+
+def _scrape_paginas_anuncio_playwright(urls):
+    """Abre páginas individuais de anúncio e retorna lista de {url, html}."""
+    try:
+        import asyncio
+        from playwright.async_api import async_playwright
+        exec_path = _chromium_exec()
+        async def _run():
+            resultados = []
+            async with async_playwright() as p:
+                launch_args = dict(headless=True, args=[
+                    "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                    "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled",
+                ])
+                if exec_path:
+                    launch_args["executable_path"] = exec_path
+                browser = await p.chromium.launch(**launch_args)
+                ctx = await browser.new_context(
+                    locale="pt-BR", user_agent=_UA_ML,
+                    viewport={"width": 1280, "height": 900}, java_script_enabled=True,
+                )
+                await ctx.add_init_script(_STEALTH_JS)
+                page = await ctx.new_page()
+                for url in urls[:5]:
+                    try:
+                        await page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                        try:
+                            await page.wait_for_selector(
+                                "h1.ui-pdp-title, .ui-pdp-title, [class*='pdp-title'], .andes-table",
+                                timeout=10000
+                            )
+                        except Exception:
+                            pass
+                        html = await page.content()
+                        if len(html) > 5000:
+                            resultados.append({"url": url, "html": html})
+                            print(f"[PW-PDN] OK {url[:60]} → {len(html)} bytes")
+                    except Exception as e:
+                        print(f"[PW-PDN] Erro {url[:60]}: {e}")
+                await browser.close()
+            return resultados
+        return asyncio.run(_run())
+    except Exception as e:
+        print(f"[PW-PDN] Exceção: {e}")
+        return []
+
+
+def _parse_pagina_anuncio(html, url=""):
+    """Extrai dados estruturados de uma página de anúncio ML."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
+    titulo = ""
+    for sel in ["h1.ui-pdp-title", ".ui-pdp-title", "h1[class*='title']", "h1"]:
+        t = soup.select_one(sel)
+        if t:
+            titulo = t.get_text(strip=True)
+            break
+    atributos = {}
+    # Formato andes-table
+    for row in soup.select("table.andes-table tr, .andes-table__row"):
+        cells = row.select("th, td, .andes-table__column")
+        if len(cells) >= 2:
+            k = cells[0].get_text(strip=True)
+            v = cells[1].get_text(strip=True)
+            if k and v:
+                atributos[k.lower()] = v
+    # Formato specs list
+    for item in soup.select(".ui-pdp-specs__item, [class*='specs__item']"):
+        label = item.select_one("[class*='label'], [class*='key'], dt")
+        value = item.select_one("[class*='value'], [class*='val'], dd")
+        if label and value:
+            atributos[label.get_text(strip=True).lower()] = value.get_text(strip=True)
+    # Formato dl
+    for dl in soup.select("dl"):
+        for dt, dd in zip(dl.find_all("dt"), dl.find_all("dd")):
+            k = dt.get_text(strip=True).lower()
+            v = dd.get_text(strip=True)
+            if k and v and k not in atributos:
+                atributos[k] = v
+    # Descrição
+    descricao = ""
+    for sel in [".ui-pdp-description__content", "[class*='description__content']", "#description"]:
+        d = soup.select_one(sel)
+        if d:
+            descricao = d.get_text(separator="\n", strip=True)[:2000]
+            break
+    return {"titulo": titulo, "atributos": atributos, "descricao": descricao, "url": url}
+
+
+def _consolidar_e_score(anuncios, codigo_oem):
+    """
+    Cruza informações de múltiplos anúncios e cria score de compatibilidade.
+    Só aprova compatibilidades consistentes (aparece em >= 2 anúncios OU único disponível).
+    """
+    from collections import Counter, defaultdict
+    if not anuncios:
+        return None
+    compat_counter = Counter()
+    compat_anos = defaultdict(set)
+    compat_motor = {}
+    lado_counter = Counter()
+    posicao_counter = Counter()
+    tipo_counter = Counter()
+    precos = []
+    titulos = []
+    for anuncio in anuncios:
+        attrs_raw = anuncio.get("atributos", {})
+        titulo = anuncio.get("titulo", "")
+        if titulo:
+            titulos.append(titulo)
+        preco = anuncio.get("preco", 0)
+        if preco > 0:
+            precos.append(preco)
+        # Normaliza atributos
+        norm = {}
+        for k, v in attrs_raw.items():
+            norm[_normalizar_chave_attr(k)] = v
+        marca  = norm.get("marca", "").strip()
+        modelo = norm.get("modelo", "").strip()
+        motor  = norm.get("motor", "").strip()
+        ano_raw = norm.get("ano", "")
+        lado   = norm.get("lado", "").strip()
+        posicao = norm.get("posicao", "").strip()
+        tipo   = norm.get("tipo", "").strip()
+        if lado:
+            lado_counter[lado] += 1
+        if posicao:
+            posicao_counter[posicao] += 1
+        if tipo:
+            tipo_counter[tipo] += 1
+        # Extrai anos
+        anos = set()
+        faixa_m = re.search(r'\b(20\d{2}|19\d{2})\s*(?:[aA]|\/|-)\s*(20\d{2}|19\d{2})\b', ano_raw)
+        if faixa_m:
+            ini, fim = int(faixa_m.group(1)), int(faixa_m.group(2))
+            for a in range(ini, min(fim + 1, ini + 20)):
+                if 1990 <= a <= 2035:
+                    anos.add(str(a))
+        else:
+            for m in re.finditer(r'\b(20\d{2}|19\d{2})\b', ano_raw):
+                a = int(m.group(1))
+                if 1990 <= a <= 2035:
+                    anos.add(str(a))
+        if marca or modelo:
+            # Separa múltiplos modelos se a string tiver vírgula
+            modelos_lista = [m.strip() for m in modelo.split(",") if m.strip()] or [""]
+            marcas_lista  = [m.strip() for m in marca.split(",") if m.strip()] or [""]
+            for marc in marcas_lista:
+                for mod in modelos_lista:
+                    key = (marc.lower(), mod.lower())
+                    compat_counter[key] += 1
+                    compat_anos[key].update(anos)
+                    if motor and key not in compat_motor:
+                        compat_motor[key] = motor
+        elif titulo:
+            # Fallback: extrai do título
+            compat_titulo = _extrair_compatibilidade_dos_titulos([titulo], codigo_oem)
+            for c in compat_titulo:
+                key = (c["veiculo"].lower(), "")
+                compat_counter[key] += 1
+                compat_anos[key].update(c["anos"].split())
+    # Monta lista final — inclui se aparece em >= 1 anúncio (score ponderado depois)
+    total = max(len(anuncios), 1)
+    compat_final = []
+    for key, count in compat_counter.most_common():
+        marc_k, mod_k = key
+        if not marc_k:
+            continue
+        partes = [marc_k.title()]
+        if mod_k:
+            partes.append(mod_k.title())
+        veiculo_nome = " ".join(partes)
+        motor_val = compat_motor.get(key, "")
+        anos_sorted = sorted(compat_anos[key])
+        compat_final.append({
+            "veiculo": veiculo_nome,
+            "motor": motor_val,
+            "anos": " ".join(anos_sorted),
+            "detalhes": motor_val,
+            "ocorrencias": count,
+            "confianca": round(count / total, 2),
+        })
+    return {
+        "compatibilidade": compat_final,
+        "lado": lado_counter.most_common(1)[0][0] if lado_counter else "",
+        "posicao": posicao_counter.most_common(1)[0][0] if posicao_counter else "",
+        "tipo_peca": tipo_counter.most_common(1)[0][0] if tipo_counter else "",
+        "precos": sorted(set(round(p, 2) for p in precos))[:15],
+        "titulos_ml": titulos[:10],
+        "n_anuncios": total,
+    }
+
+
 # ─── Camada 2: Node.js Playwright ─────────────────────────────────────────────
 def _buscar_navegador_raw(urls):
     htmls = []
@@ -985,117 +1294,167 @@ def _identificar_nome_peca(codigo):
 
 # ─── Lógica principal de busca ────────────────────────────────────────────────
 def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
-    # ── ETAPA 1: busca no ML pelo código OEM exato ─────────────────────────────
-    titles, novos, usados = buscar_ml(codigo)
-    ml_achou = bool(titles or novos or usados)
+    """
+    FLUXO CORRETO:
+    1. Lista ML pelo OEM exato → lista.mercadolivre.com.br/{oem}
+    2. Abre anúncios relevantes individualmente via API + Playwright
+    3. Lê título, atributos, descrição de cada um
+    4. Consolida + score de compatibilidade
+    5. IA apenas formata (títulos, descrição, SEO) — NUNCA deduz compat
+    """
+    print(f"\n[WRX] ══ BUSCA: {codigo} ══")
 
-    # Verifica se algum título ML contém o OEM exato
-    titulos_oem_exato = _titulos_com_oem(titles, codigo)
-    oem_confirmado_ml = bool(titulos_oem_exato)
+    # ── ETAPA 1: ML API busca rápida com atributos básicos ───────────────────
+    print(f"[WRX] ETAPA 1: ML API search...")
+    items_api = _buscar_api_ml_detalhado(codigo)
+    titulos_ml   = [i["titulo"] for i in items_api if i["titulo"]]
+    precos_novos = [i["preco"] for i in items_api if i.get("condicao") == "new"  and i["preco"] > 5]
+    precos_usados= [i["preco"] for i in items_api if i.get("condicao") == "used" and i["preco"] > 5]
+    items_com_oem = [i for i in items_api if codigo.upper().replace(" ","") in i["titulo"].upper().replace(" ","")]
+    print(f"[WRX] API: {len(items_api)} resultados | {len(items_com_oem)} com OEM no título")
 
-    # nome_peca_fixo (enviado pelo frontend) tem prioridade absoluta — nunca sobrescrever
-    nome_peca_confirmado = nome_peca_fixo or None
+    # ── ETAPA 2: Detalhes completos dos itens com OEM confirmado via API ─────
+    anuncios = []
+    # Inclui os básicos da busca
+    anuncios.extend(items_api[:5])
+    # Busca atributos completos dos que têm OEM
+    ids = [i["id"] for i in (items_com_oem or items_api)[:5] if i.get("id")]
+    print(f"[WRX] ETAPA 2: Buscando detalhes de {len(ids)} itens via API...")
+    for item_id in ids:
+        det = _buscar_item_completo_api(item_id)
+        if det.get("atributos"):
+            anuncios.append(det)
+            print(f"[WRX]   {item_id}: {len(det['atributos'])} atributos | {det['titulo'][:50]}")
 
-    if oem_confirmado_ml:
-        if not nome_peca_fixo:
-            nome_peca_confirmado = _extrair_nome_oem_do_titulo(titulos_oem_exato[0], codigo)
+    # ── ETAPA 3: Playwright nas páginas de anúncio se atributos insuficientes ─
+    def _tem_compat_nos_atributos(lista):
+        for a in lista:
+            for k in a.get("atributos", {}):
+                if _normalizar_chave_attr(k) in ("marca", "modelo"):
+                    return True
+        return False
+
+    if not _tem_compat_nos_atributos(anuncios):
+        print(f"[WRX] ETAPA 3: API sem atributos de compat → Playwright nas páginas...")
+        urls_lista = [
+            f"https://lista.mercadolivre.com.br/{codigo}",
+            f"https://lista.mercadolivre.com.br/acessorios-veiculos/{codigo}",
+        ]
+        htmls_lista = _buscar_playwright_python(urls_lista)
+        if not htmls_lista:
+            htmls_lista = _buscar_requests_html(urls_lista)
+
+        urls_pdp = []
+        for h in htmls_lista:
+            urls_pdp.extend(_extrair_urls_da_lista_html(h))
+        # Adiciona permalinks da API
+        for i in (items_com_oem or items_api)[:3]:
+            if i.get("permalink") and i["permalink"] not in urls_pdp:
+                urls_pdp.append(i["permalink"])
+        urls_pdp = list(dict.fromkeys(urls_pdp))[:5]
+
+        if urls_pdp:
+            print(f"[WRX] Scraping {len(urls_pdp)} páginas de anúncio...")
+            for item in _scrape_paginas_anuncio_playwright(urls_pdp):
+                parsed = _parse_pagina_anuncio(item["html"], item["url"])
+                if parsed.get("atributos") or parsed.get("titulo"):
+                    anuncios.append(parsed)
+                    print(f"[WRX]   PDP: {len(parsed['atributos'])} attrs | {parsed['titulo'][:50]}")
+        else:
+            print(f"[WRX] ETAPA 3: Sem URLs de anúncio para scraping")
+
+    # ── ETAPA 4: Consolida e cria score ──────────────────────────────────────
+    print(f"[WRX] ETAPA 4: Consolidando {len(anuncios)} anúncios...")
+    consolidado = _consolidar_e_score(anuncios, codigo)
+
+    oem_confirmado_ml = bool(items_com_oem)
+    compat_consolidada = (consolidado or {}).get("compatibilidade", [])
+
+    if compat_consolidada:
+        print(f"[WRX] Compat consolidada: {len(compat_consolidada)} veículo(s)")
+        for c in compat_consolidada:
+            print(f"  → {c['veiculo']} {c.get('motor','')} | {c['anos']} | x{c.get('ocorrencias',1)}")
+
+    # Compatibilidade fornecida pelo frontend tem prioridade absoluta
+    compat_final = compatibilidade_oem or compat_consolidada
+
+    # Fonte e confiança
+    if oem_confirmado_ml and compat_final:
         fonte_resultado = "oem_exato_ml"
         grau_confianca  = 99
-        print(f"[WRX] OEM pesquisado: {codigo}")
-        print(f"[WRX] OEM encontrado: {nome_peca_confirmado!r} | Título ML: {titulos_oem_exato[0]!r}")
-        print(f"[WRX] Fonte: {fonte_resultado} | Confiança: {grau_confianca}")
-
-        # ── Extrai compatibilidade diretamente dos títulos raspados ──────────
-        # Usa TODOS os títulos (não só os com OEM) para capturar mais veículos
-        if not compatibilidade_oem:
-            compat_raspado = _extrair_compatibilidade_dos_titulos(titles, codigo)
-            if compat_raspado:
-                compatibilidade_oem = compat_raspado
-                print(f"[WRX] Compatibilidade extraída da raspagem ML: {len(compatibilidade_oem)} veículo(s)")
-                for c in compatibilidade_oem:
-                    print(f"  → {c['veiculo']} | anos: {c['anos']}")
-            else:
-                print(f"[WRX] Não foi possível extrair compatibilidade dos títulos ML")
+    elif oem_confirmado_ml:
+        fonte_resultado = "oem_exato_ml"
+        grau_confianca  = 85
+    elif items_api:
+        fonte_resultado = "ml_sem_oem_exato"
+        grau_confianca  = 50
     else:
-        print(f"[WRX] OEM pesquisado: {codigo}")
-        print(f"[WRX] OEM não encontrado por correspondência exata no ML ({len(titles)} títulos sem match)")
+        fonte_resultado = "nao_encontrado"
+        grau_confianca  = 0
 
-        # Se não há OEM confirmado no ML nem equivalência OEM fornecida pelo frontend,
-        # interrompe aqui — não gera descrição baseada em IA sem confirmação.
-        if not compatibilidade_oem and not nome_peca_fixo:
-            print(f"[WRX] Bloqueando geração: OEM {codigo} não confirmado e sem equivalência fornecida")
-            return {
-                "ok": False,
-                "erro": "OEM não encontrado para geração automática.",
-                "oem_pesquisado": codigo,
-                "oem_encontrado": False,
-                "fonte_resultado": "nao_encontrado",
-                "grau_de_confianca": 0,
-                "nome_peca": "",
-                "titulos_otimizados": [],
-                "mercado_livre": [],
-                "compatibilidades_confirmadas": [],
-            }
+    if not oem_confirmado_ml and not compat_final and not nome_peca_fixo:
+        print(f"[WRX] Bloqueando: OEM {codigo} não confirmado e sem dados")
+        return {
+            "ok": False,
+            "erro": "OEM não encontrado para geração automática.",
+            "oem_pesquisado": codigo,
+            "oem_encontrado": False,
+            "fonte_resultado": "nao_encontrado",
+            "grau_de_confianca": 0,
+            "nome_peca": "",
+            "titulos_otimizados": [],
+            "mercado_livre": [],
+            "compatibilidades_confirmadas": [],
+        }
 
-        fonte_resultado = "ml_sem_oem_exato" if ml_achou else "ia_pura"
-        grau_confianca  = 50 if ml_achou else 30
-        print(f"[WRX] Fonte: {fonte_resultado} | Confiança: {grau_confianca}")
+    # Nome da peça
+    nome_peca_confirmado = nome_peca_fixo
+    if not nome_peca_confirmado and items_com_oem:
+        nome_peca_confirmado = _extrair_nome_oem_do_titulo(items_com_oem[0]["titulo"], codigo)
+    if not nome_peca_confirmado and titulos_ml:
+        nome_peca_confirmado = _extrair_nome_oem_do_titulo(titulos_ml[0], codigo) or titulos_ml[0]
 
-    if compatibilidade_oem:
-        print(f"[WRX] Compatibilidade OEM confirmada: {len(compatibilidade_oem)} veículos")
+    print(f"[WRX] Nome peça: {nome_peca_confirmado!r}")
+    print(f"[WRX] Fonte: {fonte_resultado} | Confiança: {grau_confianca}")
 
-    # ── ETAPA 3: chama IA (somente para títulos/preço; nome já confirmado se OEM exato) ──
-    prices    = novos or usados
-    preco_ref = calcular_preco_sugerido(prices)
-    prompt    = _build_prompt(
-        codigo, titles, prices[:10],
-        compatibilidade_oem=compatibilidade_oem,
+    # ── ETAPA 5: IA apenas para formatação — nunca para inferir compat ────────
+    precos = sorted(set(round(p,2) for p in precos_novos))[:15] or \
+             sorted(set(round(p,2) for p in precos_usados))[:15]
+    if consolidado and consolidado.get("precos"):
+        precos = precos or consolidado["precos"]
+    preco_ref = calcular_preco_sugerido(precos)
+
+    print(f"[WRX] ETAPA 5: Enviando para IA (formatação apenas)...")
+    prompt = _build_prompt(
+        codigo, titulos_ml, precos[:10],
+        compatibilidade_oem=compat_final,
         nome_peca_confirmado=nome_peca_confirmado
     )
     data = _chamar_ia(prompt)
 
     if not data:
-        # IA falhou — tenta identificar nome da peça e monta fallback
-        nome_fallback = nome_peca_confirmado
-        if not nome_fallback and titles:
-            nome_fallback = _extrair_nome_oem_do_titulo(titles[0], codigo) or titles[0]
-        if not nome_fallback:
-            # Última tentativa: pede só o nome à IA via texto puro
-            nome_fallback = _identificar_nome_peca(codigo)
-        titulo_base = nome_fallback or f"Peça Automotiva {codigo}"
+        nome_fallback = nome_peca_confirmado or (titulos_ml[0] if titulos_ml else f"Peça {codigo}")
         titulos_gerados = [
-            titulo_base[:60],
-            f"{titulo_base} {codigo}".strip()[:60],
-            f"{titulo_base} Original".strip()[:60],
-            f"{titulo_base} Usado".strip()[:60],
+            nome_fallback[:60],
+            f"{nome_fallback} {codigo}".strip()[:60],
+            f"{nome_fallback} Original".strip()[:60],
+            f"{nome_fallback} Usado".strip()[:60],
         ]
-        sem_ml = not ml_achou and not oem_confirmado_ml
         data = {
-            "nome_peca": titulo_base,
-            "oem": codigo,
-            "codigo": codigo,
+            "nome_peca": nome_fallback,
+            "oem": codigo, "codigo": codigo,
             "titulos_otimizados": titulos_gerados,
             "mercado_livre": titulos_gerados,
             "titulo_ia": titulos_gerados[0],
             "preco_sugerido": preco_ref,
-            "compatibilidade": [],
-            "compatibilidades_confirmadas": [],
-            "versoes": [],
-            "explicacao": "IA indisponível — sem dados ML para este código." if sem_ml else "IA indisponível. Dados coletados do Mercado Livre.",
-            "funcao": titulo_base,
-            "sem_ia": True,
-            "sem_ml": sem_ml,
+            "compatibilidade": [], "compatibilidades_confirmadas": [], "versoes": [],
+            "funcao": nome_fallback, "sem_ia": True,
         }
 
-    # Garante que nome_peca_confirmado não seja sobrescrito pela IA
     if nome_peca_confirmado:
         data["nome_peca"] = nome_peca_confirmado
-
-    # Força preço calculado pelo Python
     if preco_ref > 0:
         data["preco_sugerido"] = preco_ref
-
-    # Força grau_de_confianca para OEM exato (IA pode ter retornado valor menor)
     if oem_confirmado_ml:
         data["grau_de_confianca"] = grau_confianca
 
@@ -1112,12 +1471,12 @@ def executar_busca(codigo, compatibilidade_oem=None, nome_peca_fixo=None):
     # Campos de auditoria
     data["oem_pesquisado"]         = codigo
     data["oem_encontrado"]         = oem_confirmado_ml
-    data["oem_titulo_ml"]          = titulos_oem_exato[0] if titulos_oem_exato else None
+    data["oem_titulo_ml"]          = items_com_oem[0]["titulo"] if items_com_oem else None
     data["fonte_resultado"]        = fonte_resultado
     data["grau_de_confianca"]      = data.get("grau_de_confianca") or grau_confianca
-    data["ml_titulos_encontrados"] = len(titles)
-    data["precos_novos"]           = novos
-    data["precos_usados"]          = usados
+    data["ml_titulos_encontrados"] = len(titulos_ml)
+    data["precos_novos"]           = precos_novos
+    data["precos_usados"]          = precos_usados
     # legado
     data["fonte"] = fonte_resultado
 
