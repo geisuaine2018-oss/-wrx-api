@@ -3575,6 +3575,45 @@ if USE_FLASK:
             _shopee_pausar_por_sku(sku)
         return jsonify({"ok": True, "sku": sku, "qtd_anterior": peca.get("qtd"), "qtd_nova": nova_qtd, "zerado": nova_qtd == 0})
 
+    # ── Shopee: criar tabela shopee_anuncios (requer service_role) ────────────────
+
+    @app.route("/integracoes/shopee/setup-tabela", methods=["POST", "GET", "OPTIONS"])
+    def shopee_setup_tabela():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        # Tenta criar via SQL usando service_role se disponível
+        service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+        sql = """
+CREATE TABLE IF NOT EXISTS shopee_anuncios (
+  id BIGSERIAL PRIMARY KEY,
+  shop_id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  sku TEXT,
+  titulo TEXT,
+  preco NUMERIC(10,2) DEFAULT 0,
+  estoque INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'NORMAL',
+  fotos JSONB DEFAULT '[]',
+  sync_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(shop_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
+"""
+        if service_key:
+            r = requests.post(
+                f"{_WRX_SB_URL}/rest/v1/rpc/exec",
+                headers={"apikey": service_key, "Authorization": f"Bearer {service_key}", "Content-Type": "application/json"},
+                json={"sql": sql}, timeout=15
+            )
+            if r.status_code in (200, 201, 204):
+                return jsonify({"ok": True, "msg": "Tabela shopee_anuncios criada com sucesso"})
+        # Sem service_role: retorna SQL para execução manual
+        return jsonify({
+            "ok": False,
+            "msg": "Configure SUPABASE_SERVICE_KEY no Railway, ou execute o SQL abaixo no Supabase Dashboard > SQL Editor",
+            "sql": sql.strip()
+        })
+
     def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace") if hasattr(sys.stdout, "reconfigure") else None
         print(f"WRX-Search API Server - porta {PORT}")
