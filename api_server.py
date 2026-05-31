@@ -2391,7 +2391,7 @@ if USE_FLASK:
     # Itens de segurança que devem ser sempre publicados como NOVO na Shopee
     import re as _re
     _SHOPEE_SOMENTE_NOVO = _re.compile(
-        r"airbag|air.?bag|cinto.?segur|freio|pastilha|disco.?fre|pinça|cilindro.?mestre"
+        r"airbag|air.?bag|cinto[\s\w]{0,5}segur|cinto seguranca|freio|pastilha|disco.?fre|pinça|cilindro.?mestre"
         r"|bomba.?fre|sensor.?abs|modulo.?abs|amortecedor|bandeja|suspensao|mola.?suspens"
         r"|pivo|cubo.?roda|manga.?eixo|caixa.?direcao|coluna.?direcao|bomba.?direcao"
         r"|hidrovacuo|servo.?fre|abs|veiculo.?freio",
