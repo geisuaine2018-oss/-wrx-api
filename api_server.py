@@ -2086,6 +2086,12 @@ if USE_FLASK:
     SHOPEE_PARTNER_ID = int(os.environ.get("SHOPEE_PARTNER_ID", "2035574"))
     SHOPEE_PARTNER_KEY = os.environ.get("SHOPEE_PARTNER_KEY", "shpk4458415353465759486e516147454957414d4c444761414a577570795655")
 
+    # ── WhatsApp (WAHA) ─────────────────────────────────────────────────────────
+    WAHA_BASE        = os.environ.get("WAHA_BASE",        "https://evo.dominiodaspecas.com.br")
+    WAHA_API_KEY     = os.environ.get("WAHA_API_KEY",     "DsmX@2026#Waha")
+    WAHA_SESSION     = os.environ.get("WAHA_SESSION",     "default")
+    WAHA_WEBHOOK_URL = os.environ.get("WAHA_WEBHOOK_URL", "https://n8n.dominiodaspecas.com.br/webhook/marcelo")
+
     # ── Supabase do usuário (pecas_estoque, shopee_anuncios) ────────────────────
     _WRX_SB_URL = "https://uthsiihzpsgarargegcw.supabase.co"
     _WRX_SB_KEY = "sb_publishable_gOQgHrv2IVRgbiVV2Myhzg_BmzCXmXe"
@@ -3804,6 +3810,99 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             "authUrl": auth_url,
             "aviso": "Credenciais sandbox. Configure SHOPEE_PARTNER_ID e SHOPEE_PARTNER_KEY reais no Railway para publicar em producao." if em_sandbox else None,
         })
+
+    # ── WhatsApp (WAHA) — status / QR / start / logout ──────────────────────────
+    def _waha_h(extra=None):
+        h = {"X-Api-Key": WAHA_API_KEY}
+        if extra:
+            h.update(extra)
+        return h
+
+    def _waha_webhook_body():
+        return {
+            "name": WAHA_SESSION,
+            "config": {"webhooks": [{
+                "url": WAHA_WEBHOOK_URL,
+                "events": ["message"],
+                "retries": {"policy": "linear", "delaySeconds": 2, "attempts": 3},
+            }]},
+        }
+
+    @app.route("/integracoes/whatsapp/status", methods=["GET", "OPTIONS"])
+    def whatsapp_status():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        try:
+            r = requests.get(f"{WAHA_BASE}/api/sessions/{WAHA_SESSION}", headers=_waha_h(), timeout=15)
+            d = r.json() if r.status_code == 200 else {}
+        except Exception as e:
+            return jsonify({"configured": True, "status": "ERROR", "connected": False, "erro": str(e)})
+        status = d.get("status", "UNKNOWN")
+        me = d.get("me") or {}
+        webhooks = (((d.get("config") or {}).get("webhooks")) or [])
+        return jsonify({
+            "configured": True,
+            "status": status,                       # WORKING / SCAN_QR_CODE / STARTING / STOPPED / FAILED
+            "connected": status == "WORKING",
+            "precisaQr": status in ("SCAN_QR_CODE", "STOPPED", "FAILED"),
+            "numero": (me.get("id") or "").split("@")[0],
+            "nome": me.get("pushName") or "",
+            "webhookOk": any(WAHA_WEBHOOK_URL in (w.get("url") or "") for w in webhooks),
+        })
+
+    @app.route("/integracoes/whatsapp/start", methods=["POST", "GET", "OPTIONS"])
+    def whatsapp_start():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        body = _waha_webhook_body()
+        out = {"ok": True}
+        try:
+            # Atualiza config (cria/garante webhook). Se a sessao nao existe, cria com start.
+            r = requests.put(f"{WAHA_BASE}/api/sessions/{WAHA_SESSION}",
+                             headers=_waha_h({"Content-Type": "application/json"}), json=body, timeout=40)
+            if r.status_code in (400, 404):
+                r = requests.post(f"{WAHA_BASE}/api/sessions",
+                                  headers=_waha_h({"Content-Type": "application/json"}),
+                                  json={**body, "start": True}, timeout=40)
+            out["http"] = r.status_code
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)})
+        # Garante que esta iniciada (gera QR se nao autenticada)
+        try:
+            requests.post(f"{WAHA_BASE}/api/sessions/{WAHA_SESSION}/start", headers=_waha_h(), timeout=20)
+        except Exception:
+            pass
+        return jsonify(out)
+
+    @app.route("/integracoes/whatsapp/qr", methods=["GET", "OPTIONS"])
+    def whatsapp_qr():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        last = None
+        for url in (f"{WAHA_BASE}/api/{WAHA_SESSION}/auth/qr",
+                    f"{WAHA_BASE}/api/sessions/{WAHA_SESSION}/auth/qr"):
+            try:
+                r = requests.get(url, headers=_waha_h({"Accept": "image/png"}),
+                                 params={"format": "image"}, timeout=20)
+                ct = r.headers.get("Content-Type", "")
+                if r.status_code == 200 and ct.startswith("image"):
+                    return Response(r.content, mimetype=ct,
+                                    headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"})
+                last = {"http": r.status_code, "ct": ct, "body": r.text[:200]}
+            except Exception as e:
+                last = {"erro": str(e)}
+        return jsonify({"erro": "qr_indisponivel", "detalhe": last})
+
+    @app.route("/integracoes/whatsapp/logout", methods=["POST", "OPTIONS"])
+    def whatsapp_logout():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        try:
+            requests.post(f"{WAHA_BASE}/api/sessions/{WAHA_SESSION}/logout", headers=_waha_h(), timeout=20)
+            requests.post(f"{WAHA_BASE}/api/sessions/{WAHA_SESSION}/start", headers=_waha_h(), timeout=20)
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)})
+        return jsonify({"ok": True})
 
     @app.route("/integracoes/shopee/oauth")
     def shopee_oauth():
