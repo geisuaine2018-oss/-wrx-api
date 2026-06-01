@@ -3933,6 +3933,26 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             offset = resp.get("next_offset", offset + 100)
         return items
 
+    def _shopee_get_models(access_token, shop_id_int, item_id):
+        """Variações de um item (model_sku + estoque por variação)."""
+        ts = int(time.time())
+        path = "/api/v2/product/get_model_list"
+        sign = _shopee_sign(path, ts, access_token, shop_id_int)
+        try:
+            r = requests.get(
+                f"{_SHOPEE_BASE}{path}",
+                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                        "access_token": access_token, "shop_id": shop_id_int,
+                        "sign": sign, "item_id": item_id},
+                timeout=20
+            )
+            d = r.json()
+            if r.status_code == 200 and not d.get("error"):
+                return d.get("response", {}).get("model", []) or []
+        except Exception:
+            pass
+        return []
+
     def _shopee_get_item_details(access_token, shop_id_int, item_ids):
         results = []
         for i in range(0, len(item_ids), 50):
@@ -3949,13 +3969,21 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             )
             d = r.json()
             if r.status_code == 200 and not d.get("error"):
-                results.extend(d.get("response", {}).get("item_list", []))
+                for it in d.get("response", {}).get("item_list", []):
+                    # Item com variação: SKU e estoque ficam nos models → busca get_model_list
+                    if it.get("has_model"):
+                        it["_models"] = _shopee_get_models(access_token, shop_id_int, it.get("item_id"))
+                    results.append(it)
         return results
 
     def _shopee_extract_sku(item):
         sku = (item.get("seller_sku") or "").strip()
         if sku:
             return sku
+        for m in (item.get("_models") or []):
+            ms = (m.get("model_sku") or "").strip()
+            if ms:
+                return ms
         for attr in item.get("attribute_list", []):
             if attr.get("attribute_name", "").lower() in ("seller sku", "sku"):
                 vals = attr.get("attribute_value_list", [])
@@ -3968,6 +3996,13 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         return float((pi[0].get("current_price") or pi[0].get("original_price") or 0) if pi else 0)
 
     def _shopee_extract_estoque(item):
+        models = item.get("_models") or []
+        if models:
+            total = 0
+            for m in models:
+                ss = (m.get("stock_info_v2", {}) or {}).get("seller_stock", [{}])
+                total += int(ss[0].get("stock", 0)) if ss else 0
+            return total
         ss = item.get("stock_info_v2", {}).get("seller_stock", [{}])
         return int(ss[0].get("stock", 0)) if ss else 0
 
