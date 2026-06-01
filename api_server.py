@@ -3272,63 +3272,69 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
     def ml_perguntas():
         if request.method == "OPTIONS":
             return _options_resp()
-        conta = request.args.get("conta", "default")
+        conta_req = request.args.get("conta", "").strip()
         status = request.args.get("status", "UNANSWERED")
-        token = _ml_get_user_token(conta)
-        if not token:
-            return jsonify({"ok": False, "erro": "conta nao autorizada"}), 401
         tokens = _ml_load_tokens()
-        user_id = tokens.get(conta, {}).get("user_id", "")
-        if not user_id:
-            # Buscar user_id via /users/me
+        if not tokens:
+            return jsonify({"ok": False, "erro": "Mercado Livre nao autorizado"}), 401
+        contas = [conta_req] if conta_req else list(tokens.keys())
+        perguntas = []
+        erros = []
+        for conta in contas:
+            token = _ml_get_user_token(conta)
+            if not token:
+                continue
+            user_id = tokens.get(conta, {}).get("user_id", "")
+            if not user_id:
+                try:
+                    _r = requests.get("https://api.mercadolibre.com/users/me",
+                                      headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                    if _r.status_code == 200:
+                        user_id = str(_r.json().get("id", ""))
+                        tokens[conta]["user_id"] = user_id
+                        _ml_save_tokens(tokens)
+                except Exception:
+                    pass
+            if not user_id:
+                continue
             try:
-                _r = requests.get("https://api.mercadolibre.com/users/me",
-                                  headers={"Authorization": f"Bearer {token}"}, timeout=10)
-                if _r.status_code == 200:
-                    user_id = str(_r.json().get("id", ""))
-                    tokens[conta]["user_id"] = user_id
-                    _ml_save_tokens(tokens)
-            except Exception:
-                pass
-        if not user_id:
-            return jsonify({"ok": False, "erro": "user_id nao encontrado"}), 400
-        try:
-            _r = requests.get(
-                "https://api.mercadolibre.com/questions/search",
-                params={"seller_id": user_id, "status": status,
-                        "sort_fields": "date_created", "sort_types": "DESC", "limit": 50},
-                headers={"Authorization": f"Bearer {token}"}, timeout=15
-            )
-            if _r.status_code != 200:
-                return jsonify({"ok": False, "erro": _r.text[:200]}), _r.status_code
-            d = _r.json()
-            perguntas = []
-            for q in d.get("questions", []):
-                # Buscar título do anúncio
-                item_title = ""
-                item_id = q.get("item_id", "")
-                if item_id:
-                    try:
-                        _ri = requests.get(f"https://api.mercadolibre.com/items/{item_id}?attributes=title",
-                                           headers={"Authorization": f"Bearer {token}"}, timeout=8)
-                        if _ri.status_code == 200:
-                            item_title = _ri.json().get("title", "")
-                    except Exception:
-                        pass
-                perguntas.append({
-                    "marketplace": "ml",
-                    "id": q.get("id"),
-                    "texto": q.get("text", ""),
-                    "status": q.get("status", ""),
-                    "item_id": item_id,
-                    "item_titulo": item_title,
-                    "comprador_id": q.get("from", {}).get("id", ""),
-                    "data": q.get("date_created", ""),
-                    "resposta": q.get("answer", {}).get("text", "") if q.get("answer") else None,
-                })
-            return jsonify({"ok": True, "total": len(perguntas), "perguntas": perguntas})
-        except Exception as _e:
-            return jsonify({"ok": False, "erro": str(_e)}), 500
+                _r = requests.get(
+                    "https://api.mercadolibre.com/questions/search",
+                    params={"seller_id": user_id, "status": status,
+                            "sort_fields": "date_created", "sort_types": "DESC", "limit": 50},
+                    headers={"Authorization": f"Bearer {token}"}, timeout=15
+                )
+                if _r.status_code != 200:
+                    erros.append(f"{conta}: HTTP {_r.status_code}")
+                    continue
+                d = _r.json()
+                for q in d.get("questions", []):
+                    item_title = ""
+                    item_id = q.get("item_id", "")
+                    if item_id:
+                        try:
+                            _ri = requests.get(f"https://api.mercadolibre.com/items/{item_id}?attributes=title",
+                                               headers={"Authorization": f"Bearer {token}"}, timeout=8)
+                            if _ri.status_code == 200:
+                                item_title = _ri.json().get("title", "")
+                        except Exception:
+                            pass
+                    perguntas.append({
+                        "marketplace": "ml",
+                        "conta": conta,
+                        "id": q.get("id"),
+                        "texto": q.get("text", ""),
+                        "status": q.get("status", ""),
+                        "item_id": item_id,
+                        "item_titulo": item_title,
+                        "comprador_id": q.get("from", {}).get("id", ""),
+                        "data": q.get("date_created", ""),
+                        "resposta": q.get("answer", {}).get("text", "") if q.get("answer") else None,
+                    })
+            except Exception as _e:
+                erros.append(f"{conta}: {_e}")
+        perguntas.sort(key=lambda x: x.get("data", ""), reverse=True)
+        return jsonify({"ok": True, "total": len(perguntas), "perguntas": perguntas, "erros": erros})
 
     @app.route("/integracoes/mercadolivre/responder-pergunta", methods=["POST", "OPTIONS"])
     def ml_responder_pergunta():
@@ -3360,55 +3366,63 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
     def ml_vendas_recentes():
         if request.method == "OPTIONS":
             return _options_resp()
-        conta = request.args.get("conta", "default")
+        conta_req = request.args.get("conta", "").strip()
         dias = int(request.args.get("dias", "30"))
-        token = _ml_get_user_token(conta)
-        if not token:
-            return jsonify({"ok": False, "erro": "conta nao autorizada"}), 401
         tokens = _ml_load_tokens()
-        user_id = tokens.get(conta, {}).get("user_id", "")
-        if not user_id:
+        if not tokens:
+            return jsonify({"ok": False, "erro": "Mercado Livre nao autorizado"}), 401
+        contas = [conta_req] if conta_req else list(tokens.keys())
+        from datetime import timedelta
+        date_from = (_datetime.utcnow() - timedelta(days=dias)).strftime("%Y-%m-%dT00:00:00.000-00:00")
+        vendas = []
+        erros = []
+        for conta in contas:
+            token = _ml_get_user_token(conta)
+            if not token:
+                continue
+            user_id = tokens.get(conta, {}).get("user_id", "")
+            if not user_id:
+                try:
+                    _r = requests.get("https://api.mercadolibre.com/users/me",
+                                      headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                    if _r.status_code == 200:
+                        user_id = str(_r.json().get("id", ""))
+                        tokens[conta]["user_id"] = user_id
+                        _ml_save_tokens(tokens)
+                except Exception:
+                    pass
+            if not user_id:
+                continue
             try:
-                _r = requests.get("https://api.mercadolibre.com/users/me",
-                                  headers={"Authorization": f"Bearer {token}"}, timeout=10)
-                if _r.status_code == 200:
-                    user_id = str(_r.json().get("id", ""))
-                    tokens[conta]["user_id"] = user_id
-                    _ml_save_tokens(tokens)
-            except Exception:
-                pass
-        if not user_id:
-            return jsonify({"ok": False, "erro": "user_id nao encontrado"}), 400
-        try:
-            from datetime import timedelta
-            date_from = (_datetime.utcnow() - timedelta(days=dias)).strftime("%Y-%m-%dT00:00:00.000-00:00")
-            _r = requests.get(
-                "https://api.mercadolibre.com/orders/search",
-                params={"seller": user_id, "sort": "date_desc", "limit": 50,
-                        "date_created.from": date_from},
-                headers={"Authorization": f"Bearer {token}"}, timeout=15
-            )
-            if _r.status_code != 200:
-                return jsonify({"ok": False, "erro": _r.text[:200]}), _r.status_code
-            d = _r.json()
-            vendas = []
-            for o in d.get("results", []):
-                itens = [{"titulo": i.get("item", {}).get("title", ""),
-                           "sku": i.get("item", {}).get("seller_sku", ""),
-                           "qty": i.get("quantity", 1),
-                           "preco": i.get("unit_price", 0)} for i in o.get("order_items", [])]
-                vendas.append({
-                    "marketplace": "ml",
-                    "order_id": o.get("id"),
-                    "status": o.get("status", ""),
-                    "data": o.get("date_created", ""),
-                    "total": o.get("total_amount", 0),
-                    "comprador": o.get("buyer", {}).get("nickname", ""),
-                    "itens": itens,
-                })
-            return jsonify({"ok": True, "vendas": vendas, "total": len(vendas)})
-        except Exception as _e:
-            return jsonify({"ok": False, "erro": str(_e)}), 500
+                _r = requests.get(
+                    "https://api.mercadolibre.com/orders/search",
+                    params={"seller": user_id, "sort": "date_desc", "limit": 50,
+                            "date_created.from": date_from},
+                    headers={"Authorization": f"Bearer {token}"}, timeout=15
+                )
+                if _r.status_code != 200:
+                    erros.append(f"{conta}: HTTP {_r.status_code}")
+                    continue
+                d = _r.json()
+                for o in d.get("results", []):
+                    itens = [{"titulo": i.get("item", {}).get("title", ""),
+                               "sku": i.get("item", {}).get("seller_sku", ""),
+                               "qty": i.get("quantity", 1),
+                               "preco": i.get("unit_price", 0)} for i in o.get("order_items", [])]
+                    vendas.append({
+                        "marketplace": "ml",
+                        "conta": conta,
+                        "order_id": o.get("id"),
+                        "status": o.get("status", ""),
+                        "data": o.get("date_created", ""),
+                        "total": o.get("total_amount", 0),
+                        "comprador": o.get("buyer", {}).get("nickname", ""),
+                        "itens": itens,
+                    })
+            except Exception as _e:
+                erros.append(f"{conta}: {_e}")
+        vendas.sort(key=lambda x: x.get("data", ""), reverse=True)
+        return jsonify({"ok": True, "vendas": vendas, "total": len(vendas), "erros": erros})
 
     # ─── OLX ─────────────────────────────────────────────────────────────────────
     @app.route("/integracoes/olx/config", methods=["GET", "OPTIONS"])
