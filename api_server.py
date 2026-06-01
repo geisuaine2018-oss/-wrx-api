@@ -3362,6 +3362,47 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         except Exception as _e:
             return jsonify({"ok": False, "erro": str(_e)}), 500
 
+    @app.route("/integracoes/mercadolivre/visitas", methods=["GET", "OPTIONS"])
+    def ml_visitas():
+        """Visitas por dia dos anúncios da conta (últimos N dias)."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta = request.args.get("conta", "default")
+        try:
+            dias = min(int(request.args.get("dias", "30")), 60)
+        except Exception:
+            dias = 30
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": "conta nao autorizada"}), 401
+        user_id = _ml_conta_user_id(conta, token)
+        if not user_id:
+            return jsonify({"ok": False, "erro": "user_id nao encontrado"}), 400
+        try:
+            # visitas totais do usuário por dia (time_window: last N days, unit day)
+            r = requests.get(
+                f"https://api.mercadolibre.com/users/{user_id}/items_visits/time_window",
+                params={"last": dias, "unit": "day"},
+                headers={"Authorization": f"Bearer {token}"}, timeout=20
+            )
+            if r.status_code != 200:
+                # fallback: endpoint alternativo (alguns users usam /visits/)
+                r = requests.get(
+                    f"https://api.mercadolibre.com/users/{user_id}/visits/time_window",
+                    params={"last": dias, "unit": "day"},
+                    headers={"Authorization": f"Bearer {token}"}, timeout=20
+                )
+            if r.status_code != 200:
+                return jsonify({"ok": False, "erro": r.text[:200], "conta": conta}), r.status_code
+            d = r.json()
+            # normaliza: lista de {data, visitas}
+            results = d.get("results", []) if isinstance(d, dict) else []
+            por_dia = [{"data": x.get("date", ""), "visitas": x.get("total", 0)} for x in results]
+            total = d.get("total_visits", sum(p["visitas"] for p in por_dia))
+            return jsonify({"ok": True, "conta": conta, "total": total, "por_dia": por_dia})
+        except Exception as _e:
+            return jsonify({"ok": False, "erro": str(_e), "conta": conta}), 500
+
     @app.route("/integracoes/mercadolivre/vendas-recentes", methods=["GET", "OPTIONS"])
     def ml_vendas_recentes():
         if request.method == "OPTIONS":
