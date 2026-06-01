@@ -2640,14 +2640,14 @@ if USE_FLASK:
         return ids
 
     def _ml_buscar_detalhes_lote(token, ids):
-        """Busca detalhes de até 20 itens por vez."""
+        """Busca detalhes de até 20 itens por vez (inclui variations/attributes p/ achar SKU)."""
         itens = []
         for i in range(0, len(ids), 20):
             lote = ids[i:i+20]
             r = requests.get(
                 "https://api.mercadolibre.com/items",
                 params={"ids": ",".join(lote),
-                        "attributes": "id,title,price,available_quantity,seller_sku,seller_custom_field,status,thumbnail"},
+                        "attributes": "id,title,price,available_quantity,seller_sku,seller_custom_field,status,thumbnail,variations,attributes"},
                 headers={"Authorization": f"Bearer {token}"}, timeout=20
             )
             if r.status_code != 200:
@@ -2656,6 +2656,22 @@ if USE_FLASK:
                 if entry.get("code") == 200:
                     itens.append(entry.get("body", {}))
         return itens
+
+    def _ml_extrair_sku(item):
+        """SKU do anuncio ML: tenta nivel do item, depois variacoes, depois atributo SELLER_SKU."""
+        s = str(item.get("seller_sku") or item.get("seller_custom_field") or "").strip()
+        if s:
+            return s
+        for v in (item.get("variations") or []):
+            vs = str(v.get("seller_sku") or v.get("seller_custom_field") or "").strip()
+            if vs:
+                return vs
+        for a in (item.get("attributes") or []):
+            if a.get("id") == "SELLER_SKU":
+                av = str(a.get("value_name") or a.get("value_id") or "").strip()
+                if av:
+                    return av
+        return ""
 
     @app.route("/integracoes/mercadolivre/anuncios-db", methods=["GET", "OPTIONS"])
     def ml_anuncios_db():
@@ -2784,8 +2800,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             print(f"[ML-SYNC] {conta_nome}: {len(ids_ativos)} ativos")
             itens = _ml_buscar_detalhes_lote(token, ids_ativos)
             for item in itens:
-                # Tenta seller_sku primeiro, depois seller_custom_field como fallback
-                sku_raw = str(item.get("seller_sku") or item.get("seller_custom_field") or "").strip()
+                # SKU: nivel do item -> variacoes -> atributo SELLER_SKU
+                sku_raw = _ml_extrair_sku(item)
                 sku = sku_raw.upper()
                 estoque = item.get("available_quantity", 0)
                 if estoque <= 0:
@@ -2885,21 +2901,25 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 _r2 = requests.get(
                     "https://api.mercadolibre.com/items",
                     params={"ids": ",".join(amostra_ids),
-                            "attributes": "id,title,price,available_quantity,seller_sku,seller_custom_field,status,thumbnail"},
+                            "attributes": "id,title,price,available_quantity,seller_sku,seller_custom_field,status,thumbnail,variations,attributes"},
                     headers={"Authorization": f"Bearer {token}"}, timeout=20
                 )
                 if _r2.status_code == 200:
                     for entry in _r2.json():
                         if entry.get("code") == 200:
                             amostra_raw.append(entry.get("body", {}))
-            sem_sku = sum(1 for a in amostra_raw if not a.get("seller_sku") and not a.get("seller_custom_field"))
+            sem_sku = sum(1 for a in amostra_raw if not _ml_extrair_sku(a))
             sem_estoque = sum(1 for a in amostra_raw if (a.get("available_quantity") or 0) <= 0)
             resultado.append({
                 "conta": conta_nome,
                 "user_id": user_id,
                 "total_ids_ativos": len(ids),
                 "amostra_5_itens": [
-                    {"id": a.get("id"), "sku": a.get("seller_sku"), "custom_field": a.get("seller_custom_field"), "estoque": a.get("available_quantity"), "titulo": a.get("title","")[:50]}
+                    {"id": a.get("id"),
+                     "sku_item": a.get("seller_sku") or a.get("seller_custom_field"),
+                     "sku_extraido": _ml_extrair_sku(a),
+                     "tem_variacoes": len(a.get("variations") or []),
+                     "estoque": a.get("available_quantity"), "titulo": a.get("title","")[:50]}
                     for a in amostra_raw
                 ],
                 "sem_sku_e_custom_na_amostra": sem_sku,
