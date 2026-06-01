@@ -2930,6 +2930,28 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 pass
         return user_id
 
+    def _sb_get_all(path_query, page=1000, teto=50000):
+        """Busca TODAS as linhas do Supabase paginando (PostgREST limita 1000/req)."""
+        out = []
+        offset = 0
+        sep = "&" if "?" in path_query else "?"
+        while offset < teto:
+            url = f"{_WRX_SB_URL}/rest/v1/{path_query}{sep}limit={page}&offset={offset}"
+            try:
+                r = requests.get(url, headers=_wrx_headers(), timeout=30)
+            except Exception:
+                break
+            if r.status_code != 200:
+                break
+            lote = r.json()
+            if not lote:
+                break
+            out.extend(lote)
+            if len(lote) < page:
+                break
+            offset += page
+        return out
+
     @app.route("/integracoes/mercadolivre/status", methods=["GET", "OPTIONS"])
     def ml_status():
         if request.method == "OPTIONS":
@@ -3028,20 +3050,17 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         conta = request.args.get("conta", "default")
         itens = []
         try:
-            r = requests.get(
-                f"{_WRX_SB_URL}/rest/v1/ml_anuncios"
-                f"?select=ml_id,titulo,sku,preco,estoque&conta=eq.{conta}"
-                f"&vinculado=eq.false&status=eq.active&limit=2000",
-                headers=_wrx_headers(), timeout=20
+            dados = _sb_get_all(
+                f"ml_anuncios?select=ml_id,titulo,sku,preco,estoque"
+                f"&conta=eq.{conta}&vinculado=eq.false&status=eq.active"
             )
-            if r.status_code == 200:
-                for d in r.json():
-                    itens.append({
-                        "mlId": d.get("ml_id", ""),
-                        "titulo": d.get("titulo", ""),
-                        "sku": d.get("sku", ""),
-                        "preco": d.get("preco", 0),
-                    })
+            for d in dados:
+                itens.append({
+                    "mlId": d.get("ml_id", ""),
+                    "titulo": d.get("titulo", ""),
+                    "sku": d.get("sku", ""),
+                    "preco": d.get("preco", 0),
+                })
         except Exception:
             pass
         return jsonify({"ok": True, "itens": itens})
@@ -3096,28 +3115,22 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         if request.method == "OPTIONS":
             return _options_resp()
         conta = request.args.get("conta", "default")
-        # Peças do sistema (somente liga a peças que JÁ existem)
+        # Peças do sistema (somente liga a peças que JÁ existem) — paginado
         pecas = []
         try:
-            rp = requests.get(f"{_WRX_SB_URL}/rest/v1/pecas_estoque?select=sku,titulo&limit=20000",
-                              headers=_wrx_headers(), timeout=20)
-            if rp.status_code == 200:
-                for p in rp.json():
-                    nome = _ml_norm_txt(p.get("titulo"))
-                    if nome and len(nome) >= 4:
-                        pecas.append((p.get("sku", ""), nome))
+            for p in _sb_get_all("pecas_estoque?select=sku,titulo"):
+                nome = _ml_norm_txt(p.get("titulo"))
+                if nome and len(nome) >= 4:
+                    pecas.append((p.get("sku", ""), nome))
         except Exception:
             pass
-        # Anúncios ativos ainda sem vínculo
+        # Anúncios ativos ainda sem vínculo — paginado
         ads = []
         try:
-            ra = requests.get(
-                f"{_WRX_SB_URL}/rest/v1/ml_anuncios"
-                f"?select=ml_id,titulo&conta=eq.{conta}&vinculado=eq.false&status=eq.active&limit=5000",
-                headers=_wrx_headers(), timeout=20
+            ads = _sb_get_all(
+                f"ml_anuncios?select=ml_id,titulo"
+                f"&conta=eq.{conta}&vinculado=eq.false&status=eq.active"
             )
-            if ra.status_code == 200:
-                ads = ra.json()
         except Exception:
             pass
         vinculados = 0
