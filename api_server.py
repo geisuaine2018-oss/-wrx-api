@@ -3403,6 +3403,44 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         except Exception as _e:
             return jsonify({"ok": False, "erro": str(_e), "conta": conta}), 500
 
+    @app.route("/integracoes/mercadolivre/reclamacoes", methods=["GET", "OPTIONS"])
+    def ml_reclamacoes():
+        """Reclamações/claims abertas da conta (precisam de resolução)."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta_req = request.args.get("conta", "").strip()
+        tokens = _ml_load_tokens()
+        if not tokens:
+            return jsonify({"ok": False, "erro": "Mercado Livre nao autorizado"}), 401
+        contas = [conta_req] if conta_req else list(tokens.keys())
+        reclamacoes = []
+        for conta in contas:
+            token = _ml_get_user_token(conta)
+            if not token:
+                continue
+            try:
+                r = requests.get(
+                    "https://api.mercadolibre.com/post-purchase/v1/claims/search",
+                    params={"status": "opened", "limit": 50},
+                    headers={"Authorization": f"Bearer {token}"}, timeout=15
+                )
+                if r.status_code != 200:
+                    continue
+                for c in r.json().get("data", []):
+                    reclamacoes.append({
+                        "conta": conta,
+                        "id": c.get("id"),
+                        "tipo": c.get("type", ""),
+                        "status": c.get("status", ""),
+                        "stage": c.get("stage", ""),
+                        "motivo": c.get("reason_id", ""),
+                        "order_id": (c.get("resource_id") if c.get("resource") == "order" else ""),
+                        "data": c.get("date_created", ""),
+                    })
+            except Exception as _e:
+                print(f"[CLAIMS] erro conta {conta}: {_e}")
+        return jsonify({"ok": True, "total": len(reclamacoes), "reclamacoes": reclamacoes})
+
     @app.route("/integracoes/mercadolivre/vendas-recentes", methods=["GET", "OPTIONS"])
     def ml_vendas_recentes():
         if request.method == "OPTIONS":
@@ -4542,6 +4580,23 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         if nova_qtd == 0:
             _shopee_pausar_por_sku(sku)
         return jsonify({"ok": True, "sku": sku, "qtd_anterior": peca.get("qtd"), "qtd_nova": nova_qtd, "zerado": nova_qtd == 0})
+
+    # ── BLOCO B: sincronização multi-canal (módulo separado sync_multicanal.py) ───
+    # Vendeu num canal -> pausa o MESMO SKU em todos os outros (ML + Shopee).
+    # A lógica vive em sync_multicanal.py; aqui só injetamos os tokens e registramos.
+    try:
+        import sync_multicanal as _syncmc
+        _syncmc.init_sync(
+            ml_token_provider=_ml_get_user_token,
+            shopee_token_provider=_shopee_get_token,
+            shopee_partner_id=SHOPEE_PARTNER_ID,
+            shopee_partner_key=SHOPEE_PARTNER_KEY,
+            shopee_base=_SHOPEE_BASE,
+        )
+        app.register_blueprint(_syncmc.get_blueprint())
+        print("[STARTUP] sync_multicanal registrado (/integracoes/sincronizar-venda)")
+    except Exception as _e_sync:
+        print(f"[STARTUP] sync_multicanal NAO registrado: {_e_sync}")
 
     # ── Shopee: criar tabela shopee_anuncios (requer service_role) ────────────────
 
