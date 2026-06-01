@@ -3991,7 +3991,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         return results
 
     def _shopee_extract_sku(item):
-        sku = (item.get("seller_sku") or "").strip()
+        # Shopee usa item_sku no nivel do item; seller_sku como fallback
+        sku = (item.get("item_sku") or item.get("seller_sku") or "").strip()
         if sku:
             return sku
         for m in (item.get("_models") or []):
