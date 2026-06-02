@@ -4,8 +4,9 @@ name: Anti-venda-dupla (gatilho)
 # mesmo SKU nos outros anuncios (ML + Shopee). Roda ISOLADO no GitHub (nao
 # depende do Railway nem do n8n estarem de pe pra disparar).
 #
-# MODO: comeca em 'observacao' (so registra o que PAUSARIA, nao pausa de verdade).
-# Quando voce confirmar que esta acertando, troque MODO para 'armado' abaixo.
+# MODO: ARMADO (pausa/baixa/reativa de verdade) no cron automatico. Disparo manual
+# pela aba Actions usa 'observacao' por padrao (pra testar sem agir) — escolha 'armado'
+# no dropdown se quiser executar manual de verdade.
 
 on:
   schedule:
@@ -24,7 +25,7 @@ jobs:
       - name: Vendas novas online (ML) -> cascata
         env:
           API: https://wrx-api-production.up.railway.app
-          MODO: ${{ github.event.inputs.modo || 'observacao' }}
+          MODO: ${{ github.event.inputs.modo || 'armado' }}
         run: |
           set -euo pipefail
           echo "Gatilho de vendas ML no modo: $MODO"
@@ -35,7 +36,7 @@ jobs:
       - name: Estoque zerado (balcao/qualquer baixa) -> pausa em todas plataformas
         env:
           API: https://wrx-api-production.up.railway.app
-          MODO: ${{ github.event.inputs.modo || 'observacao' }}
+          MODO: ${{ github.event.inputs.modo || 'armado' }}
         run: |
           set -euo pipefail
           echo "Reconciliando estoque zerado no modo: $MODO"
@@ -45,7 +46,7 @@ jobs:
       - name: Cancelamentos ML -> devolve estoque + reativa anuncios
         env:
           API: https://wrx-api-production.up.railway.app
-          MODO: ${{ github.event.inputs.modo || 'observacao' }}
+          MODO: ${{ github.event.inputs.modo || 'armado' }}
         run: |
           set -euo pipefail
           echo "Processando cancelamentos no modo: $MODO"
