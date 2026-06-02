@@ -4384,6 +4384,45 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             print(f"[SHOPEE-CAT] erro recommend: {_e}")
         return None
 
+    def _shopee_upload_imagens(access_token, shop_id_int, urls):
+        """Baixa cada foto da URL e sobe pro media space da Shopee.
+        Retorna lista de image_id (a Shopee exige image_id, não aceita URL externa de forma confiável)."""
+        ids = []
+        for u in urls[:9]:
+            if not u:
+                continue
+            u = u.replace("http://", "https://")
+            try:
+                img = requests.get(u, timeout=20)
+                if img.status_code != 200 or not img.content:
+                    print(f"[SHOPEE-IMG] falha baixar {u[:60]} status={img.status_code}")
+                    continue
+                ts = int(time.time())
+                path = "/api/v2/media_space/upload_image"
+                sign = _shopee_sign(path, ts, access_token, shop_id_int)
+                r = requests.post(
+                    f"{_SHOPEE_BASE}{path}",
+                    params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                            "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
+                    files={"image": ("foto.jpg", img.content, "image/jpeg")},
+                    timeout=30
+                )
+                d = r.json()
+                resp = d.get("response", {}) or {}
+                # formato pode vir como image_info.image_id OU image_info_list[].image_info.image_id
+                iid = (resp.get("image_info", {}) or {}).get("image_id")
+                if not iid:
+                    lst = resp.get("image_info_list", []) or []
+                    if lst:
+                        iid = (lst[0].get("image_info", {}) or {}).get("image_id")
+                if iid:
+                    ids.append(iid)
+                else:
+                    print(f"[SHOPEE-IMG] sem image_id na resposta: {str(d)[:200]}")
+            except Exception as _e:
+                print(f"[SHOPEE-IMG] erro upload: {_e}")
+        return ids
+
     @app.route("/integracoes/shopee/diag-categoria", methods=["GET"])
     def shopee_diag_categoria():
         """Diagnóstico: resposta crua do category_recommend pra um nome de produto."""
@@ -4454,6 +4493,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             if not cat_id:
                 erros.append(f"shop {sid}: nao achou categoria para '{titulo[:30]}'")
                 continue
+            # Sobe as fotos pro media space (Shopee exige image_id, não aceita URL externa confiável)
+            image_ids = _shopee_upload_imagens(access_token, shop_id_int, fotos)
+            if not image_ids:
+                erros.append(f"shop {sid}: nao conseguiu subir nenhuma foto")
+                continue
             ts = int(time.time())
             path = "/api/v2/product/add_item"
             sign = _shopee_sign(path, ts, access_token, shop_id_int)
@@ -4470,7 +4514,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 "condition": condicao_shopee,
                 "category_id": cat_id,
                 "brand": {"brand_id": 0, "original_brand_name": "NoBrand"},  # autopeça usada: sem marca
-                "image": {"image_url_list": fotos[:9]},
+                "image": {"image_id_list": image_ids},
                 "logistics_info": [{"logistic_id": 10038, "enabled": True}],
                 "weight": float(data.get("peso") or 1.0),
                 "dimension": {
