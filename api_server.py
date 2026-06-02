@@ -4615,7 +4615,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 "category_id": cat_id,
                 "brand": {"brand_id": 0, "original_brand_name": "NoBrand"},  # autopeça usada: sem marca
                 "image": {"image_id_list": image_ids},
-                "logistics_info": logistics,
+                "logistic_info": logistics,
                 # Atributo obrigatório da categoria de autopeça: "Auto-Part Number" (id 102293).
                 # Usa o SKU como número da peça (referência real do vendedor).
                 "attribute_list": [
