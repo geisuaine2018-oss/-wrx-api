@@ -404,14 +404,18 @@ def get_blueprint():
         H = {"Authorization": f"Bearer {token}", "x-version": "2"}
         bi = requests.get(f"https://api.mercadolibre.com/orders/{order_id}/billing_info", headers=H, timeout=15)
         body = bi.json() if bi.status_code == 200 else {}
-        # tenta achar o doc em vários formatos que o ML usa
-        binfo = (body.get("buyer") or {}).get("billing_info") or body.get("billing_info") or {}
-        doc_type = binfo.get("doc_type") or binfo.get("type")
-        doc_number = binfo.get("doc_number") or binfo.get("number")
+        binfo = (body.get("buyer") or {}).get("billing_info") or {}
+        ident = binfo.get("identification") or {}
+        addr = binfo.get("address") or {}
+        doc_number = ident.get("number")
+        nome = " ".join(filter(None, [binfo.get("name"), binfo.get("last_name")])) or None
         out = {"http": bi.status_code, "tem_doc": bool(doc_number),
-               "doc_type": doc_type, "doc_number": ("***" + str(doc_number)[-3:]) if doc_number else None,
-               "nome": binfo.get("first_name") or binfo.get("legal_name") or binfo.get("name"),
-               "campos": list(binfo.keys()), "raw_keys": list(body.keys())}
+               "doc_type": ident.get("type"),
+               "doc_number": ("***" + str(doc_number)[-3:]) if doc_number else None,
+               "nome": nome,
+               "tem_endereco": bool(addr.get("zip_code") or addr.get("street_name")),
+               "cep": addr.get("zip_code"), "cidade": addr.get("city"), "estado": addr.get("state"),
+               "campos_address": list(addr.keys())}
         r = jsonify(out); r.headers["Access-Control-Allow-Origin"] = "*"; return r
 
     @bp.route("/integracoes/ml-etiqueta-info", methods=["GET", "OPTIONS"])
