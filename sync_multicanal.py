@@ -511,23 +511,22 @@ def get_blueprint():
                     sku = str(it.get("sku") or "").strip()
                     if not sku:
                         continue
-                    qty = int(it.get("qty") or 1)
                     atual = _estoque_atual(sku)
                     if atual is None:
                         continue  # SKU fora de `pecas` (isca/avulso) → ignora
-                    nova = max(0, atual - qty)
+                    # NÃO baixa estoque: o PartsHub já baixa na venda (sincronizado c/ ML).
+                    # Só pausa os OUTROS anúncios se a peça JÁ esgotou (qtd<=0 no PartsHub).
                     if modo == "armado":
-                        _estoque_delta(sku, -qty)            # baixa o estoque na venda
                         pausados = 0
-                        if nova <= 0:                         # esgotou → pausa os outros anúncios
+                        if atual <= 0:
                             rel = executar_sincronizacao(sku, "ml")
                             pausados = rel.get("pausados", 0)
                         resultados.append({"order_id": oid, "conta": conta, "sku": sku,
-                                           "baixou": qty, "estoque": nova, "pausados": pausados})
+                                           "estoque": atual, "pausados": pausados})
                     else:
-                        pausaria = planejar_pausa(sku, "ml")["total"] if nova <= 0 else 0
+                        pausaria = planejar_pausa(sku, "ml")["total"] if atual <= 0 else 0
                         resultados.append({"order_id": oid, "conta": conta, "sku": sku,
-                                           "baixaria": qty, "estoque_ficaria": nova, "pausaria": pausaria})
+                                           "estoque": atual, "pausaria": pausaria})
                 novas.append(oid)
                 if not forcar:
                     processadas.add(oid)
@@ -563,17 +562,21 @@ def get_blueprint():
                     sku = str(it.get("sku") or "").strip()
                     if not sku:
                         continue
-                    qty = int(it.get("qty") or 1)
                     paused = _anuncios_paused_do_sku(sku)
+                    atual = _estoque_atual(sku)
+                    # NÃO devolve estoque: o PartsHub já devolve no cancelamento (sincronizado).
+                    # Só reativa os anúncios pausados SE a peça realmente voltou (qtd>0).
+                    tem_estoque = atual is not None and atual > 0
                     if modo == "armado":
-                        nova_qtd = _estoque_delta(sku, qty)         # devolve a peça
-                        reativados = [a["ml_id"] for a in paused
-                                      if reativar_anuncio_ml(a["ml_id"], a["conta"])[0]]
+                        reativados = []
+                        if tem_estoque:
+                            reativados = [a["ml_id"] for a in paused
+                                          if reativar_anuncio_ml(a["ml_id"], a["conta"])[0]]
                         resultados.append({"order_id": oid, "conta": conta, "sku": sku,
-                                           "estoque_agora": nova_qtd, "reativados": len(reativados)})
+                                           "estoque": atual, "reativados": len(reativados)})
                     else:
                         resultados.append({"order_id": oid, "conta": conta, "sku": sku,
-                                           "devolveria": qty, "reativaria": len(paused)})
+                                           "estoque": atual, "reativaria": len(paused) if tem_estoque else 0})
                 novos.append(oid)
                 if not forcar:
                     proc.add(oid)
