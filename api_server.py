@@ -4384,6 +4384,24 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             print(f"[SHOPEE-CAT] erro recommend: {_e}")
         return None
 
+    def _shopee_canais_habilitados(access_token, shop_id_int):
+        """Lista os logistics_channel_id habilitados da loja (cada loja tem IDs diferentes)."""
+        try:
+            ts = int(time.time())
+            path = "/api/v2/logistics/get_channel_list"
+            sign = _shopee_sign(path, ts, access_token, shop_id_int)
+            r = requests.get(f"{_SHOPEE_BASE}{path}",
+                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                        "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
+                timeout=20)
+            d = r.json()
+            canais = (d.get("response", {}) or {}).get("logistics_channel_list", [])
+            return [c.get("logistics_channel_id") for c in canais
+                    if c.get("enabled") and c.get("logistics_channel_id")]
+        except Exception as _e:
+            print(f"[SHOPEE-LOG] erro canais: {_e}")
+            return []
+
     def _shopee_upload_imagens(access_token, shop_id_int, urls):
         """Baixa cada foto da URL e sobe pro media space da Shopee.
         Retorna lista de image_id (a Shopee exige image_id, não aceita URL externa de forma confiável)."""
@@ -4527,6 +4545,12 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             if not image_ids:
                 erros.append(f"shop {sid}: nao conseguiu subir nenhuma foto")
                 continue
+            # Canais de envio habilitados (cada loja tem IDs próprios)
+            canais = _shopee_canais_habilitados(access_token, shop_id_int)
+            if not canais:
+                erros.append(f"shop {sid}: nenhum canal de envio habilitado")
+                continue
+            logistics = [{"logistic_id": cid, "enabled": True} for cid in canais]
             ts = int(time.time())
             path = "/api/v2/product/add_item"
             sign = _shopee_sign(path, ts, access_token, shop_id_int)
@@ -4544,7 +4568,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 "category_id": cat_id,
                 "brand": {"brand_id": 0, "original_brand_name": "NoBrand"},  # autopeça usada: sem marca
                 "image": {"image_id_list": image_ids},
-                "logistics_info": [{"logistic_id": 10038, "enabled": True}],
+                "logistics_info": logistics,
                 "weight": float(data.get("peso") or 1.0),
                 "dimension": {
                     "package_length": int(data.get("comprimento") or 30),
