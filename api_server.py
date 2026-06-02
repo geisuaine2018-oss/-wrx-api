@@ -4664,6 +4664,34 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             "somente_novo_por_seguranca": somente_novo,
         })
 
+    @app.route("/integracoes/shopee/deletar-item", methods=["POST", "OPTIONS"])
+    def shopee_deletar_item():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        item_id = data.get("item_id")
+        sid = str(data.get("shop_id") or "")
+        if not item_id:
+            return jsonify({"ok": False, "erro": "item_id obrigatorio"}), 400
+        tokens = _shopee_load_tokens()
+        if not sid:
+            sid = list(tokens.keys())[0] if tokens else ""
+        access_token, shop_id_int = _shopee_get_token(sid)
+        if not access_token:
+            return jsonify({"ok": False, "erro": "sem token"}), 401
+        try:
+            ts = int(time.time())
+            path = "/api/v2/product/delete_item"
+            sign = _shopee_sign(path, ts, access_token, shop_id_int)
+            r = requests.post(f"{_SHOPEE_BASE}{path}",
+                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                        "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
+                json={"item_id": int(item_id)}, timeout=20)
+            d = r.json()
+            return jsonify({"ok": not d.get("error"), "item_id": item_id, "resposta": d})
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 500
+
     # ── Shopee: helpers de listagem e detalhes ───────────────────────────────────
 
     def _shopee_list_items_all(access_token, shop_id_int, status="NORMAL"):
