@@ -4081,6 +4081,17 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         if request.method == "OPTIONS":
             return _options_resp()
         import datetime as _dt, json as _json
+        # Diagnóstico read-only: onde o estado é gravado e quantos pedidos já avisados
+        if request.args.get("info") == "1":
+            _sf = os.path.join(_INTEG_DIR, "avisos_func.json")
+            _ex = os.path.exists(_sf)
+            _cnt = 0
+            try:
+                if _ex:
+                    _cnt = len(_json.load(open(_sf, encoding="utf-8")))
+            except Exception:
+                pass
+            return jsonify({"ok": True, "integ_dir": _INTEG_DIR, "tem_volume": bool(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")), "state_existe": _ex, "pedidos_rastreados": _cnt})
         SP = _dt.timezone(_dt.timedelta(hours=-3))   # Brasília (sem horário de verão)
         now = _dt.datetime.now(SP)
         wd, h = now.weekday(), now.hour
