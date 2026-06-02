@@ -313,6 +313,38 @@ def get_blueprint():
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization"})
 
+    @bp.route("/integracoes/ml-etiqueta-info", methods=["GET", "OPTIONS"])
+    def ml_etiqueta_info():
+        """TESTE: dado um order_id, verifica se a etiqueta de envio do ML está disponível."""
+        if request.method == "OPTIONS":
+            return _cors()
+        order_id = request.args.get("order_id", "").strip()
+        conta = request.args.get("conta", "default").strip()
+        token = _ml_token_provider(conta) if _ml_token_provider else None
+        if not token:
+            r = jsonify({"erro": "sem token"}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+        H = {"Authorization": f"Bearer {token}"}
+        o = requests.get(f"https://api.mercadolibre.com/orders/{order_id}", headers=H, timeout=15)
+        order = o.json() if o.status_code == 200 else {}
+        shipping = order.get("shipping") or {}
+        ship_id = shipping.get("id")
+        shipment = {}
+        if ship_id:
+            sr = requests.get(f"https://api.mercadolibre.com/shipments/{ship_id}", headers=H, timeout=15)
+            shipment = sr.json() if sr.status_code == 200 else {}
+        lab_http, lab_bytes, lab_ct = None, 0, None
+        if ship_id:
+            lr = requests.get(f"https://api.mercadolibre.com/shipment_labels",
+                              params={"shipment_ids": ship_id, "response_type": "pdf"}, headers=H, timeout=20)
+            lab_http = lr.status_code
+            lab_ct = lr.headers.get("Content-Type")
+            lab_bytes = len(lr.content) if lr.status_code == 200 else 0
+        out = {"order_id": order_id, "order_status": order.get("status"),
+               "shipment_id": ship_id, "ship_status": shipment.get("status"),
+               "ship_substatus": shipment.get("substatus"), "logistic_type": shipment.get("logistic_type"),
+               "etiqueta_http": lab_http, "etiqueta_content_type": lab_ct, "etiqueta_bytes": lab_bytes}
+        r = jsonify(out); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+
     @bp.route("/integracoes/anuncio-acao", methods=["POST", "OPTIONS"])
     def anuncio_acao():
         """Pausa/reativa UM anúncio específico — usado p/ teste controlado e cancelamento.
