@@ -2764,6 +2764,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
 
         # Filtro opcional por conta (?conta=default ou body {"conta": "geisa"})
         filtro_conta = request.args.get("conta") or (request.get_json(silent=True) or {}).get("conta") or ""
+        # ?incluir_encerrados=1 também puxa os anúncios 'closed' (mais lento, roda sob demanda)
+        incluir_enc = (request.args.get("incluir_encerrados") == "1") or bool((request.get_json(silent=True) or {}).get("incluir_encerrados"))
 
         # Carrega SKUs do sistema para fazer vínculo
         skus_sistema = set()
@@ -2809,8 +2811,9 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             print(f"[ML-SYNC] Buscando anuncios conta={conta_nome} user={user_id}")
             ids_ativos = _ml_buscar_todos_ids(token, user_id, "active")
             ids_pausados = _ml_buscar_todos_ids(token, user_id, "paused")
-            todos_ids = ids_ativos + ids_pausados
-            print(f"[ML-SYNC] {conta_nome}: {len(ids_ativos)} ativos + {len(ids_pausados)} pausados")
+            ids_fechados = _ml_buscar_todos_ids(token, user_id, "closed") if incluir_enc else []
+            todos_ids = ids_ativos + ids_pausados + ids_fechados
+            print(f"[ML-SYNC] {conta_nome}: {len(ids_ativos)} ativos + {len(ids_pausados)} pausados + {len(ids_fechados)} encerrados")
             itens = _ml_buscar_detalhes_lote(token, todos_ids)
             for item in itens:
                 # SKU: nivel do item -> variacoes -> atributo SELLER_SKU
