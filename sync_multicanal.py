@@ -210,6 +210,34 @@ def get_blueprint():
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization"})
 
+    @bp.route("/integracoes/ml-debug-item", methods=["GET", "OPTIONS"])
+    def ml_debug_item():
+        """Diagnóstico: GET individual autenticado de 1 item ML — mostra onde o SKU está."""
+        if request.method == "OPTIONS":
+            return _cors()
+        ml_id = request.args.get("ml_id", "").strip()
+        conta = request.args.get("conta", "default").strip()
+        if not _ml_token_provider:
+            r = jsonify({"erro": "sem token provider"}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+        token = _ml_token_provider(conta)
+        if not token:
+            r = jsonify({"erro": f"conta {conta} sem token"}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+        rr = requests.get(f"https://api.mercadolibre.com/items/{ml_id}",
+                          headers={"Authorization": f"Bearer {token}"}, timeout=15)
+        d = rr.json() if rr.status_code == 200 else {}
+        out = {
+            "http": rr.status_code,
+            "seller_custom_field": d.get("seller_custom_field"),
+            "seller_sku": d.get("seller_sku"),
+            "attrs_sku": [{"id": a.get("id"), "v": a.get("value_name")}
+                         for a in (d.get("attributes") or [])
+                         if "SKU" in (a.get("id") or "")],
+            "variations_sku": [{"scf": v.get("seller_custom_field"), "ssku": v.get("seller_sku")}
+                               for v in (d.get("variations") or [])],
+            "n_attrs": len(d.get("attributes") or []),
+        }
+        r = jsonify(out); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+
     @bp.route("/integracoes/anuncio-acao", methods=["POST", "OPTIONS"])
     def anuncio_acao():
         """Pausa/reativa UM anúncio específico — usado p/ teste controlado e cancelamento.
