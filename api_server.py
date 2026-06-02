@@ -4491,24 +4491,31 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         if not cat:
             cat = _shopee_categoria_recomendada(access_token, shop_id_int,
                        request.args.get("nome", "Farol Dianteiro Direito Jeep Compass 2022"))
-        try:
-            ts = int(time.time())
-            path = "/api/v2/product/get_attributes"
-            sign = _shopee_sign(path, ts, access_token, shop_id_int)
-            r = requests.get(f"{_SHOPEE_BASE}{path}",
-                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
-                        "access_token": access_token, "shop_id": shop_id_int, "sign": sign,
-                        "category_id": cat, "language": "pt-br"}, timeout=20)
-            d = r.json()
-            attrs = (d.get("response", {}) or {}).get("attribute_list", [])
-            resumo = [{"id": a.get("attribute_id"), "nome": a.get("original_attribute_name") or a.get("display_attribute_name"),
-                       "obrigatorio": a.get("is_mandatory"), "input_type": a.get("input_type"),
-                       "format": a.get("attribute_value_list") and "tem_lista_valores" or "texto_livre",
-                       "n_valores": len(a.get("attribute_value_list") or [])} for a in attrs]
-            obrig = [a for a in resumo if a["obrigatorio"]]
-            return jsonify({"category_id": cat, "total": len(resumo), "obrigatorios": obrig, "todos": resumo, "erro_api": d.get("message")})
-        except Exception as e:
-            return jsonify({"erro": str(e)}), 500
+        # tenta os dois endpoints (a Shopee mudou o nome em algumas versões)
+        for path in ("/api/v2/product/get_attribute_tree", "/api/v2/product/get_attributes"):
+            try:
+                ts = int(time.time())
+                sign = _shopee_sign(path, ts, access_token, shop_id_int)
+                r = requests.get(f"{_SHOPEE_BASE}{path}",
+                    params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                            "access_token": access_token, "shop_id": shop_id_int, "sign": sign,
+                            "category_id": cat, "language": "pt-br"}, timeout=20)
+                d = r.json()
+                resp = d.get("response", {}) or {}
+                attrs = resp.get("attribute_list") or resp.get("attribute_tree") or []
+                if attrs:
+                    resumo = [{"id": a.get("attribute_id"),
+                               "nome": a.get("original_attribute_name") or a.get("display_attribute_name") or a.get("attribute_name"),
+                               "obrigatorio": a.get("is_mandatory") or a.get("mandatory"),
+                               "input_type": a.get("input_type") or a.get("input_validation_type"),
+                               "n_valores": len(a.get("attribute_value_list") or [])} for a in attrs]
+                    obrig = [a for a in resumo if a["obrigatorio"]]
+                    return jsonify({"category_id": cat, "endpoint": path, "total": len(resumo),
+                                    "obrigatorios": obrig, "todos": resumo})
+                ultimo = {"endpoint": path, "erro_api": d.get("message"), "raw": str(d)[:300]}
+            except Exception as e:
+                ultimo = {"endpoint": path, "erro": str(e)}
+        return jsonify({"category_id": cat, "falhou": True, "detalhe": ultimo})
 
     @app.route("/integracoes/shopee/diag-categoria", methods=["GET"])
     def shopee_diag_categoria():
