@@ -4477,6 +4477,39 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         except Exception as e:
             return jsonify({"erro": str(e)}), 500
 
+    @app.route("/integracoes/shopee/diag-atributos", methods=["GET"])
+    def shopee_diag_atributos():
+        """Diagnóstico: atributos obrigatórios de uma categoria."""
+        cat = request.args.get("category_id", "")
+        sid = request.args.get("shop_id", "")
+        tokens = _shopee_load_tokens()
+        if not sid:
+            sid = list(tokens.keys())[0] if tokens else ""
+        access_token, shop_id_int = _shopee_get_token(sid)
+        if not access_token:
+            return jsonify({"erro": "sem token"}), 400
+        if not cat:
+            cat = _shopee_categoria_recomendada(access_token, shop_id_int,
+                       request.args.get("nome", "Farol Dianteiro Direito Jeep Compass 2022"))
+        try:
+            ts = int(time.time())
+            path = "/api/v2/product/get_attributes"
+            sign = _shopee_sign(path, ts, access_token, shop_id_int)
+            r = requests.get(f"{_SHOPEE_BASE}{path}",
+                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                        "access_token": access_token, "shop_id": shop_id_int, "sign": sign,
+                        "category_id": cat, "language": "pt-br"}, timeout=20)
+            d = r.json()
+            attrs = (d.get("response", {}) or {}).get("attribute_list", [])
+            resumo = [{"id": a.get("attribute_id"), "nome": a.get("original_attribute_name") or a.get("display_attribute_name"),
+                       "obrigatorio": a.get("is_mandatory"), "input_type": a.get("input_type"),
+                       "format": a.get("attribute_value_list") and "tem_lista_valores" or "texto_livre",
+                       "n_valores": len(a.get("attribute_value_list") or [])} for a in attrs]
+            obrig = [a for a in resumo if a["obrigatorio"]]
+            return jsonify({"category_id": cat, "total": len(resumo), "obrigatorios": obrig, "todos": resumo, "erro_api": d.get("message")})
+        except Exception as e:
+            return jsonify({"erro": str(e)}), 500
+
     @app.route("/integracoes/shopee/diag-categoria", methods=["GET"])
     def shopee_diag_categoria():
         """Diagnóstico: resposta crua do category_recommend pra um nome de produto."""
