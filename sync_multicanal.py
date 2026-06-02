@@ -324,8 +324,13 @@ def get_blueprint():
         if not token:
             r = jsonify({"erro": "sem token"}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
         H = {"Authorization": f"Bearer {token}"}
+        # teste de saúde do token
+        me = requests.get("https://api.mercadolibre.com/users/me", headers=H, timeout=15)
         o = requests.get(f"https://api.mercadolibre.com/orders/{order_id}", headers=H, timeout=15)
         order = o.json() if o.status_code == 200 else {}
+        _order_http = o.status_code
+        _order_err = (o.text[:160] if o.status_code != 200 else None)
+        _me_http = me.status_code
         shipping = order.get("shipping") or {}
         ship_id = shipping.get("id")
         shipment = {}
@@ -339,7 +344,8 @@ def get_blueprint():
             lab_http = lr.status_code
             lab_ct = lr.headers.get("Content-Type")
             lab_bytes = len(lr.content) if lr.status_code == 200 else 0
-        out = {"order_id": order_id, "order_status": order.get("status"),
+        out = {"order_id": order_id, "me_http": _me_http, "order_http": _order_http, "order_err": _order_err,
+               "order_status": order.get("status"),
                "shipment_id": ship_id, "ship_status": shipment.get("status"),
                "ship_substatus": shipment.get("substatus"), "logistic_type": shipment.get("logistic_type"),
                "etiqueta_http": lab_http, "etiqueta_content_type": lab_ct, "etiqueta_bytes": lab_bytes}
