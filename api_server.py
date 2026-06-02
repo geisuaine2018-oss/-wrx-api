@@ -2646,15 +2646,17 @@ if USE_FLASK:
         return ids
 
     def _ml_buscar_detalhes_lote(token, ids):
-        """Busca detalhes de até 20 itens por vez (inclui variations/attributes p/ achar SKU)."""
+        """Busca detalhes de até 20 itens por vez.
+        IMPORTANTE: NÃO usar projeção `attributes=` aqui — o multiget com projeção
+        devolve o array `attributes` SEM os value_name, então o SELLER_SKU (onde o
+        SKU fica escondido) some. Sem projeção, vem o item completo e o SKU aparece."""
         itens = []
         for i in range(0, len(ids), 20):
             lote = ids[i:i+20]
             r = requests.get(
                 "https://api.mercadolibre.com/items",
-                params={"ids": ",".join(lote),
-                        "attributes": "id,title,price,available_quantity,seller_sku,seller_custom_field,status,thumbnail,variations,attributes"},
-                headers={"Authorization": f"Bearer {token}"}, timeout=20
+                params={"ids": ",".join(lote)},
+                headers={"Authorization": f"Bearer {token}"}, timeout=25
             )
             if r.status_code != 200:
                 continue
