@@ -154,10 +154,20 @@ def pausar_anuncio_ml(ml_id, conta):
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json={"status": "paused"}, timeout=15)
         if r.status_code == 200:
+            _atualizar_cache_ml(ml_id, "paused")  # mantém ml_anuncios fiel (evita re-flag)
             return True, "pausado"
         return False, f"HTTP {r.status_code}: {r.text[:160]}"
     except Exception as e:
         return False, str(e)
+
+def _atualizar_cache_ml(ml_id, status):
+    """Reflete no cache ml_anuncios o status real após pausar/reativar no ML."""
+    try:
+        requests.patch(f"{SB_URL}/rest/v1/ml_anuncios?ml_id=eq.{ml_id}",
+                       headers={**_sb_headers(), "Content-Type": "application/json"},
+                       json={"status": status}, timeout=10)
+    except Exception:
+        pass
 
 def reativar_anuncio_ml(ml_id, conta):
     """Reativa um anúncio ML (status=active). Usado no teste e em cancelamento de venda."""
@@ -172,6 +182,7 @@ def reativar_anuncio_ml(ml_id, conta):
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json={"status": "active"}, timeout=15)
         if r.status_code == 200:
+            _atualizar_cache_ml(ml_id, "active")
             return True, "reativado"
         return False, f"HTTP {r.status_code}: {r.text[:160]}"
     except Exception as e:
@@ -195,6 +206,12 @@ def pausar_anuncio_shopee(shop_id, item_id):
                     "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
             json={"item_list": [{"item_id": int(item_id), "unlist": True}]}, timeout=15)
         if r.status_code == 200 and not r.json().get("error"):
+            try:
+                requests.patch(f"{SB_URL}/rest/v1/shopee_anuncios?shop_id=eq.{shop_id}&item_id=eq.{item_id}",
+                               headers={**_sb_headers(), "Content-Type": "application/json"},
+                               json={"status": "UNLIST"}, timeout=10)
+            except Exception:
+                pass
             return True, "unlist"
         return False, f"HTTP {r.status_code}: {r.text[:160]}"
     except Exception as e:
