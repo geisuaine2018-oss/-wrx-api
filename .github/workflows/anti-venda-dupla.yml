@@ -25,7 +25,7 @@ jobs:
       - name: Vendas novas online (ML) -> cascata
         env:
           API: https://wrx-api-production.up.railway.app
-          MODO: ${{ github.event.inputs.modo || 'armado' }}
+          MODO: ${{ github.event.inputs.modo || 'observacao' }}
         run: |
           set -euo pipefail
           echo "Gatilho de vendas ML no modo: $MODO"
@@ -36,7 +36,7 @@ jobs:
       - name: Estoque zerado (balcao/qualquer baixa) -> pausa em todas plataformas
         env:
           API: https://wrx-api-production.up.railway.app
-          MODO: ${{ github.event.inputs.modo || 'armado' }}
+          MODO: ${{ github.event.inputs.modo || 'observacao' }}
         run: |
           set -euo pipefail
           echo "Reconciliando estoque zerado no modo: $MODO"
@@ -46,7 +46,7 @@ jobs:
       - name: Cancelamentos ML -> devolve estoque + reativa anuncios
         env:
           API: https://wrx-api-production.up.railway.app
-          MODO: ${{ github.event.inputs.modo || 'armado' }}
+          MODO: ${{ github.event.inputs.modo || 'observacao' }}
         run: |
           set -euo pipefail
           echo "Processando cancelamentos no modo: $MODO"
