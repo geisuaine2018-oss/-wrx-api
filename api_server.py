@@ -4597,8 +4597,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     resultados.append({"shop_id": sid, "item_id": item_id, "condicao": condicao_shopee})
                 else:
                     msg = _d.get("message", _r.text[:200])
-                    print(f"[SHOPEE] Erro shop {sid} SKU '{sku}': {msg}")
-                    erros.append(f"shop {sid}: {msg}")
+                    print(f"[SHOPEE] Erro shop {sid} SKU '{sku}': {msg} | RAW={_d}")
+                    detalhe = ""
+                    if data.get("debug"):
+                        detalhe = f" | RAW={_d} | LOG={logistics}"
+                    erros.append(f"shop {sid}: {msg}{detalhe}")
             except Exception as _e:
                 erros.append(f"shop {sid}: {str(_e)}")
 
