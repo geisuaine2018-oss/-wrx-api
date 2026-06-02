@@ -4396,8 +4396,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 timeout=20)
             d = r.json()
             canais = (d.get("response", {}) or {}).get("logistics_channel_list", [])
-            return [c.get("logistics_channel_id") for c in canais
-                    if c.get("enabled") and c.get("logistics_channel_id")]
+            # ignora canais de retirada/auto-coleta (não são entrega real e quebram a validação)
+            entrega = [c for c in canais
+                       if c.get("enabled") and c.get("logistics_channel_id")
+                       and "retirada" not in (c.get("logistics_channel_name") or "").lower()]
+            return [c.get("logistics_channel_id") for c in entrega]
         except Exception as _e:
             print(f"[SHOPEE-LOG] erro canais: {_e}")
             return []
@@ -4554,7 +4557,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             if not canais:
                 erros.append(f"shop {sid}: nenhum canal de envio habilitado")
                 continue
-            logistics = [{"logistic_id": cid, "enabled": True} for cid in canais]
+            logistics = [{"logistic_id": cid, "enabled": True, "is_free": False} for cid in canais]
             ts = int(time.time())
             path = "/api/v2/product/add_item"
             sign = _shopee_sign(path, ts, access_token, shop_id_int)
@@ -5002,27 +5005,73 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": False, "erro": "Shopee nao autorizada"}), 401
         shop_id_param = request.args.get("shop_id")
         dias = int(request.args.get("dias", "7"))
+        debug = request.args.get("debug") == "1"
         shop_ids = [str(shop_id_param)] if shop_id_param else list(tokens.keys())
         todas = []
+        diag = []
         for sid in shop_ids:
             access_token, shop_id_int = _shopee_get_token(sid)
             if not access_token:
                 continue
-            time_to = int(time.time())
-            time_from = time_to - dias * 86400
-            ts = int(time.time())
-            path = "/api/v2/order/get_order_list"
-            sign = _shopee_sign(path, ts, access_token, shop_id_int)
-            r = requests.get(
-                f"{_SHOPEE_BASE}{path}",
-                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
-                        "access_token": access_token, "shop_id": shop_id_int, "sign": sign,
-                        "time_range_field": "create_time", "time_from": time_from,
-                        "time_to": time_to, "page_size": 100},
-                timeout=20
-            )
-            d = r.json()
-            if r.status_code == 200 and not d.get("error"):
+            now = int(time.time())
+            # 1) Coleta os order_sn em janelas de <=15 dias (limite da Shopee), com paginacao
+            sns = []
+            restante = max(1, dias)
+            win_to = now
+            while restante > 0:
+                win_dias = min(15, restante)
+                win_from = win_to - win_dias * 86400
+                cursor = ""
+                for _ in range(20):  # ate 20 paginas por janela
+                    ts = int(time.time())
+                    path = "/api/v2/order/get_order_list"
+                    sign = _shopee_sign(path, ts, access_token, shop_id_int)
+                    r = requests.get(
+                        f"{_SHOPEE_BASE}{path}",
+                        params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                                "access_token": access_token, "shop_id": shop_id_int, "sign": sign,
+                                "time_range_field": "create_time", "time_from": win_from,
+                                "time_to": win_to, "page_size": 100, "cursor": cursor},
+                        timeout=20
+                    )
+                    try:
+                        d = r.json()
+                    except Exception:
+                        d = {}
+                    if r.status_code != 200 or d.get("error"):
+                        diag.append({"shop": sid, "fase": "list", "error": d.get("error", ""), "message": d.get("message", "")})
+                        break
+                    resp = d.get("response", {}) or {}
+                    for o in resp.get("order_list", []):
+                        if o.get("order_sn"):
+                            sns.append(o["order_sn"])
+                    if resp.get("more") and resp.get("next_cursor"):
+                        cursor = resp["next_cursor"]
+                    else:
+                        break
+                win_to = win_from
+                restante -= win_dias
+            # 2) Busca os detalhes (status/total/itens) em lotes de 50
+            for i in range(0, len(sns), 50):
+                lote = sns[i:i + 50]
+                ts = int(time.time())
+                path = "/api/v2/order/get_order_detail"
+                sign = _shopee_sign(path, ts, access_token, shop_id_int)
+                r = requests.get(
+                    f"{_SHOPEE_BASE}{path}",
+                    params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                            "access_token": access_token, "shop_id": shop_id_int, "sign": sign,
+                            "order_sn_list": ",".join(lote),
+                            "response_optional_fields": "order_status,total_amount,create_time,buyer_username,item_list"},
+                    timeout=20
+                )
+                try:
+                    d = r.json()
+                except Exception:
+                    d = {}
+                if r.status_code != 200 or d.get("error"):
+                    diag.append({"shop": sid, "fase": "detail", "error": d.get("error", ""), "message": d.get("message", "")})
+                    continue
                 for o in d.get("response", {}).get("order_list", []):
                     todas.append({
                         "marketplace": "shopee",
@@ -5031,10 +5080,14 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                         "status": o.get("order_status", ""),
                         "criar_em": o.get("create_time", 0),
                         "total": o.get("total_amount", 0),
+                        "comprador": o.get("buyer_username", ""),
                         "itens": o.get("item_list", []),
                     })
         todas.sort(key=lambda x: x.get("criar_em", 0), reverse=True)
-        return jsonify({"ok": True, "vendas": todas, "total": len(todas)})
+        out = {"ok": True, "vendas": todas, "total": len(todas)}
+        if debug:
+            out["diag"] = diag
+        return jsonify(out)
 
     # ── Shopee: mensagens (chat) ──────────────────────────────────────────────────
 
