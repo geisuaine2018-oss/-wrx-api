@@ -1,55 +1,32 @@
-name: Anti-venda-dupla (gatilho)
+name: Rede de seguranca anti-venda-dupla
 
-# B4 — Detecta vendas novas no Mercado Livre e dispara a cascata que pausa o
-# mesmo SKU nos outros anuncios (ML + Shopee). Roda ISOLADO no GitHub (nao
-# depende do Railway nem do n8n estarem de pe pra disparar).
-#
-# MODO: ARMADO (pausa/baixa/reativa de verdade) no cron automatico. Disparo manual
-# pela aba Actions usa 'observacao' por padrao (pra testar sem agir) — escolha 'armado'
-# no dropdown se quiser executar manual de verdade.
+# REDE DE SEGURANCA (leve): o PartsHub ja cuida do anti-venda-dupla em ML+Shopee
+# (~99,7%). Este job so pega os POUCOS furos que escapam: pecas com estoque ZERADO
+# (em pecas_estoque, a tabela fresca do PartsHub) que ainda tem anuncio ATIVO -> pausa.
+# Roda 1x/dia. NAO reage a cada venda (o PartsHub ja faz isso melhor e mais rapido).
 
 on:
   schedule:
-    - cron: '*/10 * * * *'    # a cada ~10 min (cron do GitHub e best-effort)
+    - cron: '0 11 * * *'    # 1x/dia ~08h BRT (11h UTC)
   workflow_dispatch:
     inputs:
       modo:
-        description: 'observacao (so loga) ou armado (pausa de verdade)'
+        description: 'observacao (so lista) ou armado (pausa os furos)'
         required: false
-        default: 'observacao'
+        default: 'armado'
 
 jobs:
-  gatilho:
+  rede-seguranca:
     runs-on: ubuntu-latest
     steps:
-      - name: Vendas novas online (ML) -> cascata
+      - name: Pecas zeradas ainda anunciadas (furos do PartsHub) -> pausa
         env:
           API: https://wrx-api-production.up.railway.app
-          MODO: ${{ github.event.inputs.modo || 'observacao' }}
+          MODO: ${{ github.event.inputs.modo || 'armado' }}
         run: |
           set -euo pipefail
-          echo "Gatilho de vendas ML no modo: $MODO"
-          resp=$(curl -s -m 90 -X POST "$API/integracoes/processar-vendas-novas?modo=$MODO")
-          echo "$resp" | jq '.' || echo "$resp"
-          echo "Vendas novas: $(echo "$resp" | jq -r '.vendas_novas // 0' 2>/dev/null || echo 0)"
-
-      - name: Estoque zerado (balcao/qualquer baixa) -> pausa em todas plataformas
-        env:
-          API: https://wrx-api-production.up.railway.app
-          MODO: ${{ github.event.inputs.modo || 'observacao' }}
-        run: |
-          set -euo pipefail
-          echo "Reconciliando estoque zerado no modo: $MODO"
+          echo "Rede de seguranca anti-venda-dupla — modo: $MODO"
           resp=$(curl -s -m 120 -X POST "$API/integracoes/reconciliar-estoque-zerado?modo=$MODO")
-          echo "$resp" | jq '{ok,modo,skus_zerados,skus_em_risco,anuncios_em_risco}' || echo "$resp"
-
-      - name: Cancelamentos ML -> devolve estoque + reativa anuncios
-        env:
-          API: https://wrx-api-production.up.railway.app
-          MODO: ${{ github.event.inputs.modo || 'observacao' }}
-        run: |
-          set -euo pipefail
-          echo "Processando cancelamentos no modo: $MODO"
-          resp=$(curl -s -m 90 -X POST "$API/integracoes/processar-cancelamentos?modo=$MODO")
-          echo "$resp" | jq '.' || echo "$resp"
-          echo "Cancelamentos novos: $(echo "$resp" | jq -r '.cancelamentos_novos // 0' 2>/dev/null || echo 0)"
+          echo "$resp" | jq '{ok,modo,skus_zerados,skus_em_risco,anuncios_em_risco,ml,shopee,pausados}' || echo "$resp"
+          risco=$(echo "$resp" | jq -r '.anuncios_em_risco // 0' 2>/dev/null || echo 0)
+          echo "Furos encontrados (zerados ainda a venda): $risco"

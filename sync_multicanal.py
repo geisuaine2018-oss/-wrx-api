@@ -80,7 +80,7 @@ def _salvar_canc(s):
 def _estoque_atual(sku):
     """qtd atual da peça em `pecas`, ou None se o SKU não está lá (isca/avulso)."""
     try:
-        r = requests.get(f"{SB_URL}/rest/v1/pecas",
+        r = requests.get(f"{SB_URL}/rest/v1/pecas_estoque",
                          params={"sku": f"eq.{sku}", "select": "qtd"}, headers=_sb_headers(), timeout=10)
         if r.status_code == 200 and r.json():
             return int(r.json()[0].get("qtd") or 0)
@@ -91,7 +91,7 @@ def _estoque_atual(sku):
 def _estoque_delta(sku, delta):
     """Ajusta pecas.qtd em +delta (venda baixa, cancelamento devolve). Retorna nova qtd ou None."""
     try:
-        r = requests.get(f"{SB_URL}/rest/v1/pecas",
+        r = requests.get(f"{SB_URL}/rest/v1/pecas_estoque",
                          params={"sku": f"eq.{sku}", "select": "qtd"}, headers=_sb_headers(), timeout=10)
         if r.status_code == 200 and r.json():
             nova = max(0, int(r.json()[0].get("qtd") or 0) + delta)
@@ -166,7 +166,7 @@ def _peca_unica(sku):
     Peças com várias unidades (qtd>1) e SKUs fora de `pecas` (ex: anúncio-isca
     'Calota fake') NÃO entram na cascata — pausar elas seria errado."""
     try:
-        r = requests.get(f"{SB_URL}/rest/v1/pecas",
+        r = requests.get(f"{SB_URL}/rest/v1/pecas_estoque",
                          params={"sku": f"eq.{sku}", "select": "qtd"},
                          headers=_sb_headers(), timeout=10)
         if r.status_code == 200 and r.json():
@@ -431,7 +431,7 @@ def get_blueprint():
             return _cors()
         modo = request.args.get("modo", "observacao").strip()
         try:
-            r = requests.get(f"{SB_URL}/rest/v1/pecas",
+            r = requests.get(f"{SB_URL}/rest/v1/pecas_estoque",
                              params={"qtd": "lte.0", "select": "sku", "limit": 10000},
                              headers=_sb_headers(), timeout=30)
             skus = sorted({str(p["sku"]).strip() for p in (r.json() if r.status_code == 200 else []) if p.get("sku")})
