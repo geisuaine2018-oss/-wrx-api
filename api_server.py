@@ -4320,6 +4320,29 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             "mensagem": "Item de segurança: será publicado como NOVO mesmo que selecionado USADO." if somente_novo and condicao == "used" else "Condição mantida conforme selecionado.",
         })
 
+    def _shopee_categoria_recomendada(access_token, shop_id_int, nome_produto):
+        """Pergunta à Shopee qual a categoria-folha certa pro produto (recommend_category).
+        Retorna o category_id (int) ou None."""
+        try:
+            ts = int(time.time())
+            path = "/api/v2/product/category_recommend"
+            sign = _shopee_sign(path, ts, access_token, shop_id_int)
+            r = requests.get(
+                f"{_SHOPEE_BASE}{path}",
+                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                        "access_token": access_token, "shop_id": shop_id_int,
+                        "sign": sign, "item_name": nome_produto[:120]},
+                timeout=15
+            )
+            d = r.json()
+            cats = (d.get("response", {}) or {}).get("category_id", [])
+            # a API devolve a hierarquia; a categoria-folha é a ÚLTIMA da lista
+            if cats:
+                return cats[-1]
+        except Exception as _e:
+            print(f"[SHOPEE-CAT] erro recommend: {_e}")
+        return None
+
     @app.route("/integracoes/shopee/publicar", methods=["POST", "OPTIONS"])
     def shopee_publicar():
         if request.method == "OPTIONS":
@@ -4359,6 +4382,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             if not access_token:
                 erros.append(f"shop {sid}: token invalido")
                 continue
+            # Categoria-folha CORRETA: pergunta à Shopee pelo nome do produto
+            cat_id = _shopee_categoria_recomendada(access_token, shop_id_int, titulo)
+            if not cat_id:
+                erros.append(f"shop {sid}: nao achou categoria para '{titulo[:30]}'")
+                continue
             ts = int(time.time())
             path = "/api/v2/product/add_item"
             sign = _shopee_sign(path, ts, access_token, shop_id_int)
@@ -4373,7 +4401,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 "price_info": [{"currency": "BRL", "original_price": float(preco)}],
                 "stock_info_v2": {"seller_stock": [{"stock": 1}]},
                 "condition": condicao_shopee,
-                "category_id": 100644,
+                "category_id": cat_id,
                 "image": {"image_url_list": fotos[:9]},
                 "logistics_info": [{"logistic_id": 10038, "enabled": True}],
                 "weight": 1.0,
