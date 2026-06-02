@@ -391,6 +391,25 @@ def get_blueprint():
             "Access-Control-Allow-Origin": "*",
             "Content-Disposition": f'inline; filename="etiqueta_{order_id}.{ "pdf" if fmt=="pdf" else "zpl" }"'})
 
+    @bp.route("/integracoes/ml-nota-info", methods=["GET", "OPTIONS"])
+    def ml_nota_info():
+        """TESTE: acha a nota fiscal emitida de um pedido (via pack_id → fiscal_documents)."""
+        if request.method == "OPTIONS":
+            return _cors()
+        order_id = request.args.get("order_id", "").strip()
+        conta = request.args.get("conta", "default").strip()
+        token = _ml_token_provider(conta) if _ml_token_provider else None
+        if not token:
+            r = jsonify({"erro": "sem token"}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+        H = {"Authorization": f"Bearer {token}"}
+        o = requests.get(f"https://api.mercadolibre.com/orders/{order_id}", headers=H, timeout=15)
+        order = o.json() if o.status_code == 200 else {}
+        pack_id = order.get("pack_id") or order_id  # sem pack, usa o próprio order
+        fd = requests.get(f"https://api.mercadolibre.com/packs/{pack_id}/fiscal_documents", headers=H, timeout=15)
+        out = {"order_id": order_id, "pack_id": pack_id, "order_http": o.status_code,
+               "fiscal_http": fd.status_code, "fiscal_raw": fd.json() if fd.status_code == 200 else fd.text[:300]}
+        r = jsonify(out); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+
     @bp.route("/integracoes/ml-billing-teste", methods=["GET", "OPTIONS"])
     def ml_billing_teste():
         """TESTE CRÍTICO: o ML libera o CPF/CNPJ do comprador (pra NF-e)?"""
