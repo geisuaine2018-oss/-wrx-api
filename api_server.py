@@ -3087,6 +3087,12 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                         peso = a.get("value_name") or ""
                         break
                 shipping = it.get("shipping") or {}
+                # frete grátis: ML marca de 3 jeitos diferentes
+                frete_gratis = bool(
+                    shipping.get("free_shipping")
+                    or ("free_shipping" in (shipping.get("tags") or []))
+                    or any(m.get("free_shipping") for m in (shipping.get("free_methods") or []))
+                )
                 itens.append({
                     "mlId": it.get("id", ""),
                     "titulo": it.get("title", ""),
@@ -3097,7 +3103,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     "thumbnail": it.get("thumbnail", ""),
                     "sku": _ml_extrair_sku(it),
                     "condicao": it.get("condition", ""),        # new / used
-                    "freteGratis": bool(shipping.get("free_shipping", False)),
+                    "freteGratis": frete_gratis,
                     "peso": peso,
                     "data": it.get("date_created", ""),         # pra ordenar antigo/novo
                     "permalink": it.get("permalink", ""),
