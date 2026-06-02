@@ -38,6 +38,26 @@ def _sb_headers():
     key = os.environ.get("SUPABASE_SERVICE_KEY") or SB_KEY
     return {"apikey": key, "Authorization": "Bearer " + key}
 
+# ─── B4: gatilho automático (detecta venda → dispara cascata) ────────────────────
+SELF_BASE = os.environ.get("WRX_SELF_URL", "https://wrx-api-production.up.railway.app")
+CONTAS_ML = ["default", "geisa"]
+_PROC_FILE = os.path.join(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp"), "wrx_vendas_processadas.json")
+
+def _carregar_processadas():
+    try:
+        with open(_PROC_FILE, encoding="utf-8") as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+
+def _salvar_processadas(s):
+    try:
+        # mantém só os últimos 5000 order_ids (evita crescer infinito)
+        with open(_PROC_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(s)[-5000:], f)
+    except Exception as e:
+        print(f"[B4] nao salvou processadas: {e}")
+
 # ─── Provedores injetados pelo api_server (None = dry-run) ────────────────────────
 _ml_token_provider = None       # fn(conta) -> access_token | None
 _shopee_token_provider = None   # fn(shop_id) -> (access_token, shop_id_int) | (None, 0)
@@ -308,6 +328,50 @@ def get_blueprint():
         else:
             ok, det = False, "canal desconhecido"
         r = jsonify({"ok": ok, "canal": canal, "alvo": alvo, "acao": acao, "detalhe": det})
+        r.headers["Access-Control-Allow-Origin"] = "*"
+        return r
+
+    @bp.route("/integracoes/processar-vendas-novas", methods=["POST", "GET", "OPTIONS"])
+    def processar_vendas_novas():
+        """B4 — GATILHO: busca vendas recentes do ML, e p/ cada venda NOVA (paga, com
+        SKU, ainda não processada) dispara a cascata anti-venda-dupla.
+        ?modo=observacao (padrão, só planeja+loga) | armado (pausa de verdade).
+        Idempotência por order_id (arquivo no volume)."""
+        if request.method == "OPTIONS":
+            return _cors()
+        modo = request.args.get("modo", "observacao").strip()
+        horas = float(request.args.get("horas", "1") or 1)
+        processadas = _carregar_processadas()
+        novas, resultados = [], []
+        for conta in CONTAS_ML:
+            try:
+                rv = requests.get(f"{SELF_BASE}/integracoes/mercadolivre/vendas-recentes",
+                                  params={"conta": conta, "dias": 1}, timeout=40)
+                vendas = rv.json().get("vendas", []) if rv.status_code == 200 else []
+            except Exception as e:
+                resultados.append({"conta": conta, "erro": str(e)}); continue
+            for v in vendas:
+                oid = str(v.get("order_id") or "")
+                if not oid or v.get("status") != "paid" or oid in processadas:
+                    continue
+                for it in (v.get("itens") or []):
+                    sku = str(it.get("sku") or "").strip()
+                    if not sku:
+                        continue
+                    if modo == "armado":
+                        rel = executar_sincronizacao(sku, "ml")
+                        resultados.append({"order_id": oid, "conta": conta, "sku": sku,
+                                           "pausados": rel.get("pausados"), "total": rel.get("total")})
+                    else:
+                        plano = planejar_pausa(sku, "ml")
+                        _registrar_log({"sku": sku, "origem": "ml-observacao",
+                                        "pausados": 0, "total": plano["total"], "resultados": plano["acoes"]})
+                        resultados.append({"order_id": oid, "conta": conta, "sku": sku,
+                                           "pausaria": plano["total"]})
+                processadas.add(oid)
+                novas.append(oid)
+        _salvar_processadas(processadas)
+        r = jsonify({"ok": True, "modo": modo, "vendas_novas": len(novas), "resultados": resultados})
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
 
