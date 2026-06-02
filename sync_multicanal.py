@@ -346,12 +346,13 @@ def get_blueprint():
         agora = int(time.time())
         for shop in SHOPS_SHOPEE:
             sns = []
-            d = _shopee_call(shop, "/api/v2/order/get_order_list", {
-                "order_status": "READY_TO_SHIP", "page_size": 50, "time_range_field": "create_time",
-                "time_from": agora - 14 * 86400, "time_to": agora})
-            for o in ((d or {}).get("response", {}) or {}).get("order_list", []):
-                if o.get("order_sn"):
-                    sns.append(o["order_sn"])
+            for status in ("READY_TO_SHIP", "PROCESSED"):  # a despachar
+                d = _shopee_call(shop, "/api/v2/order/get_order_list", {
+                    "order_status": status, "page_size": 50, "time_range_field": "create_time",
+                    "time_from": agora - 14 * 86400, "time_to": agora})
+                for o in ((d or {}).get("response", {}) or {}).get("order_list", []):
+                    if o.get("order_sn"):
+                        sns.append(o["order_sn"])
             for i in range(0, len(sns), 50):
                 dd = _shopee_call(shop, "/api/v2/order/get_order_detail", {
                     "order_sn_list": ",".join(sns[i:i+50]),
