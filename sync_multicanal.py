@@ -77,8 +77,19 @@ def _salvar_canc(s):
     except Exception as e:
         print(f"[B5] nao salvou cancelamentos: {e}")
 
+def _estoque_atual(sku):
+    """qtd atual da peça em `pecas`, ou None se o SKU não está lá (isca/avulso)."""
+    try:
+        r = requests.get(f"{SB_URL}/rest/v1/pecas",
+                         params={"sku": f"eq.{sku}", "select": "qtd"}, headers=_sb_headers(), timeout=10)
+        if r.status_code == 200 and r.json():
+            return int(r.json()[0].get("qtd") or 0)
+    except Exception as e:
+        print(f"[estoque] atual erro: {e}")
+    return None
+
 def _estoque_delta(sku, delta):
-    """Ajusta pecas.qtd em +delta (cancelamento devolve). Retorna nova qtd ou None."""
+    """Ajusta pecas.qtd em +delta (venda baixa, cancelamento devolve). Retorna nova qtd ou None."""
     try:
         r = requests.get(f"{SB_URL}/rest/v1/pecas",
                          params={"sku": f"eq.{sku}", "select": "qtd"}, headers=_sb_headers(), timeout=10)
@@ -479,7 +490,7 @@ def get_blueprint():
         if request.method == "OPTIONS":
             return _cors()
         modo = request.args.get("modo", "observacao").strip()
-        horas = float(request.args.get("horas", "1") or 1)
+        forcar = request.args.get("forcar") == "1"  # ignora idempotência e NÃO marca (só p/ ver o estado)
         processadas = _carregar_processadas()
         novas, resultados = [], []
         diag = []
@@ -494,25 +505,34 @@ def get_blueprint():
                 diag.append({"conta": conta, "erro": str(e)}); continue
             for v in vendas:
                 oid = str(v.get("order_id") or "")
-                if not oid or v.get("status") != "paid" or oid in processadas:
+                if not oid or v.get("status") != "paid" or (oid in processadas and not forcar):
                     continue
                 for it in (v.get("itens") or []):
                     sku = str(it.get("sku") or "").strip()
                     if not sku:
                         continue
+                    qty = int(it.get("qty") or 1)
+                    atual = _estoque_atual(sku)
+                    if atual is None:
+                        continue  # SKU fora de `pecas` (isca/avulso) → ignora
+                    nova = max(0, atual - qty)
                     if modo == "armado":
-                        rel = executar_sincronizacao(sku, "ml")
+                        _estoque_delta(sku, -qty)            # baixa o estoque na venda
+                        pausados = 0
+                        if nova <= 0:                         # esgotou → pausa os outros anúncios
+                            rel = executar_sincronizacao(sku, "ml")
+                            pausados = rel.get("pausados", 0)
                         resultados.append({"order_id": oid, "conta": conta, "sku": sku,
-                                           "pausados": rel.get("pausados"), "total": rel.get("total")})
+                                           "baixou": qty, "estoque": nova, "pausados": pausados})
                     else:
-                        plano = planejar_pausa(sku, "ml")
-                        _registrar_log({"sku": sku, "origem": "ml-observacao",
-                                        "pausados": 0, "total": plano["total"], "resultados": plano["acoes"]})
+                        pausaria = planejar_pausa(sku, "ml")["total"] if nova <= 0 else 0
                         resultados.append({"order_id": oid, "conta": conta, "sku": sku,
-                                           "pausaria": plano["total"]})
-                processadas.add(oid)
+                                           "baixaria": qty, "estoque_ficaria": nova, "pausaria": pausaria})
                 novas.append(oid)
-        _salvar_processadas(processadas)
+                if not forcar:
+                    processadas.add(oid)
+        if not forcar:
+            _salvar_processadas(processadas)
         r = jsonify({"ok": True, "modo": modo, "vendas_novas": len(novas), "diag": diag, "resultados": resultados})
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
@@ -525,6 +545,7 @@ def get_blueprint():
         if request.method == "OPTIONS":
             return _cors()
         modo = request.args.get("modo", "observacao").strip()
+        forcar = request.args.get("forcar") == "1"  # ignora idempotência e NÃO marca
         proc = _carregar_canc()
         novos, resultados = [], []
         for conta in CONTAS_ML:
@@ -536,7 +557,7 @@ def get_blueprint():
                 resultados.append({"conta": conta, "erro": str(e)}); continue
             for v in vendas:
                 oid = str(v.get("order_id") or "")
-                if not oid or v.get("status") != "cancelled" or oid in proc:
+                if not oid or v.get("status") != "cancelled" or (oid in proc and not forcar):
                     continue
                 for it in (v.get("itens") or []):
                     sku = str(it.get("sku") or "").strip()
@@ -553,8 +574,11 @@ def get_blueprint():
                     else:
                         resultados.append({"order_id": oid, "conta": conta, "sku": sku,
                                            "devolveria": qty, "reativaria": len(paused)})
-                proc.add(oid); novos.append(oid)
-        _salvar_canc(proc)
+                novos.append(oid)
+                if not forcar:
+                    proc.add(oid)
+        if not forcar:
+            _salvar_canc(proc)
         r = jsonify({"ok": True, "modo": modo, "cancelamentos_novos": len(novos), "resultados": resultados})
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
