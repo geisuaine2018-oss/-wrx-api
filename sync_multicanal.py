@@ -352,33 +352,60 @@ def get_blueprint():
 
     @bp.route("/integracoes/reconciliar-estoque-zerado", methods=["POST", "GET", "OPTIONS"])
     def reconciliar_estoque_zerado():
-        """Cobre o BALCÃO e qualquer baixa: procura peças com estoque ZERADO que ainda
+        """Cobre o BALCÃO e qualquer baixa: acha peças com estoque ZERADO que ainda
         têm anúncio ATIVO em algum marketplace e pausa — não importa como zerou.
-        ?modo=observacao (padrão, só lista) | armado (pausa de verdade)."""
+        Em LOTE (sku=in.(...)) pra ser rápido. ?modo=observacao | armado."""
         if request.method == "OPTIONS":
             return _cors()
         modo = request.args.get("modo", "observacao").strip()
         try:
             r = requests.get(f"{SB_URL}/rest/v1/pecas",
-                             params={"qtd": "lte.0", "select": "sku", "limit": 5000},
+                             params={"qtd": "lte.0", "select": "sku", "limit": 10000},
                              headers=_sb_headers(), timeout=30)
-            skus = [str(p["sku"]).strip() for p in (r.json() if r.status_code == 200 else []) if p.get("sku")]
+            skus = sorted({str(p["sku"]).strip() for p in (r.json() if r.status_code == 200 else []) if p.get("sku")})
         except Exception as e:
             rr = jsonify({"ok": False, "erro": str(e)}); rr.headers["Access-Control-Allow-Origin"] = "*"; return rr
-        resultados = []
-        for sku in skus:
-            # planejar_pausa busca anúncios ATIVOS desse SKU (ML+Shopee). Como a peça
-            # está zerada (qtd<=0), _peca_unica passa (<=1) e qualquer ativo é indevido.
-            plano = planejar_pausa(sku, "estoque-zerado")
-            if plano["total"] == 0:
-                continue  # já está tudo pausado, nada a fazer
-            if modo == "armado":
-                rel = executar_sincronizacao(sku, "estoque-zerado")
-                resultados.append({"sku": sku, "pausados": rel.get("pausados"), "total": rel.get("total")})
-            else:
-                resultados.append({"sku": sku, "pausaria": plano["total"]})
-        rr = jsonify({"ok": True, "modo": modo, "skus_zerados": len(skus),
-                      "zerados_ainda_anunciados": len(resultados), "resultados": resultados})
+
+        risco_ml, risco_shopee = [], []
+        for i in range(0, len(skus), 80):  # chunks p/ não estourar a URL
+            lista = ",".join(skus[i:i+80])
+            try:
+                rm = requests.get(f"{SB_URL}/rest/v1/ml_anuncios",
+                                  params={"status": "eq.active", "sku": f"in.({lista})",
+                                          "select": "ml_id,conta,sku,titulo"},
+                                  headers=_sb_headers(), timeout=30)
+                if rm.status_code == 200:
+                    risco_ml += rm.json()
+            except Exception:
+                pass
+            try:  # Shopee (tabela pode não existir ainda)
+                rs = requests.get(f"{SB_URL}/rest/v1/shopee_anuncios",
+                                  params={"status": "neq.UNLIST", "sku": f"in.({lista})",
+                                          "select": "shop_id,item_id,sku,titulo"},
+                                  headers=_sb_headers(), timeout=30)
+                if rs.status_code == 200:
+                    risco_shopee += rs.json()
+            except Exception:
+                pass
+
+        pausados = 0
+        if modo == "armado":
+            for a in risco_ml:
+                ok, _ = pausar_anuncio_ml(a.get("ml_id"), a.get("conta"))
+                pausados += 1 if ok else 0
+            for a in risco_shopee:
+                ok, _ = pausar_anuncio_shopee(a.get("shop_id"), a.get("item_id"))
+                pausados += 1 if ok else 0
+
+        skus_risco = sorted({a.get("sku") for a in (risco_ml + risco_shopee)})
+        rr = jsonify({"ok": True, "modo": modo,
+                      "skus_zerados": len(skus),
+                      "anuncios_em_risco": len(risco_ml) + len(risco_shopee),
+                      "ml": len(risco_ml), "shopee": len(risco_shopee),
+                      "skus_em_risco": len(skus_risco),
+                      "pausados": pausados,
+                      "amostra": [{"sku": a.get("sku"), "ml_id": a.get("ml_id"), "conta": a.get("conta"),
+                                   "titulo": (a.get("titulo") or "")[:50]} for a in risco_ml[:20]]})
         rr.headers["Access-Control-Allow-Origin"] = "*"
         return rr
 
