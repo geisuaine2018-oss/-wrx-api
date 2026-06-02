@@ -356,6 +356,46 @@ def get_blueprint():
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
 
+    @bp.route("/integracoes/ml-nota", methods=["GET", "OPTIONS"])
+    def ml_nota():
+        """SERVE o DANFE (PDF) ou XML da nota fiscal emitida de um pedido ML.
+        ?order_id=..&conta=..&fmt=pdf|xml. Requer nota emitida pelo Faturador do ML."""
+        from flask import Response
+        if request.method == "OPTIONS":
+            return _cors()
+        order_id = request.args.get("order_id", "").strip()
+        conta = request.args.get("conta", "default").strip()
+        fmt = request.args.get("fmt", "pdf").strip()
+        token = _ml_token_provider(conta) if _ml_token_provider else None
+        if not token:
+            return Response('{"erro":"Mercado Livre desconectado"}', status=409,
+                            mimetype="application/json", headers={"Access-Control-Allow-Origin": "*"})
+        H = {"Authorization": f"Bearer {token}"}
+        me = requests.get("https://api.mercadolibre.com/users/me", headers=H, timeout=15)
+        uid = me.json().get("id") if me.status_code == 200 else None
+        o = requests.get(f"https://api.mercadolibre.com/orders/{order_id}", headers=H, timeout=15)
+        ship_id = (o.json().get("shipping") or {}).get("id") if o.status_code == 200 else None
+        if not (uid and ship_id):
+            return Response('{"erro":"pedido/envio nao encontrado"}', status=404,
+                            mimetype="application/json", headers={"Access-Control-Allow-Origin": "*"})
+        inv = requests.get(f"https://api.mercadolibre.com/users/{uid}/invoices/shipments/{ship_id}", headers=H, timeout=15)
+        if inv.status_code != 200:
+            return Response('{"erro":"nota nao encontrada (emitida por fora do Faturador do ML?)"}',
+                            status=404, mimetype="application/json", headers={"Access-Control-Allow-Origin": "*"})
+        attrs = (inv.json() or {}).get("attributes") or {}
+        loc = attrs.get("danfe_location") if fmt == "pdf" else attrs.get("xml_location")
+        if not loc:
+            return Response('{"erro":"documento nao disponivel"}', status=422,
+                            mimetype="application/json", headers={"Access-Control-Allow-Origin": "*"})
+        doc = requests.get(f"https://api.mercadolibre.com{loc}", headers=H, timeout=25)
+        if doc.status_code != 200:
+            return Response('{"erro":"falha ao baixar o documento","http":%d}' % doc.status_code,
+                            status=422, mimetype="application/json", headers={"Access-Control-Allow-Origin": "*"})
+        ct = "application/pdf" if fmt == "pdf" else "application/xml"
+        return Response(doc.content, mimetype=ct, headers={
+            "Access-Control-Allow-Origin": "*",
+            "Content-Disposition": f'inline; filename="nota_{order_id}.{ "pdf" if fmt=="pdf" else "xml" }"'})
+
     @bp.route("/integracoes/ml-etiqueta", methods=["GET", "OPTIONS"])
     def ml_etiqueta():
         """Baixa e SERVE a etiqueta de envio (PDF) de um pedido ML, pronta pra imprimir.
