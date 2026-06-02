@@ -43,6 +43,30 @@ def _sb_headers():
 # (o Flask roda threaded, então atende a si mesmo em outra thread).
 SELF_BASE = os.environ.get("WRX_SELF_URL") or f"http://127.0.0.1:{os.environ.get('PORT', '5678')}"
 CONTAS_ML = ["default", "geisa"]
+SHOPS_SHOPEE = ["1545866669", "234248614"]  # as 2 lojas Shopee
+
+def _shopee_call(shop_id, path, params=None, raw=False):
+    """Chamada GET assinada à API Shopee. raw=True retorna o objeto Response (p/ baixar PDF)."""
+    if not _shopee_token_provider or not _shopee_partner_id:
+        return None
+    access_token, shop_id_int = _shopee_token_provider(shop_id)
+    if not access_token:
+        return None
+    ts = int(time.time())
+    base = f"{_shopee_partner_id}{path}{ts}{access_token}{shop_id_int}"
+    sign = hmac.new(_shopee_partner_key.encode(), base.encode(), hashlib.sha256).hexdigest()
+    p = {"partner_id": _shopee_partner_id, "timestamp": ts, "access_token": access_token,
+         "shop_id": shop_id_int, "sign": sign}
+    if params:
+        p.update(params)
+    try:
+        r = requests.get(f"{_shopee_base}{path}", params=p, timeout=25)
+        if raw:
+            return r
+        return r.json()
+    except Exception as e:
+        print(f"[SHOPEE] call erro {path}: {e}")
+        return None
 _PROC_FILE = os.path.join(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp"), "wrx_vendas_processadas.json")
 
 def _carregar_processadas():
@@ -312,6 +336,36 @@ def get_blueprint():
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization"})
+
+    @bp.route("/integracoes/shopee-a-enviar", methods=["GET", "OPTIONS"])
+    def shopee_a_enviar():
+        """Lista pedidos Shopee prontos pra enviar (READY_TO_SHIP) — order_sn, sku, cliente, package."""
+        if request.method == "OPTIONS":
+            return _cors()
+        pedidos = []
+        agora = int(time.time())
+        for shop in SHOPS_SHOPEE:
+            sns = []
+            d = _shopee_call(shop, "/api/v2/order/get_order_list", {
+                "order_status": "READY_TO_SHIP", "page_size": 50, "time_range_field": "create_time",
+                "time_from": agora - 14 * 86400, "time_to": agora})
+            for o in ((d or {}).get("response", {}) or {}).get("order_list", []):
+                if o.get("order_sn"):
+                    sns.append(o["order_sn"])
+            for i in range(0, len(sns), 50):
+                dd = _shopee_call(shop, "/api/v2/order/get_order_detail", {
+                    "order_sn_list": ",".join(sns[i:i+50]),
+                    "response_optional_fields": "order_status,buyer_username,item_list,recipient_address,package_list"})
+                for o in ((dd or {}).get("response", {}) or {}).get("order_list", []):
+                    pkg = (o.get("package_list") or [{}])
+                    pedidos.append({"order_sn": o.get("order_sn"), "shop": shop,
+                                    "cliente": o.get("buyer_username") or (o.get("recipient_address") or {}).get("name"),
+                                    "package": pkg[0].get("package_number") if pkg else None,
+                                    "itens": [{"sku": x.get("item_sku"), "titulo": x.get("item_name")}
+                                              for x in (o.get("item_list") or [])]})
+        r = jsonify({"ok": True, "total": len(pedidos), "pedidos": pedidos})
+        r.headers["Access-Control-Allow-Origin"] = "*"
+        return r
 
     @bp.route("/integracoes/ml-a-enviar", methods=["GET", "OPTIONS"])
     def ml_a_enviar():
