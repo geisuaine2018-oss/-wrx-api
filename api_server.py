@@ -3904,6 +3904,139 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": False, "erro": str(e)})
         return jsonify({"ok": True})
 
+    def _waha_numero_sessao():
+        """Número do WhatsApp logado na sessão WAHA (pra mandar aviso pra si mesmo)."""
+        try:
+            r = requests.get(f"{WAHA_BASE}/api/sessions/{WAHA_SESSION}", headers=_waha_h(), timeout=10)
+            if r.status_code == 200:
+                return (r.json().get("me") or {}).get("id", "").split("@")[0]
+        except Exception:
+            pass
+        return ""
+
+    def _waha_enviar(numero, texto):
+        """Envia texto via WAHA. numero: só dígitos (ex 5521999998888)."""
+        num = "".join(ch for ch in str(numero) if ch.isdigit())
+        if not num or not texto:
+            return False, "numero ou texto vazio"
+        try:
+            r = requests.post(
+                f"{WAHA_BASE}/api/sendText",
+                headers=_waha_h({"Content-Type": "application/json"}),
+                json={"session": WAHA_SESSION, "chatId": f"{num}@c.us", "text": texto},
+                timeout=20
+            )
+            return (r.status_code in (200, 201)), r.text[:200]
+        except Exception as e:
+            return False, str(e)
+
+    @app.route("/integracoes/whatsapp/enviar", methods=["POST", "OPTIONS"])
+    def whatsapp_enviar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        numero = data.get("numero") or _waha_numero_sessao()
+        texto = (data.get("texto") or "").strip()
+        ok, msg = _waha_enviar(numero, texto)
+        return jsonify({"ok": ok, "detalhe": msg, "numero": numero})
+
+    # Memória simples (em arquivo) do que já foi avisado, pra não repetir
+    _AVISADOS_FILE = os.path.join(_INTEG_DIR, "wrx_whatsapp_avisados.json")
+    def _avisados_load():
+        try:
+            with open(_AVISADOS_FILE) as f:
+                return set(json.load(f))
+        except Exception:
+            return set()
+    def _avisados_save(s):
+        try:
+            with open(_AVISADOS_FILE, "w") as f:
+                json.dump(list(s)[-500:], f)  # guarda só os últimos 500
+        except Exception:
+            pass
+
+    @app.route("/integracoes/whatsapp/checar-novidades", methods=["GET", "POST", "OPTIONS"])
+    def whatsapp_checar_novidades():
+        """Checa perguntas/reclamações/vendas novas e avisa no WhatsApp da sessão.
+        Idempotente: só avisa o que ainda não avisou (memória em arquivo)."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        numero = _waha_numero_sessao()
+        if not numero:
+            return jsonify({"ok": False, "erro": "WhatsApp nao conectado"}), 400
+        tokens = _ml_load_tokens()
+        avisados = _avisados_load()
+        enviados = []
+        from datetime import timedelta
+        date_from = (_datetime.utcnow() - timedelta(days=2)).strftime("%Y-%m-%dT00:00:00.000-00:00")
+        for conta in list(tokens.keys()):
+            token = _ml_get_user_token(conta)
+            if not token:
+                continue
+            user_id = tokens.get(conta, {}).get("user_id", "")
+            if not user_id:
+                try:
+                    _r = requests.get("https://api.mercadolibre.com/users/me",
+                                      headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                    if _r.status_code == 200:
+                        user_id = str(_r.json().get("id", ""))
+                except Exception:
+                    pass
+            # PERGUNTAS novas
+            try:
+                _r = requests.get("https://api.mercadolibre.com/questions/search",
+                    params={"seller_id": user_id, "status": "UNANSWERED",
+                            "sort_fields": "date_created", "sort_types": "DESC", "limit": 10},
+                    headers={"Authorization": f"Bearer {token}"}, timeout=15)
+                for q in (_r.json().get("questions", []) if _r.status_code == 200 else []):
+                    key = f"perg:{q.get('id')}"
+                    if key in avisados:
+                        continue
+                    avisados.add(key)
+                    txt = f"❓ *Pergunta nova* (ML {conta})\n{q.get('text','')}\n\nResponda no painel."
+                    ok, _ = _waha_enviar(numero, txt)
+                    if ok:
+                        enviados.append(key)
+            except Exception:
+                pass
+            # VENDAS novas
+            try:
+                _r = requests.get("https://api.mercadolibre.com/orders/search",
+                    params={"seller": user_id, "sort": "date_desc", "limit": 10,
+                            "date_created.from": date_from},
+                    headers={"Authorization": f"Bearer {token}"}, timeout=15)
+                for o in (_r.json().get("results", []) if _r.status_code == 200 else []):
+                    key = f"venda:{o.get('id')}"
+                    if key in avisados:
+                        continue
+                    avisados.add(key)
+                    itens = ", ".join(i.get("item", {}).get("title", "")[:40] for i in o.get("order_items", []))
+                    total = o.get("total_amount", 0)
+                    txt = f"🛒 *VENDA!* (ML {conta})\n{itens}\nTotal: R$ {total}"
+                    ok, _ = _waha_enviar(numero, txt)
+                    if ok:
+                        enviados.append(key)
+            except Exception:
+                pass
+            # RECLAMAÇÕES novas
+            try:
+                _r = requests.get("https://api.mercadolibre.com/post-purchase/v1/claims/search",
+                    params={"status": "opened", "limit": 10},
+                    headers={"Authorization": f"Bearer {token}"}, timeout=15)
+                for c in (_r.json().get("data", []) if _r.status_code == 200 else []):
+                    key = f"recl:{c.get('id')}"
+                    if key in avisados:
+                        continue
+                    avisados.add(key)
+                    txt = f"⚠️ *RECLAMAÇÃO* (ML {conta})\nPedido #{c.get('resource_id','')}\nResolva no Mercado Livre."
+                    ok, _ = _waha_enviar(numero, txt)
+                    if ok:
+                        enviados.append(key)
+            except Exception:
+                pass
+        _avisados_save(avisados)
+        return jsonify({"ok": True, "enviados": len(enviados), "detalhe": enviados})
+
     @app.route("/integracoes/shopee/oauth")
     def shopee_oauth():
         from flask import redirect as _redir
