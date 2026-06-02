@@ -30,8 +30,11 @@ def _ensure_playwright_chromium():
     except Exception as e:
         print(f"[STARTUP] playwright install chromium erro: {e}")
 
-if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
-    threading.Thread(target=_ensure_playwright_chromium, daemon=True).start()
+# Playwright DESATIVADO no Railway: ML bloqueia datacenter (403), retornava vazio.
+# Busca OEM real vai pela extensão Chrome / servidor local. Não instala mais o Chromium
+# (economiza ~400MB, RAM e tempo de build). A função fica disponível mas não é chamada.
+# if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
+#     threading.Thread(target=_ensure_playwright_chromium, daemon=True).start()
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 # Railway define PORT via env var; local usa 5678

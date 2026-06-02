@@ -1,5 +1,7 @@
 flask>=3.0.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
-playwright>=1.40.0
-# force-rebuild-20260529
+# playwright removido do Railway: ML bloqueia datacenter (403), retornava vazio.
+# Busca OEM real roda na extensão Chrome / servidor local. Funções _buscar_playwright_*
+# têm import protegido por try/except — se chamadas, caem no fallback sem quebrar.
+# force-rebuild-20260601
