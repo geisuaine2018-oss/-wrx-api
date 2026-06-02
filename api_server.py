@@ -2225,6 +2225,7 @@ if USE_FLASK:
         return ok
 
     def _ml_get_user_token(conta="default"):
+        global _ml_tokens_mem
         tokens = _ml_load_tokens()
         t = tokens.get(conta, {})
         if not t.get("access_token"):
@@ -2263,10 +2264,30 @@ if USE_FLASK:
                         return t.get("access_token")
                     print(f"[ML-TOKENS] ERRO refresh '{conta}' (tent.{tentativa}): HTTP {_r.status_code} — {_r.text[:200]}")
                     if "invalid_grant" in _r.text.lower():
-                        # refresh_token realmente inválido — não adianta repetir
-                        print(f"[ML-TOKENS] refresh_token invalido — conta '{conta}' precisa reconectar.")
-                        del tokens[conta]
-                        _ml_save_tokens(tokens)
+                        # invalid_grant pode ser FALSO ALARME: durante um deploy o Railway roda
+                        # 2 instâncias ao mesmo tempo (overlap). A outra instância pode já ter
+                        # renovado e invalidado este refresh_token. Antes de derrubar a conta,
+                        # recarrega do Supabase: se lá tiver um refresh_token DIFERENTE do que
+                        # falhou, é porque outra instância renovou — adoto o token novo.
+                        remoto = _ph_load_tokens_remote()
+                        rt = remoto.get(conta, {})
+                        rt_remoto = rt.get("refresh_token")
+                        if rt.get("access_token") and rt_remoto and rt_remoto != t.get("refresh_token"):
+                            # outra instância renovou no overlap do deploy — adota o token novo
+                            tokens[conta] = rt
+                            _ml_tokens_mem = tokens
+                            print(f"[ML-TOKENS] invalid_grant, mas Supabase tem token NOVO (outra instancia renovou no deploy). Conta '{conta}' MANTIDA.")
+                            return rt.get("access_token")
+                        if rt_remoto and rt_remoto == t.get("refresh_token"):
+                            # Supabase confirma: é o MESMO refresh_token que falhou → inválido de verdade
+                            print(f"[ML-TOKENS] refresh_token invalido (confirmado no Supabase) — conta '{conta}' precisa reconectar.")
+                            del tokens[conta]
+                            _ml_save_tokens(tokens)
+                            return None
+                        # Não consegui confirmar no Supabase (inacessível/vazio) → NÃO derruba a
+                        # conta; mantém e tenta de novo depois. Evita perder a conta por falha
+                        # temporária de rede no Supabase.
+                        print(f"[ML-TOKENS] invalid_grant sem confirmacao do Supabase — conta '{conta}' MANTIDA (tenta depois).")
                         return None
                     # erro temporário (500/429/etc): tenta de novo 1x, senão mantém a conta
                     time.sleep(1)
