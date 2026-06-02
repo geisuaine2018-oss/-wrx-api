@@ -356,6 +356,27 @@ def get_blueprint():
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization"})
 
+    @bp.route("/integracoes/shopee-etiqueta-diag", methods=["GET", "OPTIONS"])
+    def shopee_etiqueta_diag():
+        """Diagnóstico do fluxo de etiqueta Shopee: tipos suportados, create, result."""
+        if request.method == "OPTIONS":
+            return _cors()
+        order_sn = request.args.get("order_sn", "").strip()
+        shop = request.args.get("shop", "").strip()
+        b = {"order_list": [{"order_sn": order_sn}]}
+        param = _shopee_post(shop, "/api/v2/logistics/get_shipping_document_parameter", b)
+        # tipo sugerido pelo parameter
+        info = (((param or {}).get("response", {}) or {}).get("result_list", []) or [{}])[0].get("info_list", [{}])
+        tipos = info[0].get("selectable_shipping_document_type") if info else None
+        sugerido = info[0].get("suggest_shipping_document_type") if info else None
+        tipo = sugerido or (tipos[0] if tipos else "NORMAL_AIR_WAYBILL")
+        bt = {"order_list": [{"order_sn": order_sn, "shipping_document_type": tipo}]}
+        create = _shopee_post(shop, "/api/v2/logistics/create_shipping_document", bt)
+        time.sleep(2)
+        result = _shopee_post(shop, "/api/v2/logistics/get_shipping_document_result", bt)
+        r = jsonify({"tipo_usado": tipo, "param": param, "create": create, "result": result})
+        r.headers["Access-Control-Allow-Origin"] = "*"; return r
+
     @bp.route("/integracoes/shopee-etiqueta", methods=["GET", "OPTIONS"])
     def shopee_etiqueta():
         """Baixa e serve a etiqueta de envio (PDF) de um pedido Shopee.
