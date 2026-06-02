@@ -60,6 +60,50 @@ def _salvar_processadas(s):
     except Exception as e:
         print(f"[B4] nao salvou processadas: {e}")
 
+# B5: cancelamentos (idempotência separada das vendas)
+_CANC_FILE = os.path.join(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp"), "wrx_cancelamentos_processados.json")
+
+def _carregar_canc():
+    try:
+        with open(_CANC_FILE, encoding="utf-8") as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+
+def _salvar_canc(s):
+    try:
+        with open(_CANC_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(s)[-5000:], f)
+    except Exception as e:
+        print(f"[B5] nao salvou cancelamentos: {e}")
+
+def _estoque_delta(sku, delta):
+    """Ajusta pecas.qtd em +delta (cancelamento devolve). Retorna nova qtd ou None."""
+    try:
+        r = requests.get(f"{SB_URL}/rest/v1/pecas",
+                         params={"sku": f"eq.{sku}", "select": "qtd"}, headers=_sb_headers(), timeout=10)
+        if r.status_code == 200 and r.json():
+            nova = max(0, int(r.json()[0].get("qtd") or 0) + delta)
+            requests.patch(f"{SB_URL}/rest/v1/pecas?sku=eq.{sku}",
+                           headers={**_sb_headers(), "Content-Type": "application/json"},
+                           json={"qtd": nova}, timeout=10)
+            return nova
+    except Exception as e:
+        print(f"[B5] estoque_delta erro: {e}")
+    return None
+
+def _anuncios_paused_do_sku(sku):
+    """Anúncios ML paused desse SKU (candidatos a reativar no cancelamento)."""
+    try:
+        r = requests.get(f"{SB_URL}/rest/v1/ml_anuncios",
+                         params={"status": "eq.paused", "sku": f"eq.{sku}", "select": "ml_id,conta,titulo"},
+                         headers=_sb_headers(), timeout=10)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        print(f"[B5] paused_do_sku erro: {e}")
+    return []
+
 # ─── Provedores injetados pelo api_server (None = dry-run) ────────────────────────
 _ml_token_provider = None       # fn(conta) -> access_token | None
 _shopee_token_provider = None   # fn(shop_id) -> (access_token, shop_id_int) | (None, 0)
@@ -470,6 +514,48 @@ def get_blueprint():
                 novas.append(oid)
         _salvar_processadas(processadas)
         r = jsonify({"ok": True, "modo": modo, "vendas_novas": len(novas), "diag": diag, "resultados": resultados})
+        r.headers["Access-Control-Allow-Origin"] = "*"
+        return r
+
+    @bp.route("/integracoes/processar-cancelamentos", methods=["POST", "GET", "OPTIONS"])
+    def processar_cancelamentos():
+        """B5 — CANCELAMENTO: venda cancelada no ML → devolve a peça ao estoque e
+        reativa os anúncios que tinham sido pausados. Idempotente por order_id.
+        ?modo=observacao (padrão, só lista) | armado (executa)."""
+        if request.method == "OPTIONS":
+            return _cors()
+        modo = request.args.get("modo", "observacao").strip()
+        proc = _carregar_canc()
+        novos, resultados = [], []
+        for conta in CONTAS_ML:
+            try:
+                rv = requests.get(f"{SELF_BASE}/integracoes/mercadolivre/vendas-recentes",
+                                  params={"conta": conta, "dias": 1}, timeout=90)
+                vendas = rv.json().get("vendas", []) if rv.status_code == 200 else []
+            except Exception as e:
+                resultados.append({"conta": conta, "erro": str(e)}); continue
+            for v in vendas:
+                oid = str(v.get("order_id") or "")
+                if not oid or v.get("status") != "cancelled" or oid in proc:
+                    continue
+                for it in (v.get("itens") or []):
+                    sku = str(it.get("sku") or "").strip()
+                    if not sku:
+                        continue
+                    qty = int(it.get("qty") or 1)
+                    paused = _anuncios_paused_do_sku(sku)
+                    if modo == "armado":
+                        nova_qtd = _estoque_delta(sku, qty)         # devolve a peça
+                        reativados = [a["ml_id"] for a in paused
+                                      if reativar_anuncio_ml(a["ml_id"], a["conta"])[0]]
+                        resultados.append({"order_id": oid, "conta": conta, "sku": sku,
+                                           "estoque_agora": nova_qtd, "reativados": len(reativados)})
+                    else:
+                        resultados.append({"order_id": oid, "conta": conta, "sku": sku,
+                                           "devolveria": qty, "reativaria": len(paused)})
+                proc.add(oid); novos.append(oid)
+        _salvar_canc(proc)
+        r = jsonify({"ok": True, "modo": modo, "cancelamentos_novos": len(novos), "resultados": resultados})
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
 

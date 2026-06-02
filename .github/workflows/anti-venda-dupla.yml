@@ -40,5 +40,15 @@ jobs:
           set -euo pipefail
           echo "Reconciliando estoque zerado no modo: $MODO"
           resp=$(curl -s -m 120 -X POST "$API/integracoes/reconciliar-estoque-zerado?modo=$MODO")
-          echo "$resp" | jq '{ok,modo,skus_zerados,zerados_ainda_anunciados}' || echo "$resp"
-          echo "Zerados ainda anunciados: $(echo "$resp" | jq -r '.zerados_ainda_anunciados // 0' 2>/dev/null || echo 0)"
+          echo "$resp" | jq '{ok,modo,skus_zerados,skus_em_risco,anuncios_em_risco}' || echo "$resp"
+
+      - name: Cancelamentos ML -> devolve estoque + reativa anuncios
+        env:
+          API: https://wrx-api-production.up.railway.app
+          MODO: ${{ github.event.inputs.modo || 'observacao' }}
+        run: |
+          set -euo pipefail
+          echo "Processando cancelamentos no modo: $MODO"
+          resp=$(curl -s -m 90 -X POST "$API/integracoes/processar-cancelamentos?modo=$MODO")
+          echo "$resp" | jq '.' || echo "$resp"
+          echo "Cancelamentos novos: $(echo "$resp" | jq -r '.cancelamentos_novos // 0' 2>/dev/null || echo 0)"
