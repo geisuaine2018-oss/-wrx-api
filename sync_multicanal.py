@@ -350,6 +350,38 @@ def get_blueprint():
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
 
+    @bp.route("/integracoes/reconciliar-estoque-zerado", methods=["POST", "GET", "OPTIONS"])
+    def reconciliar_estoque_zerado():
+        """Cobre o BALCÃO e qualquer baixa: procura peças com estoque ZERADO que ainda
+        têm anúncio ATIVO em algum marketplace e pausa — não importa como zerou.
+        ?modo=observacao (padrão, só lista) | armado (pausa de verdade)."""
+        if request.method == "OPTIONS":
+            return _cors()
+        modo = request.args.get("modo", "observacao").strip()
+        try:
+            r = requests.get(f"{SB_URL}/rest/v1/pecas",
+                             params={"qtd": "lte.0", "select": "sku", "limit": 5000},
+                             headers=_sb_headers(), timeout=30)
+            skus = [str(p["sku"]).strip() for p in (r.json() if r.status_code == 200 else []) if p.get("sku")]
+        except Exception as e:
+            rr = jsonify({"ok": False, "erro": str(e)}); rr.headers["Access-Control-Allow-Origin"] = "*"; return rr
+        resultados = []
+        for sku in skus:
+            # planejar_pausa busca anúncios ATIVOS desse SKU (ML+Shopee). Como a peça
+            # está zerada (qtd<=0), _peca_unica passa (<=1) e qualquer ativo é indevido.
+            plano = planejar_pausa(sku, "estoque-zerado")
+            if plano["total"] == 0:
+                continue  # já está tudo pausado, nada a fazer
+            if modo == "armado":
+                rel = executar_sincronizacao(sku, "estoque-zerado")
+                resultados.append({"sku": sku, "pausados": rel.get("pausados"), "total": rel.get("total")})
+            else:
+                resultados.append({"sku": sku, "pausaria": plano["total"]})
+        rr = jsonify({"ok": True, "modo": modo, "skus_zerados": len(skus),
+                      "zerados_ainda_anunciados": len(resultados), "resultados": resultados})
+        rr.headers["Access-Control-Allow-Origin"] = "*"
+        return rr
+
     @bp.route("/integracoes/processar-vendas-novas", methods=["POST", "GET", "OPTIONS"])
     def processar_vendas_novas():
         """B4 — GATILHO: busca vendas recentes do ML, e p/ cada venda NOVA (paga, com

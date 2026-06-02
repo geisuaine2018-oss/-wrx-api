@@ -21,17 +21,24 @@ jobs:
   gatilho:
     runs-on: ubuntu-latest
     steps:
-      - name: Processar vendas novas e disparar cascata
+      - name: Vendas novas online (ML) -> cascata
         env:
           API: https://wrx-api-production.up.railway.app
-          # padrao seguro = observacao. Para ARMAR, mude aqui para 'armado'
-          # (ou rode manual em Actions escolhendo o modo).
           MODO: ${{ github.event.inputs.modo || 'observacao' }}
         run: |
           set -euo pipefail
-          echo "Rodando gatilho anti-venda-dupla no modo: $MODO"
-          resp=$(curl -s -m 60 -X POST "$API/integracoes/processar-vendas-novas?modo=$MODO")
-          echo "Resposta:"
+          echo "Gatilho de vendas ML no modo: $MODO"
+          resp=$(curl -s -m 90 -X POST "$API/integracoes/processar-vendas-novas?modo=$MODO")
           echo "$resp" | jq '.' || echo "$resp"
-          novas=$(echo "$resp" | jq -r '.vendas_novas // 0' 2>/dev/null || echo 0)
-          echo "Vendas novas processadas: $novas"
+          echo "Vendas novas: $(echo "$resp" | jq -r '.vendas_novas // 0' 2>/dev/null || echo 0)"
+
+      - name: Estoque zerado (balcao/qualquer baixa) -> pausa em todas plataformas
+        env:
+          API: https://wrx-api-production.up.railway.app
+          MODO: ${{ github.event.inputs.modo || 'observacao' }}
+        run: |
+          set -euo pipefail
+          echo "Reconciliando estoque zerado no modo: $MODO"
+          resp=$(curl -s -m 120 -X POST "$API/integracoes/reconciliar-estoque-zerado?modo=$MODO")
+          echo "$resp" | jq '{ok,modo,skus_zerados,zerados_ainda_anunciados}' || echo "$resp"
+          echo "Zerados ainda anunciados: $(echo "$resp" | jq -r '.zerados_ainda_anunciados // 0' 2>/dev/null || echo 0)"
