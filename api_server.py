@@ -3677,8 +3677,10 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 pass
         configured = bool(OLX_CLIENT_ID and OLX_CLIENT_SECRET)
         token_saved = bool(_olx_token_mem.get("access_token"))
+        forcar = request.args.get("forcar") in ("1", "true", "sim")
         auth_url = None
-        if configured and not token_saved:
+        # gera o link de autorização quando não há token OU quando forçado (reconectar)
+        if configured and (not token_saved or forcar):
             auth_url = (
                 f"https://auth.olx.com.br/oauth/authorize"
                 f"?client_id={OLX_CLIENT_ID}"
@@ -3705,7 +3707,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             if _r.status_code != 200:
                 return jsonify({"erro": f"OLX {_r.status_code}: {_r.text[:200]}"}), 400
             _d = _r.json()
-            _olx_token_mem = {"access_token": _d.get("access_token", ""), "expires_at": time.time() + _d.get("expires_in", 3600)}
+            _olx_token_mem = {
+                "access_token": _d.get("access_token", ""),
+                "refresh_token": _d.get("refresh_token", ""),
+                "expires_at": time.time() + _d.get("expires_in", 3600),
+            }
             try:
                 with open(_OLX_TOKENS_FILE, "w") as _f:
                     json.dump(_olx_token_mem, _f)
@@ -3737,7 +3743,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             if _r.status_code != 200:
                 return jsonify({"erro": f"OLX {_r.status_code}: {_r.text[:300]}"}), 400
             _d = _r.json()
-            _olx_token_mem = {"access_token": _d.get("access_token", ""), "expires_at": time.time() + _d.get("expires_in", 3600)}
+            _olx_token_mem = {
+                "access_token": _d.get("access_token", ""),
+                "refresh_token": _d.get("refresh_token", ""),
+                "expires_at": time.time() + _d.get("expires_in", 3600),
+            }
             try:
                 with open(_OLX_TOKENS_FILE, "w") as _f:
                     json.dump(_olx_token_mem, _f)
@@ -3781,6 +3791,32 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 pass
         if not _olx_token_mem.get("access_token"):
             return jsonify({"ok": False, "erro": "OLX nao autorizada — clique em Conectar"}), 401
+        # Renova o token se está expirando e há refresh_token (OLX expira em ~1h)
+        if _olx_token_mem.get("expires_at", 0) - time.time() < 120 and _olx_token_mem.get("refresh_token"):
+            try:
+                _rt = requests.post("https://auth.olx.com.br/oauth/token", data={
+                    "grant_type": "refresh_token",
+                    "client_id": OLX_CLIENT_ID,
+                    "client_secret": OLX_CLIENT_SECRET,
+                    "refresh_token": _olx_token_mem.get("refresh_token", ""),
+                }, timeout=15)
+                if _rt.status_code == 200:
+                    _rd = _rt.json()
+                    _olx_token_mem = {
+                        "access_token": _rd.get("access_token", ""),
+                        "refresh_token": _rd.get("refresh_token", _olx_token_mem.get("refresh_token", "")),
+                        "expires_at": time.time() + _rd.get("expires_in", 3600),
+                    }
+                    try:
+                        with open(_OLX_TOKENS_FILE, "w") as _f:
+                            json.dump(_olx_token_mem, _f)
+                    except Exception:
+                        pass
+                    print("[OLX] token renovado via refresh_token")
+                else:
+                    print(f"[OLX] refresh falhou: {_rt.status_code} {_rt.text[:150]}")
+            except Exception as _e:
+                print(f"[OLX] erro refresh: {_e}")
         data = request.get_json(force=True) or {}
         fotos = [f for f in (data.get("fotos") or data.get("images") or []) if f and f.startswith("http")]
         preco = float(data.get("preco") or data.get("price") or 0)
@@ -3804,8 +3840,20 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                               json={"ad_list": [payload]}, timeout=20)
             if _r.status_code in (200, 201, 202):
                 _resp = _r.json()
+                # A OLX devolve HTTP 200 MESMO com erro interno (ex.: statusCode -6 "Without
+                # permission", token null). Só é sucesso de verdade se statusCode >= 0 e veio token.
+                _sc = _resp.get("statusCode")
+                _tok = _resp.get("token")
+                if (_sc is not None and _sc < 0) or (not _tok and not _resp.get("ad_list")):
+                    msg = _resp.get("statusMessage") or "OLX recusou o anuncio"
+                    erros_int = _resp.get("errors") or []
+                    if erros_int:
+                        msg += " — " + "; ".join(str(e) for e in erros_int)[:200]
+                    if "permission" in msg.lower():
+                        msg += " (token expirado/sem permissao — reconecte a OLX)"
+                    return jsonify({"ok": False, "erro": msg, "raw": _resp}), 400
                 _ad = (_resp.get("ad_list") or [{}])[0]
-                return jsonify({"ok": True, "status": _ad.get("status", ""), "id": _ad.get("id", ""), "raw": _resp})
+                return jsonify({"ok": True, "status": _ad.get("status", ""), "id": _ad.get("id", "") or _tok, "raw": _resp})
             return jsonify({"ok": False, "erro": _r.text[:300]}), _r.status_code
         except Exception as _e:
             return jsonify({"ok": False, "erro": str(_e)}), 500
