@@ -4423,6 +4423,35 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 print(f"[SHOPEE-IMG] erro upload: {_e}")
         return ids
 
+    @app.route("/integracoes/shopee/diag-logistica", methods=["GET"])
+    def shopee_diag_logistica():
+        """Diagnóstico: canais de logística habilitados da loja."""
+        sid = request.args.get("shop_id", "")
+        tokens = _shopee_load_tokens()
+        if not sid:
+            sid = list(tokens.keys())[0] if tokens else ""
+        access_token, shop_id_int = _shopee_get_token(sid)
+        if not access_token:
+            return jsonify({"erro": "sem token", "shop": sid}), 400
+        try:
+            ts = int(time.time())
+            path = "/api/v2/logistics/get_channel_list"
+            sign = _shopee_sign(path, ts, access_token, shop_id_int)
+            r = requests.get(f"{_SHOPEE_BASE}{path}",
+                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                        "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
+                timeout=20)
+            d = r.json()
+            canais = (d.get("response", {}) or {}).get("logistics_channel_list", [])
+            # só o essencial pra escolher
+            resumo = [{"logistics_channel_id": c.get("logistics_channel_id"),
+                       "name": c.get("logistics_channel_name"),
+                       "enabled": c.get("enabled"),
+                       "mask_channel_id": c.get("mask_channel_id")} for c in canais]
+            return jsonify({"shop_id": sid, "total": len(resumo), "canais": resumo, "erro_api": d.get("message")})
+        except Exception as e:
+            return jsonify({"erro": str(e)}), 500
+
     @app.route("/integracoes/shopee/diag-categoria", methods=["GET"])
     def shopee_diag_categoria():
         """Diagnóstico: resposta crua do category_recommend pra um nome de produto."""
