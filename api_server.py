@@ -4472,7 +4472,12 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 "brand": {"brand_id": 0, "original_brand_name": "NoBrand"},  # autopeça usada: sem marca
                 "image": {"image_url_list": fotos[:9]},
                 "logistics_info": [{"logistic_id": 10038, "enabled": True}],
-                "weight": 1.0,
+                "weight": float(data.get("peso") or 1.0),
+                "dimension": {
+                    "package_length": int(data.get("comprimento") or 30),
+                    "package_width": int(data.get("largura") or 20),
+                    "package_height": int(data.get("altura") or 15),
+                },
             }
             try:
                 _r = requests.post(
