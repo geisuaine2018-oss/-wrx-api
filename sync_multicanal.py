@@ -88,20 +88,6 @@ def _estoque_atual(sku):
         print(f"[estoque] atual erro: {e}")
     return None
 
-def _estoque_delta(sku, delta):
-    """Ajusta pecas.qtd em +delta (venda baixa, cancelamento devolve). Retorna nova qtd ou None."""
-    try:
-        r = requests.get(f"{SB_URL}/rest/v1/pecas_estoque",
-                         params={"sku": f"eq.{sku}", "select": "qtd"}, headers=_sb_headers(), timeout=10)
-        if r.status_code == 200 and r.json():
-            nova = max(0, int(r.json()[0].get("qtd") or 0) + delta)
-            requests.patch(f"{SB_URL}/rest/v1/pecas?sku=eq.{sku}",
-                           headers={**_sb_headers(), "Content-Type": "application/json"},
-                           json={"qtd": nova}, timeout=10)
-            return nova
-    except Exception as e:
-        print(f"[B5] estoque_delta erro: {e}")
-    return None
 
 def _anuncios_paused_do_sku(sku):
     """Anúncios ML paused desse SKU (candidatos a reativar no cancelamento)."""
@@ -326,82 +312,6 @@ def get_blueprint():
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization"})
-
-    @bp.route("/integracoes/ml-status-count", methods=["GET", "OPTIONS"])
-    def ml_status_count():
-        """Quantos anúncios há por status em cada conta ML (active/paused/closed/...)."""
-        if request.method == "OPTIONS":
-            return _cors()
-        conta = request.args.get("conta", "default").strip()
-        token = _ml_token_provider(conta) if _ml_token_provider else None
-        if not token:
-            r = jsonify({"erro": "sem token"}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
-        me = requests.get("https://api.mercadolibre.com/users/me",
-                          headers={"Authorization": f"Bearer {token}"}, timeout=10)
-        uid = me.json().get("id") if me.status_code == 200 else None
-        out = {}
-        for st in ["active", "paused", "closed", "under_review", "inactive"]:
-            rr = requests.get(f"https://api.mercadolibre.com/users/{uid}/items/search",
-                              params={"status": st, "limit": 1},
-                              headers={"Authorization": f"Bearer {token}"}, timeout=12)
-            out[st] = rr.json().get("paging", {}).get("total") if rr.status_code == 200 else f"http{rr.status_code}"
-        r = jsonify({"conta": conta, "uid": uid, "por_status": out})
-        r.headers["Access-Control-Allow-Origin"] = "*"; return r
-
-    @bp.route("/integracoes/ml-debug-multiget", methods=["GET", "OPTIONS"])
-    def ml_debug_multiget():
-        """Compara multiget COM e SEM projeção p/ o mesmo item — prova onde o SELLER_SKU some."""
-        if request.method == "OPTIONS":
-            return _cors()
-        ml_id = request.args.get("ml_id", "").strip()
-        conta = request.args.get("conta", "default").strip()
-        token = _ml_token_provider(conta) if _ml_token_provider else None
-        if not token:
-            r = jsonify({"erro": "sem token"}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
-        def _probe(params):
-            rr = requests.get("https://api.mercadolibre.com/items",
-                              params=params, headers={"Authorization": f"Bearer {token}"}, timeout=20)
-            body = {}
-            if rr.status_code == 200:
-                arr = rr.json()
-                if arr and arr[0].get("code") == 200:
-                    body = arr[0].get("body", {})
-            attrs = body.get("attributes") or []
-            return {"http": rr.status_code, "n_attrs": len(attrs),
-                    "SELLER_SKU": [a.get("value_name") for a in attrs if a.get("id") == "SELLER_SKU"]}
-        out = {
-            "sem_projecao": _probe({"ids": ml_id}),
-            "com_projecao": _probe({"ids": ml_id, "attributes": "id,title,attributes"}),
-        }
-        r = jsonify(out); r.headers["Access-Control-Allow-Origin"] = "*"; return r
-
-    @bp.route("/integracoes/ml-debug-item", methods=["GET", "OPTIONS"])
-    def ml_debug_item():
-        """Diagnóstico: GET individual autenticado de 1 item ML — mostra onde o SKU está."""
-        if request.method == "OPTIONS":
-            return _cors()
-        ml_id = request.args.get("ml_id", "").strip()
-        conta = request.args.get("conta", "default").strip()
-        if not _ml_token_provider:
-            r = jsonify({"erro": "sem token provider"}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
-        token = _ml_token_provider(conta)
-        if not token:
-            r = jsonify({"erro": f"conta {conta} sem token"}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
-        rr = requests.get(f"https://api.mercadolibre.com/items/{ml_id}",
-                          headers={"Authorization": f"Bearer {token}"}, timeout=15)
-        d = rr.json() if rr.status_code == 200 else {}
-        out = {
-            "http": rr.status_code,
-            "seller_custom_field": d.get("seller_custom_field"),
-            "seller_sku": d.get("seller_sku"),
-            "attrs_sku": [{"id": a.get("id"), "v": a.get("value_name")}
-                         for a in (d.get("attributes") or [])
-                         if "SKU" in (a.get("id") or "")],
-            "variations_sku": [{"scf": v.get("seller_custom_field"), "ssku": v.get("seller_sku")}
-                               for v in (d.get("variations") or [])],
-            "n_attrs": len(d.get("attributes") or []),
-        }
-        r = jsonify(out); r.headers["Access-Control-Allow-Origin"] = "*"; return r
 
     @bp.route("/integracoes/anuncio-acao", methods=["POST", "OPTIONS"])
     def anuncio_acao():
