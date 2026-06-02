@@ -431,10 +431,23 @@ def get_blueprint():
             return _cors()
         modo = request.args.get("modo", "observacao").strip()
         try:
-            r = requests.get(f"{SB_URL}/rest/v1/pecas_estoque",
-                             params={"qtd": "lte.0", "select": "sku", "limit": 10000},
-                             headers=_sb_headers(), timeout=30)
-            skus = sorted({str(p["sku"]).strip() for p in (r.json() if r.status_code == 200 else []) if p.get("sku")})
+            # Supabase corta em 1000/req — pagina com Range pra pegar TODAS as zeradas.
+            skus_set, offset = set(), 0
+            while True:
+                r = requests.get(f"{SB_URL}/rest/v1/pecas_estoque",
+                                 params={"qtd": "lte.0", "select": "sku"},
+                                 headers={**_sb_headers(), "Range-Unit": "items",
+                                          "Range": f"{offset}-{offset+999}"}, timeout=30)
+                if r.status_code not in (200, 206):
+                    break
+                lote = r.json()
+                for p in lote:
+                    if p.get("sku"):
+                        skus_set.add(str(p["sku"]).strip())
+                if len(lote) < 1000:
+                    break
+                offset += 1000
+            skus = sorted(skus_set)
         except Exception as e:
             rr = jsonify({"ok": False, "erro": str(e)}); rr.headers["Access-Control-Allow-Origin"] = "*"; return rr
 
