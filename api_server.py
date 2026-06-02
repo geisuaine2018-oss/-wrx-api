@@ -4465,6 +4465,10 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             resumo = [{"logistics_channel_id": c.get("logistics_channel_id"),
                        "name": c.get("logistics_channel_name"),
                        "enabled": c.get("enabled"),
+                       "fee_type": c.get("fee_type"),
+                       "weight_limit": c.get("weight_limit"),
+                       "item_max_dimension": c.get("item_max_dimension"),
+                       "size_list": c.get("size_list"),
                        "mask_channel_id": c.get("mask_channel_id")} for c in canais]
             return jsonify({"shop_id": sid, "total": len(resumo), "canais": resumo, "erro_api": d.get("message")})
         except Exception as e:
@@ -5043,10 +5047,13 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": False, "erro": "Shopee nao autorizada"}), 401
         shop_id_param = request.args.get("shop_id")
         shop_ids = [str(shop_id_param)] if shop_id_param else list(tokens.keys())
+        debug = request.args.get("debug") == "1"
         todas = []
+        diag = []
         for sid in shop_ids:
             access_token, shop_id_int = _shopee_get_token(sid)
             if not access_token:
+                diag.append({"shop": sid, "erro": "sem access_token"})
                 continue
             ts = int(time.time())
             path = "/api/v2/sellerchat/get_conversation_list"
@@ -5055,23 +5062,34 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 f"{_SHOPEE_BASE}{path}",
                 params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
                         "access_token": access_token, "shop_id": shop_id_int,
-                        "sign": sign, "filter": "all", "page_size": 25},
+                        "sign": sign, "direction": "latest", "type": "all", "page_size": 25},
                 timeout=20
             )
-            d = r.json()
+            try:
+                d = r.json()
+            except Exception:
+                d = {}
+            convs = (d.get("response", {}) or {}).get("conversations", []) or []
+            diag.append({"shop": sid, "http": r.status_code, "error": d.get("error", ""),
+                         "message": d.get("message", ""), "n_conversas": len(convs)})
             if r.status_code == 200 and not d.get("error"):
-                for c in d.get("response", {}).get("conversations", []):
+                for c in convs:
+                    lm = c.get("latest_message_content", {}) or c.get("last_message", {}) or {}
+                    txt = lm.get("text", "") if isinstance(lm, dict) else ""
                     todas.append({
                         "marketplace": "shopee",
                         "shop_id": sid,
                         "conversation_id": c.get("conversation_id", ""),
-                        "comprador": c.get("to_name", ""),
-                        "ultima_msg": c.get("last_message", {}).get("content", {}).get("text", ""),
+                        "comprador": c.get("to_name", "") or c.get("to_id", ""),
+                        "ultima_msg": txt,
                         "nao_lidas": c.get("unread_count", 0),
-                        "timestamp": c.get("last_message", {}).get("created_timestamp", 0),
+                        "timestamp": c.get("last_message_timestamp", 0) or c.get("latest_message_time", 0),
                     })
         todas.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
-        return jsonify({"ok": True, "mensagens": todas, "total": len(todas)})
+        resp = {"ok": True, "mensagens": todas, "total": len(todas)}
+        if debug:
+            resp["diag"] = diag
+        return jsonify(resp)
 
     # ── Shopee: webhook push notifications ───────────────────────────────────────
 
