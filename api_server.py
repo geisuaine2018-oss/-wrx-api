@@ -3056,6 +3056,10 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             limit = int(request.args.get("limit", 80))
         except Exception:
             limit = 80
+        try:
+            offset = int(request.args.get("offset", 0))
+        except Exception:
+            offset = 0
         token = _ml_get_user_token(conta)
         if not token:
             return jsonify({"ok": False, "erro": "conta nao autorizada"}), 404
@@ -3065,7 +3069,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         ids = []
         total = 0
         try:
-            params = {"limit": min(limit, 50), "offset": 0}
+            params = {"limit": min(limit, 50), "offset": offset}
             if status_filtro:
                 params["status"] = status_filtro
             r = requests.get(f"https://api.mercadolibre.com/users/{user_id}/items/search",
