@@ -369,9 +369,17 @@ def get_blueprint():
             return Response('{"erro":"order_sn e shop obrigatorios"}', status=400,
                             mimetype="application/json", headers={"Access-Control-Allow-Origin": "*"})
         body = {"order_list": [{"order_sn": order_sn, "shipping_document_type": "NORMAL_AIR_WAYBILL"}]}
-        # 1) cria o documento (idempotente; se já existe, a Shopee só confirma)
+        # 1) cria o documento (assíncrono na Shopee)
         _shopee_post(shop, "/api/v2/logistics/create_shipping_document", body)
-        # 2) baixa o PDF
+        # 2) espera ficar READY (create é assíncrono)
+        for _ in range(6):
+            res = _shopee_post(shop, "/api/v2/logistics/get_shipping_document_result", body)
+            rl = ((res or {}).get("response", {}) or {}).get("result_list", [])
+            status = rl[0].get("status") if rl else None
+            if status == "READY":
+                break
+            time.sleep(2)
+        # 3) baixa o PDF
         r = _shopee_post(shop, "/api/v2/logistics/download_shipping_document", body, raw=True)
         if r is not None and r.status_code == 200 and r.headers.get("content-type", "").lower().startswith("application/pdf"):
             return Response(r.content, mimetype="application/pdf", headers={
