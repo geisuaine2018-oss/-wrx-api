@@ -3115,6 +3115,64 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         grupos.append({"key": "active", "label": "Ativos", "total": total, "itens": itens})
         return jsonify({"ok": True, "grupos": grupos})
 
+    # cache de IDs por conta (scroll_id traz TODOS, passa do limite de 1000 do offset)
+    _ml_ids_cache = {}  # conta -> {"ids": [...], "ts": epoch}
+
+    def _ml_montar_item(it):
+        peso = ""
+        for a in (it.get("attributes") or []):
+            if a.get("id") in ("PACKAGE_WEIGHT", "WEIGHT", "GROSS_WEIGHT"):
+                peso = a.get("value_name") or ""
+                break
+        shipping = it.get("shipping") or {}
+        frete_gratis = bool(
+            shipping.get("free_shipping")
+            or ("free_shipping" in (shipping.get("tags") or []))
+            or any(m.get("free_shipping") for m in (shipping.get("free_methods") or []))
+        )
+        return {
+            "mlId": it.get("id", ""), "titulo": it.get("title", ""),
+            "preco": it.get("price", 0), "estoque": it.get("available_quantity", 0),
+            "status": it.get("status", "active"), "grupo": it.get("status", "active"),
+            "thumbnail": it.get("thumbnail", ""), "sku": _ml_extrair_sku(it),
+            "condicao": it.get("condition", ""), "freteGratis": frete_gratis,
+            "peso": peso, "data": it.get("date_created", ""),
+            "permalink": it.get("permalink", ""),
+        }
+
+    @app.route("/integracoes/mercadolivre/anuncios-pagina", methods=["GET", "OPTIONS"])
+    def ml_anuncios_pagina():
+        """Página de anúncios usando scroll_id (pega TODOS, sem limite de 1000).
+        ?conta=&pagina=0&tamanho=50 — a 1ª chamada escaneia todos os IDs e cacheia."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta = request.args.get("conta", "default")
+        try:
+            pagina = int(request.args.get("pagina", 0))
+            tamanho = min(int(request.args.get("tamanho", 50)), 50)
+        except Exception:
+            pagina, tamanho = 0, 50
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": "conta nao autorizada"}), 404
+        user_id = _ml_conta_user_id(conta, token)
+        # cache de IDs por 5 min
+        cache = _ml_ids_cache.get(conta)
+        if not cache or (time.time() - cache.get("ts", 0)) > 300:
+            ids = _ml_buscar_todos_ids(token, user_id, status="active")
+            _ml_ids_cache[conta] = {"ids": ids, "ts": time.time()}
+        else:
+            ids = cache["ids"]
+        total = len(ids)
+        ini = pagina * tamanho
+        fim = ini + tamanho
+        ids_pagina = ids[ini:fim]
+        itens = [_ml_montar_item(it) for it in _ml_buscar_detalhes_lote(token, ids_pagina)] if ids_pagina else []
+        return jsonify({
+            "ok": True, "total": total, "pagina": pagina,
+            "tem_mais": fim < total, "itens": itens
+        })
+
     @app.route("/integracoes/mercadolivre/sem-vinculo", methods=["GET", "OPTIONS"])
     def ml_sem_vinculo():
         if request.method == "OPTIONS":
