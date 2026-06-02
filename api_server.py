@@ -4428,8 +4428,10 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         try:
             for i in range(0, len(itens), 100):
                 lote = itens[i:i+100]
+                # on_conflict=shop_id,item_id: mesmo fix do ML — sem ele o upsert
+                # bate na unique (shop_id,item_id) e dá 409, abortando o lote.
                 r_up = requests.post(
-                    f"{_WRX_SB_URL}/rest/v1/shopee_anuncios",
+                    f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?on_conflict=shop_id,item_id",
                     headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates"},
                     json=lote, timeout=30
                 )
