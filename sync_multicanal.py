@@ -211,7 +211,13 @@ def pausar_anuncio_ml(ml_id, conta):
         if r.status_code == 200:
             _atualizar_cache_ml(ml_id, "paused")  # mantém ml_anuncios fiel (evita re-flag)
             return True, "pausado"
-        return False, f"HTTP {r.status_code}: {r.text[:160]}"
+        # Se o ML diz que o item já está CLOSED/inválido, o cache estava desatualizado:
+        # corrige pra 'closed' (não é furo real, o anúncio já não está à venda).
+        txt = r.text[:200]
+        if r.status_code == 400 and ("closed" in txt or "item.status.invalid" in txt):
+            _atualizar_cache_ml(ml_id, "closed")
+            return False, "ja fechado no ML (cache corrigido)"
+        return False, f"HTTP {r.status_code}: {txt}"
     except Exception as e:
         return False, str(e)
 
