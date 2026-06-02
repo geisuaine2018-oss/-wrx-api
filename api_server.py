@@ -2239,11 +2239,19 @@ if USE_FLASK:
                     print(f"[ML-TOKENS] Token da conta '{conta}' renovado com sucesso.")
                 else:
                     print(f"[ML-TOKENS] ERRO ao renovar token '{conta}': HTTP {_r.status_code} — {_r.text[:200]}")
-                    del tokens[conta]
-                    _ml_save_tokens(tokens)
+                    # SÓ apaga a conta se o refresh_token for DEFINITIVAMENTE inválido
+                    # (invalid_grant). Erro temporário (timeout/500/rede) NÃO apaga —
+                    # mantém a conta e tenta de novo na próxima chamada.
+                    if "invalid_grant" in _r.text.lower():
+                        print(f"[ML-TOKENS] refresh_token invalido — conta '{conta}' precisa reconectar.")
+                        del tokens[conta]
+                        _ml_save_tokens(tokens)
+                    else:
+                        print(f"[ML-TOKENS] erro temporario — mantendo conta '{conta}', tenta depois.")
                     return None
             except Exception as e:
-                print(f"[ML-TOKENS] ERRO (excecao) ao renovar token '{conta}': {e}")
+                # exceção de rede: NÃO apaga a conta, só falha esta tentativa
+                print(f"[ML-TOKENS] ERRO (excecao) ao renovar token '{conta}': {e} — conta mantida")
                 return None
         print(f"[ML-TOKENS] Conta '{conta}' autorizada. Token valido.")
         return t.get("access_token")
