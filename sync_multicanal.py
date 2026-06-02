@@ -402,12 +402,15 @@ def get_blueprint():
         if not token:
             r = jsonify({"erro": "sem token"}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
         H = {"Authorization": f"Bearer {token}"}
+        me = requests.get("https://api.mercadolibre.com/users/me", headers=H, timeout=15)
+        uid = me.json().get("id") if me.status_code == 200 else None
         o = requests.get(f"https://api.mercadolibre.com/orders/{order_id}", headers=H, timeout=15)
         order = o.json() if o.status_code == 200 else {}
-        pack_id = order.get("pack_id") or order_id  # sem pack, usa o próprio order
-        fd = requests.get(f"https://api.mercadolibre.com/packs/{pack_id}/fiscal_documents", headers=H, timeout=15)
-        out = {"order_id": order_id, "pack_id": pack_id, "order_http": o.status_code,
-               "fiscal_http": fd.status_code, "fiscal_raw": fd.json() if fd.status_code == 200 else fd.text[:300]}
+        ship_id = (order.get("shipping") or {}).get("id")
+        inv = requests.get(f"https://api.mercadolibre.com/users/{uid}/invoices/shipments/{ship_id}", headers=H, timeout=15)
+        out = {"order_id": order_id, "shipment_id": ship_id, "user_id": uid,
+               "invoice_http": inv.status_code,
+               "invoice_raw": inv.json() if inv.status_code == 200 else inv.text[:400]}
         r = jsonify(out); r.headers["Access-Control-Allow-Origin"] = "*"; return r
 
     @bp.route("/integracoes/ml-billing-teste", methods=["GET", "OPTIONS"])
