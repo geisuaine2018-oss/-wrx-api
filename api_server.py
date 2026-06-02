@@ -4465,7 +4465,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 "access_token": access_token,
                 "item_name": titulo[:120],
                 "description": descricao[:2000],
-                "price_info": [{"currency": "BRL", "original_price": float(preco)}],
+                "original_price": float(preco),
                 "seller_stock": [{"stock": 1}],
                 "condition": condicao_shopee,
                 "category_id": cat_id,
