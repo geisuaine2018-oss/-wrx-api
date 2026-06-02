@@ -39,7 +39,9 @@ def _sb_headers():
     return {"apikey": key, "Authorization": "Bearer " + key}
 
 # ─── B4: gatilho automático (detecta venda → dispara cascata) ────────────────────
-SELF_BASE = os.environ.get("WRX_SELF_URL", "https://wrx-api-production.up.railway.app")
+# Self-call: no Railway, chamar a própria URL PÚBLICA costuma falhar — usa localhost
+# (o Flask roda threaded, então atende a si mesmo em outra thread).
+SELF_BASE = os.environ.get("WRX_SELF_URL") or f"http://127.0.0.1:{os.environ.get('PORT', '5678')}"
 CONTAS_ML = ["default", "geisa"]
 _PROC_FILE = os.path.join(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp"), "wrx_vendas_processadas.json")
 
@@ -343,13 +345,16 @@ def get_blueprint():
         horas = float(request.args.get("horas", "1") or 1)
         processadas = _carregar_processadas()
         novas, resultados = [], []
+        diag = []
         for conta in CONTAS_ML:
             try:
                 rv = requests.get(f"{SELF_BASE}/integracoes/mercadolivre/vendas-recentes",
-                                  params={"conta": conta, "dias": 1}, timeout=40)
+                                  params={"conta": conta, "dias": 1}, timeout=90)
                 vendas = rv.json().get("vendas", []) if rv.status_code == 200 else []
+                diag.append({"conta": conta, "http": rv.status_code, "vendas": len(vendas)})
             except Exception as e:
-                resultados.append({"conta": conta, "erro": str(e)}); continue
+                resultados.append({"conta": conta, "erro": str(e)})
+                diag.append({"conta": conta, "erro": str(e)}); continue
             for v in vendas:
                 oid = str(v.get("order_id") or "")
                 if not oid or v.get("status") != "paid" or oid in processadas:
@@ -371,7 +376,7 @@ def get_blueprint():
                 processadas.add(oid)
                 novas.append(oid)
         _salvar_processadas(processadas)
-        r = jsonify({"ok": True, "modo": modo, "vendas_novas": len(novas), "resultados": resultados})
+        r = jsonify({"ok": True, "modo": modo, "vendas_novas": len(novas), "diag": diag, "resultados": resultados})
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
 
