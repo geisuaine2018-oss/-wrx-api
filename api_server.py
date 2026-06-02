@@ -1933,13 +1933,20 @@ if USE_FLASK:
                 return jsonify({"erro": "Campo 'imagem' obrigatório"}), 400
             img_bytes = base64.b64decode(img_b64)
             resultado = None
-            # 1. rembg direto
+            # modelo isnet-general-use: recorta autopeças muito melhor que o u2net padrão
+            MODELO_REMBG = "isnet-general-use"
+            # 1. rembg direto (com sessão do modelo melhor, cacheada)
             try:
                 import rembg
-                resultado = rembg.remove(img_bytes)
-            except Exception:
-                pass
-            # 2. rembg via subprocess Python 3.12
+                global _rembg_session
+                try:
+                    _rembg_session
+                except NameError:
+                    _rembg_session = rembg.new_session(MODELO_REMBG)
+                resultado = rembg.remove(img_bytes, session=_rembg_session)
+            except Exception as _e_rembg:
+                print(f"[REMBG] direto falhou ({_e_rembg}); tentando subprocess/fallback")
+            # 2. rembg via subprocess Python 3.12 (também com o modelo melhor)
             if not resultado:
                 for py_path in [
                     r"C:\Users\cauav\AppData\Local\Programs\Python\Python312\python.exe",
@@ -1947,9 +1954,10 @@ if USE_FLASK:
                 ]:
                     if os.path.exists(py_path):
                         try:
-                            script = "import sys,rembg; sys.stdout.buffer.write(rembg.remove(sys.stdin.buffer.read()))"
+                            script = ("import sys,rembg; s=rembg.new_session('" + MODELO_REMBG +
+                                      "'); sys.stdout.buffer.write(rembg.remove(sys.stdin.buffer.read(), session=s))")
                             r = subprocess.run([py_path, "-c", script], input=img_bytes,
-                                               capture_output=True, timeout=40,
+                                               capture_output=True, timeout=60,
                                                creationflags=0x08000000)
                             if r.returncode == 0 and r.stdout:
                                 resultado = r.stdout
@@ -4008,6 +4016,67 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": False, "erro": str(e)})
         return jsonify({"ok": True})
 
+    # ── Fila da manhã: pedidos que entraram FORA do horário (n8n só dispara 9-17)
+    #    são enviados aos funcionários às 9h. 1x/dia, sem duplicar com o n8n.
+    FUNCIONARIOS_PEDIDO = ["5521971396951", "5521993745355", "5521985243301"]
+
+    @app.route("/integracoes/whatsapp/pedidos-manha", methods=["GET", "POST", "OPTIONS"])
+    def whatsapp_pedidos_manha():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        import datetime as _dt
+        forcar = request.args.get("forcar") == "1"
+        SP = _dt.timezone(_dt.timedelta(hours=-3))   # Brasília (sem horário de verão)
+        now = _dt.datetime.now(SP)
+        if not forcar and (now.hour < 9 or now.hour >= 17):
+            return jsonify({"ok": True, "skip": "fora do horario", "hora": now.hour})
+        state = os.path.join(_INTEG_DIR, "disparo_manha.txt")
+        hoje = now.strftime("%Y-%m-%d")
+        if not forcar:
+            try:
+                if os.path.exists(state) and open(state, encoding="utf-8").read().strip() == hoje:
+                    return jsonify({"ok": True, "skip": "ja disparado hoje"})
+            except Exception:
+                pass
+        fim = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        ini = (fim - _dt.timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
+        ini_utc = ini.astimezone(_dt.timezone.utc).isoformat()
+        fim_utc = fim.astimezone(_dt.timezone.utc).isoformat()
+        try:
+            rows = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pedidos"
+                f"?select=peca,veiculo,ano,lado&status=in.(aguardando,verificando)"
+                f"&criado_em=gte.{_urlparse.quote(ini_utc)}&criado_em=lt.{_urlparse.quote(fim_utc)}"
+                f"&order=criado_em.asc",
+                headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}"},
+                timeout=20
+            ).json()
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)})
+        if not isinstance(rows, list):
+            rows = []
+        enviados = 0
+        for p in rows:
+            peca = (p.get("peca") or "").strip()
+            if not peca:
+                continue
+            veic = (p.get("veiculo") or "").strip()
+            ano = (p.get("ano") or "").strip()
+            lado = (p.get("lado") or "").strip()
+            msg = ("🔔 *Pedido (fora do horário)*\nPeça: " + peca
+                   + (("\nVeículo: " + veic + ((" " + ano) if ano else "")) if veic else "")
+                   + (("\nLado: " + lado) if lado else "")
+                   + "\n\nQuem tiver, responde aqui com *foto e valor* que eu encaminho pro cliente.")
+            for tel in FUNCIONARIOS_PEDIDO:
+                _waha_enviar(tel, msg)
+            enviados += 1
+        try:
+            with open(state, "w", encoding="utf-8") as f:
+                f.write(hoje)
+        except Exception:
+            pass
+        return jsonify({"ok": True, "pedidos": enviados, "janela": [ini_utc, fim_utc]})
+
     def _waha_numero_sessao():
         """Número do WhatsApp logado na sessão WAHA (pra mandar aviso pra si mesmo)."""
         try:
@@ -4992,6 +5061,10 @@ CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
                     requests.post(f"http://127.0.0.1:{PORT}/integracoes/whatsapp/checar-novidades", timeout=90)
                 except Exception as _e:
                     print(f"[CRON-WHATSAPP] erro: {_e}")
+                try:
+                    requests.post(f"http://127.0.0.1:{PORT}/integracoes/whatsapp/pedidos-manha", timeout=60)
+                except Exception as _e:
+                    print(f"[CRON-MANHA] erro: {_e}")
                 time.sleep(120)  # 2 minutos
         t = threading.Thread(target=_loop, daemon=True)
         t.start()
