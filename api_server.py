@@ -4469,6 +4469,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 "stock_info_v2": {"seller_stock": [{"stock": 1}]},
                 "condition": condicao_shopee,
                 "category_id": cat_id,
+                "brand": {"brand_id": 0, "original_brand_name": "NoBrand"},  # autopeça usada: sem marca
                 "image": {"image_url_list": fotos[:9]},
                 "logistics_info": [{"logistic_id": 10038, "enabled": True}],
                 "weight": 1.0,
