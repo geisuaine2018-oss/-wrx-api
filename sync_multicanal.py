@@ -106,14 +106,31 @@ def _buscar_anuncios_shopee(sku):
         print(f"[SYNC] erro shopee_anuncios: {e}")
     return []
 
+def _peca_unica(sku):
+    """True só se o SKU é peça de estoque ÚNICO (existe em `pecas` com qtd<=1).
+    Peças com várias unidades (qtd>1) e SKUs fora de `pecas` (ex: anúncio-isca
+    'Calota fake') NÃO entram na cascata — pausar elas seria errado."""
+    try:
+        r = requests.get(f"{SB_URL}/rest/v1/pecas",
+                         params={"sku": f"eq.{sku}", "select": "qtd"},
+                         headers=_sb_headers(), timeout=10)
+        if r.status_code == 200 and r.json():
+            return int(r.json()[0].get("qtd") or 0) <= 1
+    except Exception as e:
+        print(f"[SYNC] _peca_unica erro: {e}")
+    return False  # não está em pecas (isca/avulso) → não pausa
+
 def planejar_pausa(sku, origem):
     """
     Monta a lista de ações de pausa SEM executar. `origem` = canal onde vendeu
-    ('ml' ou 'shopee') para não pausar/contar o próprio canal de origem.
+    ('ml' ou 'shopee'). SÓ pausa peça ÚNICA de estoque real (ver _peca_unica).
     Retorna {sku, origem, acoes: [{canal, alvo, titulo}], total}.
     """
     sku = str(sku).strip()
     acoes = []
+    if not _peca_unica(sku):
+        return {"sku": sku, "origem": origem, "acoes": [], "total": 0,
+                "motivo": "peca nao-unica ou fora do estoque (nao pausa)"}
     for a in _buscar_anuncios_ml(sku):
         # se vendeu numa conta ML, ainda assim pausa as OUTRAS contas ML (peça é a mesma física)
         acoes.append({"canal": "ml", "conta": a.get("conta"), "alvo": a.get("ml_id"),
