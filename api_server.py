@@ -4016,38 +4016,41 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": False, "erro": str(e)})
         return jsonify({"ok": True})
 
-    # ── Fila da manhã: pedidos que entraram FORA do horário (n8n só dispara 9-17)
-    #    são enviados aos funcionários às 9h. 1x/dia, sem duplicar com o n8n.
-    FUNCIONARIOS_PEDIDO = ["5521971396951", "5521993745355", "5521985243301"]
+    # ── Disparo de pedidos aos funcionários, respeitando a janela de cada um ─────
+    #    Centraliza TODO o aviso (o n8n nao envia mais). Roda no cron 2min:
+    #    cada um recebe no horario dele; o que cai fora da janela entra na
+    #    proxima (fim de semana -> segunda 9h). Controla quem ja recebeu cada pedido.
+    FUNCS_PEDIDO = {
+        "robson": "5521971396951",
+        "rafael": "5521993745355",
+        "geisa":  "5521985243301",
+    }
+
+    def _func_em_janela(emp, wd, h):
+        # wd: Mon=0 .. Sun=6 ; h: hora 0-23 (America/Sao_Paulo)
+        if 0 <= wd <= 4 and 9 <= h < 17:          # seg-sex 9-17: todos
+            return True
+        if wd == 5 and 9 <= h < 13:               # sabado 9-13: rafael e geisa
+            return emp in ("rafael", "geisa")
+        return False                              # domingo: ninguem
 
     @app.route("/integracoes/whatsapp/pedidos-manha", methods=["GET", "POST", "OPTIONS"])
     def whatsapp_pedidos_manha():
         if request.method == "OPTIONS":
             return _options_resp()
-        import datetime as _dt
-        forcar = request.args.get("forcar") == "1"
+        import datetime as _dt, json as _json
         SP = _dt.timezone(_dt.timedelta(hours=-3))   # Brasília (sem horário de verão)
         now = _dt.datetime.now(SP)
-        if not forcar and (now.hour < 9 or now.hour >= 17):
-            return jsonify({"ok": True, "skip": "fora do horario", "hora": now.hour})
-        state = os.path.join(_INTEG_DIR, "disparo_manha.txt")
-        hoje = now.strftime("%Y-%m-%d")
-        if not forcar:
-            try:
-                if os.path.exists(state) and open(state, encoding="utf-8").read().strip() == hoje:
-                    return jsonify({"ok": True, "skip": "ja disparado hoje"})
-            except Exception:
-                pass
-        fim = now.replace(hour=9, minute=0, second=0, microsecond=0)
-        ini = (fim - _dt.timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
-        ini_utc = ini.astimezone(_dt.timezone.utc).isoformat()
-        fim_utc = fim.astimezone(_dt.timezone.utc).isoformat()
+        wd, h = now.weekday(), now.hour
+        abertos = [e for e in FUNCS_PEDIDO if _func_em_janela(e, wd, h)]
+        if not abertos:
+            return jsonify({"ok": True, "skip": "ninguem em janela", "wd": wd, "h": h})
+        desde = (now - _dt.timedelta(hours=100)).astimezone(_dt.timezone.utc).isoformat()
         try:
             rows = requests.get(
                 f"{_WRX_SB_URL}/rest/v1/pedidos"
-                f"?select=peca,veiculo,ano,lado&status=in.(aguardando,verificando)"
-                f"&criado_em=gte.{_urlparse.quote(ini_utc)}&criado_em=lt.{_urlparse.quote(fim_utc)}"
-                f"&order=criado_em.asc",
+                f"?select=id,peca,veiculo,ano,lado&status=in.(aguardando,verificando)"
+                f"&criado_em=gte.{_urlparse.quote(desde)}&order=criado_em.asc",
                 headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}"},
                 timeout=20
             ).json()
@@ -4055,27 +4058,52 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": False, "erro": str(e)})
         if not isinstance(rows, list):
             rows = []
-        enviados = 0
+        state_file = os.path.join(_INTEG_DIR, "avisos_func.json")
+        primeira_vez = not os.path.exists(state_file)
+        if primeira_vez:
+            # 1º deploy: nao dispara o historico (evita blast); marca tudo como avisado.
+            seed = {str(p.get("id")): list(FUNCS_PEDIDO.keys()) for p in rows if p.get("id")}
+            try:
+                with open(state_file, "w", encoding="utf-8") as f:
+                    _json.dump(seed, f)
+            except Exception:
+                pass
+            return jsonify({"ok": True, "seed": len(seed), "msg": "primeira execucao - historico marcado, novos pedidos a partir de agora"})
+        try:
+            estado = _json.load(open(state_file, encoding="utf-8")) if os.path.exists(state_file) else {}
+        except Exception:
+            estado = {}
+        ids_atuais = {str(p.get("id")) for p in rows if p.get("id")}
+        estado = {k: v for k, v in estado.items() if k in ids_atuais}   # prune antigos
+        novos = 0
         for p in rows:
+            pid = str(p.get("id") or "")
             peca = (p.get("peca") or "").strip()
-            if not peca:
+            if not pid or not peca:
+                continue
+            ja = set(estado.get(pid, []))
+            alvos = [e for e in abertos if e not in ja]
+            if not alvos:
                 continue
             veic = (p.get("veiculo") or "").strip()
             ano = (p.get("ano") or "").strip()
             lado = (p.get("lado") or "").strip()
-            msg = ("🔔 *Pedido (fora do horário)*\nPeça: " + peca
+            msg = ("🔔 *Novo pedido*\nPeça: " + peca
                    + (("\nVeículo: " + veic + ((" " + ano) if ano else "")) if veic else "")
                    + (("\nLado: " + lado) if lado else "")
                    + "\n\nQuem tiver, responde aqui com *foto e valor* que eu encaminho pro cliente.")
-            for tel in FUNCIONARIOS_PEDIDO:
-                _waha_enviar(tel, msg)
-            enviados += 1
+            for e in alvos:
+                ok, _ = _waha_enviar(FUNCS_PEDIDO[e], msg)
+                if ok:
+                    ja.add(e)
+            estado[pid] = list(ja)
+            novos += 1
         try:
-            with open(state, "w", encoding="utf-8") as f:
-                f.write(hoje)
+            with open(state_file, "w", encoding="utf-8") as f:
+                _json.dump(estado, f)
         except Exception:
             pass
-        return jsonify({"ok": True, "pedidos": enviados, "janela": [ini_utc, fim_utc]})
+        return jsonify({"ok": True, "abertos": abertos, "pedidos_disparados": novos})
 
     def _waha_numero_sessao():
         """Número do WhatsApp logado na sessão WAHA (pra mandar aviso pra si mesmo)."""
@@ -4342,6 +4370,32 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         except Exception as _e:
             print(f"[SHOPEE-CAT] erro recommend: {_e}")
         return None
+
+    @app.route("/integracoes/shopee/diag-categoria", methods=["GET"])
+    def shopee_diag_categoria():
+        """Diagnóstico: resposta crua do category_recommend pra um nome de produto."""
+        nome = request.args.get("nome", "Farol Dianteiro Direito Jeep Compass 2022")
+        sid = request.args.get("shop_id", "")
+        tokens = _shopee_load_tokens()
+        if not sid:
+            sid = list(tokens.keys())[0] if tokens else ""
+        access_token, shop_id_int = _shopee_get_token(sid)
+        if not access_token:
+            return jsonify({"erro": "sem token", "shop": sid}), 400
+        out = {"shop_id": sid, "nome": nome}
+        try:
+            ts = int(time.time())
+            path = "/api/v2/product/category_recommend"
+            sign = _shopee_sign(path, ts, access_token, shop_id_int)
+            r = requests.get(f"{_SHOPEE_BASE}{path}",
+                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                        "access_token": access_token, "shop_id": shop_id_int,
+                        "sign": sign, "item_name": nome[:120]}, timeout=15)
+            out["status"] = r.status_code
+            out["recommend_raw"] = r.json()
+        except Exception as e:
+            out["recommend_err"] = str(e)
+        return jsonify(out)
 
     @app.route("/integracoes/shopee/publicar", methods=["POST", "OPTIONS"])
     def shopee_publicar():
