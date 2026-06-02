@@ -2808,23 +2808,25 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 continue
             print(f"[ML-SYNC] Buscando anuncios conta={conta_nome} user={user_id}")
             ids_ativos = _ml_buscar_todos_ids(token, user_id, "active")
-            print(f"[ML-SYNC] {conta_nome}: {len(ids_ativos)} ativos")
-            itens = _ml_buscar_detalhes_lote(token, ids_ativos)
+            ids_pausados = _ml_buscar_todos_ids(token, user_id, "paused")
+            todos_ids = ids_ativos + ids_pausados
+            print(f"[ML-SYNC] {conta_nome}: {len(ids_ativos)} ativos + {len(ids_pausados)} pausados")
+            itens = _ml_buscar_detalhes_lote(token, todos_ids)
             for item in itens:
                 # SKU: nivel do item -> variacoes -> atributo SELLER_SKU
                 sku_raw = _ml_extrair_sku(item)
                 sku = sku_raw.upper()
                 estoque = item.get("available_quantity", 0)
-                if estoque <= 0:
-                    continue  # só com estoque
                 status_item = item.get("status", "active")
-                if status_item != "active":
-                    continue  # só ativos (ignora pausados/finalizados)
                 vinculado = bool(sku) and sku in skus_sistema
-                if vinculado:
+                # Cache local + contagem de vinculados: só ATIVOS com estoque e SKU
+                # (comportamento antigo). Mas o Supabase recebe TODOS (ativos+pausados)
+                # com status/estoque/sku REAIS — pra puxar o SKU dos pausados e corrigir
+                # o status "active" falso que poluia o anti-venda-dupla.
+                if status_item == "active" and estoque > 0 and vinculado:
                     total_vinculados += 1
-                # Cache local é indexado por SKU; só entra quem tem SKU
-                if sku:
+                # Cache local é indexado por SKU; só ativos com estoque e com SKU
+                if sku and status_item == "active" and estoque > 0:
                     if sku not in por_sku:
                         por_sku[sku] = []
                     por_sku[sku].append({
@@ -2839,7 +2841,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                         "marketplace": "ml",
                         "vinculado": vinculado,
                     })
-                # Supabase recebe TODOS os ativos (com e sem SKU)
+                # Supabase recebe TODOS (ativos + pausados, com e sem SKU) — status real
                 todos_itens_sb.append({
                     "ml_id": item.get("id", ""),
                     "conta": conta_nome,
