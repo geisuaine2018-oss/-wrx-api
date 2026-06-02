@@ -2865,8 +2865,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         try:
             for i in range(0, len(todos_itens_sb), 100):
                 lote = todos_itens_sb[i:i+100]
+                # on_conflict=ml_id,conta é OBRIGATÓRIO: sem ele o PostgREST resolve o
+                # upsert pela PK (id) e bate na unique (ml_id,conta) → 409 e o lote aborta.
+                # Era a raiz de TUDO: SKUs nunca atualizavam, pausados/encerrados nunca entravam.
                 r_up = requests.post(
-                    f"{_WRX_SB_URL}/rest/v1/ml_anuncios",
+                    f"{_WRX_SB_URL}/rest/v1/ml_anuncios?on_conflict=ml_id,conta",
                     headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates"},
                     json=lote, timeout=30
                 )
