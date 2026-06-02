@@ -3046,13 +3046,16 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         if not token:
             return jsonify({"ok": False, "erro": "conta nao autorizada"}), 404
         user_id = _ml_conta_user_id(conta, token)
-        # Somente anúncios ATIVOS (pausados/finalizados ignorados por ora)
+        status_filtro = request.args.get("status", "")  # "", "active", "paused", "closed"
         grupos = []
         ids = []
         total = 0
         try:
+            params = {"limit": min(limit, 50), "offset": 0}
+            if status_filtro:
+                params["status"] = status_filtro
             r = requests.get(f"https://api.mercadolibre.com/users/{user_id}/items/search",
-                             params={"status": "active", "limit": min(limit, 50), "offset": 0},
+                             params=params,
                              headers={"Authorization": f"Bearer {token}"}, timeout=15)
             if r.status_code == 200:
                 d = r.json()
@@ -3063,15 +3066,27 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         itens = []
         if ids:
             for it in _ml_buscar_detalhes_lote(token, ids[:limit]):
+                # peso dos atributos (PACKAGE_WEIGHT / WEIGHT) — nem todo anúncio tem
+                peso = ""
+                for a in (it.get("attributes") or []):
+                    if a.get("id") in ("PACKAGE_WEIGHT", "WEIGHT", "GROSS_WEIGHT"):
+                        peso = a.get("value_name") or ""
+                        break
+                shipping = it.get("shipping") or {}
                 itens.append({
                     "mlId": it.get("id", ""),
                     "titulo": it.get("title", ""),
                     "preco": it.get("price", 0),
                     "estoque": it.get("available_quantity", 0),
                     "status": it.get("status", "active"),
-                    "grupo": "active",
+                    "grupo": it.get("status", "active"),
                     "thumbnail": it.get("thumbnail", ""),
-                    "sku": (it.get("seller_sku") or it.get("seller_custom_field") or ""),
+                    "sku": _ml_extrair_sku(it),
+                    "condicao": it.get("condition", ""),        # new / used
+                    "freteGratis": bool(shipping.get("free_shipping", False)),
+                    "peso": peso,
+                    "data": it.get("date_created", ""),         # pra ordenar antigo/novo
+                    "permalink": it.get("permalink", ""),
                 })
         grupos.append({"key": "active", "label": "Ativos", "total": total, "itens": itens})
         return jsonify({"ok": True, "grupos": grupos})
