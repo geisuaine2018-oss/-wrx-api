@@ -210,6 +210,33 @@ def get_blueprint():
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization"})
 
+    @bp.route("/integracoes/ml-debug-multiget", methods=["GET", "OPTIONS"])
+    def ml_debug_multiget():
+        """Compara multiget COM e SEM projeção p/ o mesmo item — prova onde o SELLER_SKU some."""
+        if request.method == "OPTIONS":
+            return _cors()
+        ml_id = request.args.get("ml_id", "").strip()
+        conta = request.args.get("conta", "default").strip()
+        token = _ml_token_provider(conta) if _ml_token_provider else None
+        if not token:
+            r = jsonify({"erro": "sem token"}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+        def _probe(params):
+            rr = requests.get("https://api.mercadolibre.com/items",
+                              params=params, headers={"Authorization": f"Bearer {token}"}, timeout=20)
+            body = {}
+            if rr.status_code == 200:
+                arr = rr.json()
+                if arr and arr[0].get("code") == 200:
+                    body = arr[0].get("body", {})
+            attrs = body.get("attributes") or []
+            return {"http": rr.status_code, "n_attrs": len(attrs),
+                    "SELLER_SKU": [a.get("value_name") for a in attrs if a.get("id") == "SELLER_SKU"]}
+        out = {
+            "sem_projecao": _probe({"ids": ml_id}),
+            "com_projecao": _probe({"ids": ml_id, "attributes": "id,title,attributes"}),
+        }
+        r = jsonify(out); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+
     @bp.route("/integracoes/ml-debug-item", methods=["GET", "OPTIONS"])
     def ml_debug_item():
         """Diagnóstico: GET individual autenticado de 1 item ML — mostra onde o SKU está."""
