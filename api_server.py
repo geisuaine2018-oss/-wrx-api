@@ -2079,6 +2079,8 @@ if USE_FLASK:
     _OLX_TOKENS_FILE = os.path.join(_INTEG_DIR, "wrx_olx_token.json")
     _ML_QUEUE_FILE = os.path.join(_INTEG_DIR, "wrx_ml_queue.json")
     _ml_tokens_mem = {}
+    import threading as _threading
+    _ml_refresh_lock = _threading.Lock()  # serializa o refresh do token ML (uso único)
     _olx_token_mem = {}
     _pkce_store = {}  # state -> code_verifier
 
@@ -2228,41 +2230,51 @@ if USE_FLASK:
         if not t.get("access_token"):
             print(f"[ML-TOKENS] Conta '{conta}' nao autorizada. Contas disponiveis: {list(tokens.keys())}")
             return None
-        if t.get("expires_at", 0) - time.time() < 300:
-            print(f"[ML-TOKENS] Token da conta '{conta}' expirando. Iniciando refresh...")
-            try:
-                _r = requests.post("https://api.mercadolibre.com/oauth/token", data={
-                    "grant_type": "refresh_token",
-                    "client_id": ML_CLIENT_ID,
-                    "client_secret": ML_CLIENT_SECRET,
-                    "refresh_token": t.get("refresh_token", "")
-                }, timeout=10)
-                if _r.status_code == 200:
-                    _d = _r.json()
-                    t["access_token"] = _d["access_token"]
-                    t["refresh_token"] = _d.get("refresh_token", t["refresh_token"])
-                    t["expires_at"] = time.time() + _d.get("expires_in", 21600)
-                    tokens[conta] = t
-                    _ml_save_tokens(tokens)
-                    print(f"[ML-TOKENS] Token da conta '{conta}' renovado com sucesso.")
-                else:
-                    print(f"[ML-TOKENS] ERRO ao renovar token '{conta}': HTTP {_r.status_code} — {_r.text[:200]}")
-                    # SÓ apaga a conta se o refresh_token for DEFINITIVAMENTE inválido
-                    # (invalid_grant). Erro temporário (timeout/500/rede) NÃO apaga —
-                    # mantém a conta e tenta de novo na próxima chamada.
+        # token ainda válido (>5min): usa direto, sem refresh
+        if t.get("expires_at", 0) - time.time() >= 300:
+            return t.get("access_token")
+        # precisa renovar — SERIALIZA com lock. O refresh_token do ML é de USO ÚNICO;
+        # dois refresh concorrentes invalidam um ao outro (invalid_grant) e derrubam a
+        # conta. Com o lock, só uma thread renova; as outras esperam e usam o token novo.
+        with _ml_refresh_lock:
+            tokens = _ml_load_tokens()
+            t = tokens.get(conta, {})
+            if not t.get("access_token"):
+                return None
+            if t.get("expires_at", 0) - time.time() >= 300:
+                return t.get("access_token")  # outra thread já renovou enquanto eu esperava
+            print(f"[ML-TOKENS] Token da conta '{conta}' expirando. Refresh (lock)...")
+            for tentativa in (1, 2):
+                try:
+                    _r = requests.post("https://api.mercadolibre.com/oauth/token", data={
+                        "grant_type": "refresh_token",
+                        "client_id": ML_CLIENT_ID,
+                        "client_secret": ML_CLIENT_SECRET,
+                        "refresh_token": t.get("refresh_token", "")
+                    }, timeout=10)
+                    if _r.status_code == 200:
+                        _d = _r.json()
+                        t["access_token"] = _d["access_token"]
+                        t["refresh_token"] = _d.get("refresh_token", t["refresh_token"])
+                        t["expires_at"] = time.time() + _d.get("expires_in", 21600)
+                        tokens[conta] = t
+                        _ml_save_tokens(tokens)
+                        print(f"[ML-TOKENS] Token da conta '{conta}' renovado com sucesso.")
+                        return t.get("access_token")
+                    print(f"[ML-TOKENS] ERRO refresh '{conta}' (tent.{tentativa}): HTTP {_r.status_code} — {_r.text[:200]}")
                     if "invalid_grant" in _r.text.lower():
+                        # refresh_token realmente inválido — não adianta repetir
                         print(f"[ML-TOKENS] refresh_token invalido — conta '{conta}' precisa reconectar.")
                         del tokens[conta]
                         _ml_save_tokens(tokens)
-                    else:
-                        print(f"[ML-TOKENS] erro temporario — mantendo conta '{conta}', tenta depois.")
-                    return None
-            except Exception as e:
-                # exceção de rede: NÃO apaga a conta, só falha esta tentativa
-                print(f"[ML-TOKENS] ERRO (excecao) ao renovar token '{conta}': {e} — conta mantida")
-                return None
-        print(f"[ML-TOKENS] Conta '{conta}' autorizada. Token valido.")
-        return t.get("access_token")
+                        return None
+                    # erro temporário (500/429/etc): tenta de novo 1x, senão mantém a conta
+                    time.sleep(1)
+                except Exception as e:
+                    print(f"[ML-TOKENS] ERRO (excecao) refresh '{conta}' (tent.{tentativa}): {e}")
+                    time.sleep(1)
+            print(f"[ML-TOKENS] refresh '{conta}' falhou (temporario) — conta mantida, tenta depois.")
+            return None
 
     def _options_resp():
         return Response(status=204, headers={
@@ -4364,9 +4376,10 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             )
             d = r.json()
             cats = (d.get("response", {}) or {}).get("category_id", [])
-            # a API devolve a hierarquia; a categoria-folha é a ÚLTIMA da lista
+            # a API devolve uma LISTA RANQUEADA de categorias-folha recomendadas;
+            # a 1ª (mais relevante) é a folha certa pra usar no add_item
             if cats:
-                return cats[-1]
+                return cats[0]
         except Exception as _e:
             print(f"[SHOPEE-CAT] erro recommend: {_e}")
         return None
