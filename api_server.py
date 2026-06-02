@@ -4869,6 +4869,21 @@ CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
             "sql": sql.strip()
         })
 
+    def _cron_whatsapp_loop():
+        """Thread: a cada 2 min chama checar-novidades (avisa pergunta/venda/reclamação no WhatsApp)."""
+        import threading
+        def _loop():
+            time.sleep(40)  # espera o servidor subir
+            while True:
+                try:
+                    requests.post(f"http://127.0.0.1:{PORT}/integracoes/whatsapp/checar-novidades", timeout=90)
+                except Exception as _e:
+                    print(f"[CRON-WHATSAPP] erro: {_e}")
+                time.sleep(120)  # 2 minutos
+        t = threading.Thread(target=_loop, daemon=True)
+        t.start()
+        print("[STARTUP] cron WhatsApp ativo (checa novidades a cada 2 min)")
+
     def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace") if hasattr(sys.stdout, "reconfigure") else None
         print(f"WRX-Search API Server - porta {PORT}")
@@ -4876,6 +4891,7 @@ CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
         print(f"  http://localhost:{PORT}/carros?q=fiat+uno")
         print(f"  http://localhost:{PORT}/ping")
         host = "0.0.0.0" if _IS_RAILWAY else "127.0.0.1"
+        _cron_whatsapp_loop()
         app.run(host=host, port=PORT, debug=False, threaded=True)
 
 else:
