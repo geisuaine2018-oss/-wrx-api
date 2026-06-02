@@ -2584,14 +2584,23 @@ if USE_FLASK:
             ml_payload["pictures"] = [{"source": f} for f in fotos[:10]]
         attrs = list(data.get("attributes") or [])
         attr_ids = {a.get("id") for a in attrs}
-        # Atributos obrigatórios: PART_NUMBER, BRAND, dimensões de embalagem
+        # Atributos obrigatórios: PART_NUMBER, BRAND, MODEL, dimensões de embalagem
         if "PART_NUMBER" not in attr_ids and sku:
             attrs.append({"id": "PART_NUMBER", "value_name": sku})
+        # BRAND: usa a marca do formulário; se não vier, tenta deduzir do título
+        marca_form = (data.get("marca") or "").strip()
         if "BRAND" not in attr_ids:
-            import re as _re
-            brand_m = _re.search(r'\b([A-Za-záéíóúãõç]{3,})\s+\d{4}', _titulo)
-            brand_val = brand_m.group(1).capitalize() if brand_m else "Genérico"
+            if marca_form:
+                brand_val = marca_form
+            else:
+                import re as _re
+                brand_m = _re.search(r'\b([A-Za-záéíóúãõç]{3,})\s+\d{4}', _titulo)
+                brand_val = brand_m.group(1).capitalize() if brand_m else "Genérico"
             attrs.append({"id": "BRAND", "value_name": brand_val})
+        # MODEL: obrigatório em várias categorias de autopeça (ex: MLB3530)
+        modelo_form = (data.get("modelo") or "").strip()
+        if "MODEL" not in attr_ids:
+            attrs.append({"id": "MODEL", "value_name": modelo_form or marca_form or _titulo[:60] or "Universal"})
         _pkg_defaults = [
             ("seller_package_height", f"{int(data.get('package_height') or 30)} cm"),
             ("seller_package_width",  f"{int(data.get('package_width')  or 30)} cm"),
