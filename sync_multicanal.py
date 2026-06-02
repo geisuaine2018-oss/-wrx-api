@@ -313,6 +313,41 @@ def get_blueprint():
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization"})
 
+    @bp.route("/integracoes/ml-etiqueta", methods=["GET", "OPTIONS"])
+    def ml_etiqueta():
+        """Baixa e SERVE a etiqueta de envio (PDF) de um pedido ML, pronta pra imprimir.
+        ?order_id=...&conta=... (&fmt=pdf|zpl2). Requer token ML conectado."""
+        from flask import Response
+        if request.method == "OPTIONS":
+            return _cors()
+        order_id = request.args.get("order_id", "").strip()
+        conta = request.args.get("conta", "default").strip()
+        fmt = request.args.get("fmt", "pdf").strip()
+        token = _ml_token_provider(conta) if _ml_token_provider else None
+        if not token:
+            return Response('{"erro":"Mercado Livre desconectado — reconecte a conta"}',
+                            status=409, mimetype="application/json", headers={"Access-Control-Allow-Origin": "*"})
+        H = {"Authorization": f"Bearer {token}"}
+        # pega o shipment_id do pedido
+        o = requests.get(f"https://api.mercadolibre.com/orders/{order_id}", headers=H, timeout=15)
+        if o.status_code != 200:
+            return Response('{"erro":"pedido nao encontrado"}', status=404, mimetype="application/json",
+                            headers={"Access-Control-Allow-Origin": "*"})
+        ship_id = (o.json().get("shipping") or {}).get("id")
+        if not ship_id:
+            return Response('{"erro":"pedido sem envio do Mercado Envios (etiqueta indisponivel)"}',
+                            status=422, mimetype="application/json", headers={"Access-Control-Allow-Origin": "*"})
+        # baixa a etiqueta
+        lr = requests.get("https://api.mercadolibre.com/shipment_labels",
+                          params={"shipment_ids": ship_id, "response_type": fmt}, headers=H, timeout=25)
+        if lr.status_code != 200:
+            return Response('{"erro":"etiqueta ainda nao disponivel (emita a nota / aguarde pronto p/ envio)","http":%d}' % lr.status_code,
+                            status=422, mimetype="application/json", headers={"Access-Control-Allow-Origin": "*"})
+        ct = "application/pdf" if fmt == "pdf" else "application/octet-stream"
+        return Response(lr.content, mimetype=ct, headers={
+            "Access-Control-Allow-Origin": "*",
+            "Content-Disposition": f'inline; filename="etiqueta_{order_id}.{ "pdf" if fmt=="pdf" else "zpl" }"'})
+
     @bp.route("/integracoes/ml-etiqueta-info", methods=["GET", "OPTIONS"])
     def ml_etiqueta_info():
         """TESTE: dado um order_id, verifica se a etiqueta de envio do ML está disponível."""
