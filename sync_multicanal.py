@@ -313,6 +313,49 @@ def get_blueprint():
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization"})
 
+    @bp.route("/integracoes/ml-a-enviar", methods=["GET", "OPTIONS"])
+    def ml_a_enviar():
+        """Lista pedidos ML prontos pra enviar (ready_to_ship) — pra tela de expedição.
+        Retorna order_id, conta, cliente, itens (titulo+sku) e shipment_id."""
+        if request.method == "OPTIONS":
+            return _cors()
+        contas = [request.args.get("conta")] if request.args.get("conta") else CONTAS_ML
+        pedidos = []
+        for conta in contas:
+            token = _ml_token_provider(conta) if _ml_token_provider else None
+            if not token:
+                continue
+            H = {"Authorization": f"Bearer {token}"}
+            try:
+                rv = requests.get(f"{SELF_BASE}/integracoes/mercadolivre/vendas-recentes",
+                                  params={"conta": conta, "dias": 7}, timeout=60)
+                vendas = rv.json().get("vendas", []) if rv.status_code == 200 else []
+            except Exception:
+                vendas = []
+            for v in vendas[:25]:
+                if v.get("status") != "paid":
+                    continue
+                oid = v.get("order_id")
+                try:
+                    o = requests.get(f"https://api.mercadolibre.com/orders/{oid}", headers=H, timeout=12)
+                    if o.status_code != 200:
+                        continue
+                    ship_id = (o.json().get("shipping") or {}).get("id")
+                    if not ship_id:
+                        continue
+                    sr = requests.get(f"https://api.mercadolibre.com/shipments/{ship_id}", headers=H, timeout=12)
+                    if sr.status_code != 200 or sr.json().get("status") != "ready_to_ship":
+                        continue
+                    pedidos.append({"order_id": oid, "conta": conta, "cliente": v.get("comprador"),
+                                    "data": v.get("data"), "shipment_id": ship_id,
+                                    "itens": [{"titulo": it.get("titulo"), "sku": it.get("sku")}
+                                              for it in (v.get("itens") or [])]})
+                except Exception:
+                    continue
+        r = jsonify({"ok": True, "total": len(pedidos), "pedidos": pedidos})
+        r.headers["Access-Control-Allow-Origin"] = "*"
+        return r
+
     @bp.route("/integracoes/ml-etiqueta", methods=["GET", "OPTIONS"])
     def ml_etiqueta():
         """Baixa e SERVE a etiqueta de envio (PDF) de um pedido ML, pronta pra imprimir.
