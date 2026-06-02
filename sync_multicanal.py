@@ -67,6 +67,25 @@ def _shopee_call(shop_id, path, params=None, raw=False):
     except Exception as e:
         print(f"[SHOPEE] call erro {path}: {e}")
         return None
+
+def _shopee_post(shop_id, path, body, raw=False):
+    """Chamada POST assinada à API Shopee. raw=True retorna o Response (p/ baixar PDF)."""
+    if not _shopee_token_provider or not _shopee_partner_id:
+        return None
+    access_token, shop_id_int = _shopee_token_provider(shop_id)
+    if not access_token:
+        return None
+    ts = int(time.time())
+    base = f"{_shopee_partner_id}{path}{ts}{access_token}{shop_id_int}"
+    sign = hmac.new(_shopee_partner_key.encode(), base.encode(), hashlib.sha256).hexdigest()
+    p = {"partner_id": _shopee_partner_id, "timestamp": ts, "access_token": access_token,
+         "shop_id": shop_id_int, "sign": sign}
+    try:
+        r = requests.post(f"{_shopee_base}{path}", params=p, json=body, timeout=30)
+        return r if raw else r.json()
+    except Exception as e:
+        print(f"[SHOPEE] post erro {path}: {e}")
+        return None
 _PROC_FILE = os.path.join(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp"), "wrx_vendas_processadas.json")
 
 def _carregar_processadas():
@@ -336,6 +355,35 @@ def get_blueprint():
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization"})
+
+    @bp.route("/integracoes/shopee-etiqueta", methods=["GET", "OPTIONS"])
+    def shopee_etiqueta():
+        """Baixa e serve a etiqueta de envio (PDF) de um pedido Shopee.
+        ?order_sn=..&shop=.. (cria o documento se preciso, depois baixa)."""
+        from flask import Response
+        if request.method == "OPTIONS":
+            return _cors()
+        order_sn = request.args.get("order_sn", "").strip()
+        shop = request.args.get("shop", "").strip()
+        if not (order_sn and shop):
+            return Response('{"erro":"order_sn e shop obrigatorios"}', status=400,
+                            mimetype="application/json", headers={"Access-Control-Allow-Origin": "*"})
+        body = {"order_list": [{"order_sn": order_sn, "shipping_document_type": "NORMAL_AIR_WAYBILL"}]}
+        # 1) cria o documento (idempotente; se já existe, a Shopee só confirma)
+        _shopee_post(shop, "/api/v2/logistics/create_shipping_document", body)
+        # 2) baixa o PDF
+        r = _shopee_post(shop, "/api/v2/logistics/download_shipping_document", body, raw=True)
+        if r is not None and r.status_code == 200 and r.headers.get("content-type", "").lower().startswith("application/pdf"):
+            return Response(r.content, mimetype="application/pdf", headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Disposition": f'inline; filename="etiqueta_shopee_{order_sn}.pdf"'})
+        det = ""
+        try:
+            det = (r.json() if r is not None else {}).get("message", "")[:160]
+        except Exception:
+            det = (r.text[:160] if r is not None else "sem resposta")
+        return Response('{"erro":"etiqueta nao disponivel","detalhe":"%s"}' % det, status=422,
+                        mimetype="application/json", headers={"Access-Control-Allow-Origin": "*"})
 
     @bp.route("/integracoes/shopee-a-enviar", methods=["GET", "OPTIONS"])
     def shopee_a_enviar():
