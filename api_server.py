@@ -3966,9 +3966,34 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": False, "erro": "WhatsApp nao conectado"}), 400
         tokens = _ml_load_tokens()
         avisados = _avisados_load()
+        # Se a memória está vazia (1ª vez / pós-restart), NÃO dispara avalanche:
+        # marca o que existe como avisado sem enviar; só envia o que surgir depois.
+        primeira_vez = (len(avisados) == 0)
         enviados = []
         from datetime import timedelta
-        date_from = (_datetime.utcnow() - timedelta(days=2)).strftime("%Y-%m-%dT00:00:00.000-00:00")
+        # só considera coisas das últimas 24h (evita perguntas/vendas antigas)
+        limite = _datetime.utcnow() - timedelta(hours=24)
+        date_from = limite.strftime("%Y-%m-%dT00:00:00.000-00:00")
+        def _recente(data_str):
+            """True se a data ISO está dentro das últimas 24h."""
+            try:
+                s = str(data_str or "")[:19]  # YYYY-MM-DDTHH:MM:SS
+                d = _datetime.strptime(s, "%Y-%m-%dT%H:%M:%S")
+                return d >= limite
+            except Exception:
+                return False
+        def _processar(key, texto, data_item):
+            """Marca como avisado e envia (se não for 1ª vez e for recente)."""
+            if key in avisados:
+                return
+            avisados.add(key)
+            if primeira_vez:
+                return  # pós-restart: só registra, não envia
+            if data_item is not None and not _recente(data_item):
+                return  # antigo demais
+            ok, _ = _waha_enviar(numero, texto)
+            if ok:
+                enviados.append(key)
         for conta in list(tokens.keys()):
             token = _ml_get_user_token(conta)
             if not token:
@@ -3989,14 +4014,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                             "sort_fields": "date_created", "sort_types": "DESC", "limit": 10},
                     headers={"Authorization": f"Bearer {token}"}, timeout=15)
                 for q in (_r.json().get("questions", []) if _r.status_code == 200 else []):
-                    key = f"perg:{q.get('id')}"
-                    if key in avisados:
-                        continue
-                    avisados.add(key)
                     txt = f"❓ *Pergunta nova* (ML {conta})\n{q.get('text','')}\n\nResponda no painel."
-                    ok, _ = _waha_enviar(numero, txt)
-                    if ok:
-                        enviados.append(key)
+                    _processar(f"perg:{q.get('id')}", txt, q.get("date_created"))
             except Exception:
                 pass
             # VENDAS novas
@@ -4006,16 +4025,10 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                             "date_created.from": date_from},
                     headers={"Authorization": f"Bearer {token}"}, timeout=15)
                 for o in (_r.json().get("results", []) if _r.status_code == 200 else []):
-                    key = f"venda:{o.get('id')}"
-                    if key in avisados:
-                        continue
-                    avisados.add(key)
                     itens = ", ".join(i.get("item", {}).get("title", "")[:40] for i in o.get("order_items", []))
                     total = o.get("total_amount", 0)
                     txt = f"🛒 *VENDA!* (ML {conta})\n{itens}\nTotal: R$ {total}"
-                    ok, _ = _waha_enviar(numero, txt)
-                    if ok:
-                        enviados.append(key)
+                    _processar(f"venda:{o.get('id')}", txt, o.get("date_created"))
             except Exception:
                 pass
             # RECLAMAÇÕES novas
@@ -4024,14 +4037,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     params={"status": "opened", "limit": 10},
                     headers={"Authorization": f"Bearer {token}"}, timeout=15)
                 for c in (_r.json().get("data", []) if _r.status_code == 200 else []):
-                    key = f"recl:{c.get('id')}"
-                    if key in avisados:
-                        continue
-                    avisados.add(key)
                     txt = f"⚠️ *RECLAMAÇÃO* (ML {conta})\nPedido #{c.get('resource_id','')}\nResolva no Mercado Livre."
-                    ok, _ = _waha_enviar(numero, txt)
-                    if ok:
-                        enviados.append(key)
+                    _processar(f"recl:{c.get('id')}", txt, c.get("date_created"))
             except Exception:
                 pass
         _avisados_save(avisados)
