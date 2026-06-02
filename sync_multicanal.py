@@ -391,6 +391,29 @@ def get_blueprint():
             "Access-Control-Allow-Origin": "*",
             "Content-Disposition": f'inline; filename="etiqueta_{order_id}.{ "pdf" if fmt=="pdf" else "zpl" }"'})
 
+    @bp.route("/integracoes/ml-billing-teste", methods=["GET", "OPTIONS"])
+    def ml_billing_teste():
+        """TESTE CRÍTICO: o ML libera o CPF/CNPJ do comprador (pra NF-e)?"""
+        if request.method == "OPTIONS":
+            return _cors()
+        order_id = request.args.get("order_id", "").strip()
+        conta = request.args.get("conta", "default").strip()
+        token = _ml_token_provider(conta) if _ml_token_provider else None
+        if not token:
+            r = jsonify({"erro": "sem token"}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+        H = {"Authorization": f"Bearer {token}", "x-version": "2"}
+        bi = requests.get(f"https://api.mercadolibre.com/orders/{order_id}/billing_info", headers=H, timeout=15)
+        body = bi.json() if bi.status_code == 200 else {}
+        # tenta achar o doc em vários formatos que o ML usa
+        binfo = (body.get("buyer") or {}).get("billing_info") or body.get("billing_info") or {}
+        doc_type = binfo.get("doc_type") or binfo.get("type")
+        doc_number = binfo.get("doc_number") or binfo.get("number")
+        out = {"http": bi.status_code, "tem_doc": bool(doc_number),
+               "doc_type": doc_type, "doc_number": ("***" + str(doc_number)[-3:]) if doc_number else None,
+               "nome": binfo.get("first_name") or binfo.get("legal_name") or binfo.get("name"),
+               "campos": list(binfo.keys()), "raw_keys": list(body.keys())}
+        r = jsonify(out); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+
     @bp.route("/integracoes/ml-etiqueta-info", methods=["GET", "OPTIONS"])
     def ml_etiqueta_info():
         """TESTE: dado um order_id, verifica se a etiqueta de envio do ML está disponível."""
