@@ -701,8 +701,15 @@ def _filtrar_anuncios_isolados(anuncios: list) -> list:
 # ─── Supabase: salvar compatibilidades ───────────────────────────────────────
 
 def _salvar_supabase(oem: str, grupos: list, confianca: int) -> int:
-    """Salva grupo de compatibilidades no Supabase. Retorna quantos salvos."""
-    hdrs = _crm_headers()
+    """Salva grupo de compatibilidades no Supabase via UPSERT. Retorna quantos salvos.
+
+    Usa on_conflict nas colunas-chave + Prefer: resolution=ignore-duplicates: a mesma
+    compatibilidade (oem+marca+modelo+motor+anos) NÃO duplica a cada busca — o conflito
+    é ignorado silenciosamente. Exige a constraint única no banco (ver migração em
+    sql/migracao_oem_compat_unico.sql). Usa ignore (não merge) porque a chave anon do CRM
+    só tem permissão de INSERT, não de UPDATE/DELETE (RLS)."""
+    hdrs = {**_crm_headers(), "Prefer": "resolution=ignore-duplicates,return=minimal"}
+    on_conflict = "oem,marca,modelo,motor,ano_inicial,ano_final"
 
     total = 0
     for g in grupos:
@@ -724,16 +731,28 @@ def _salvar_supabase(oem: str, grupos: list, confianca: int) -> int:
         try:
             r = requests.post(
                 f"https://{_CRM_HOST}/rest/v1/oem_compatibilidades",
-                headers=hdrs, json=payload, timeout=10
+                headers=hdrs, params={"on_conflict": on_conflict}, json=payload, timeout=10
             )
-            if r.status_code in (200, 201):
+            if r.status_code in (200, 201, 204):
                 total += 1
+            elif "no unique" in r.text.lower() or "42P10" in r.text:
+                # Constraint ainda não criada no banco: cai pro insert simples (sem dedup).
+                # Quando a migração sql/migracao_oem_compat_unico.sql for aplicada, o upsert
+                # acima passa a funcionar e este fallback deixa de ser usado.
+                r2 = requests.post(
+                    f"https://{_CRM_HOST}/rest/v1/oem_compatibilidades",
+                    headers=_crm_headers(), json=payload, timeout=10
+                )
+                if r2.status_code in (200, 201):
+                    total += 1
+                else:
+                    print(f"[Supabase] Erro fallback {r2.status_code}: {r2.text[:200]}")
             else:
                 print(f"[Supabase] Erro {r.status_code}: {r.text[:200]}")
         except Exception as e:
             print(f"[Supabase] Exceção: {e}")
 
-    print(f"[Supabase] {total} compatibilidades salvas para OEM {oem}")
+    print(f"[Supabase] {total} compatibilidades upsert para OEM {oem}")
     return total
 
 
