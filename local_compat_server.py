@@ -141,52 +141,41 @@ _TERMOS_USADO = [
 ]
 
 
-def _filtrar_precos_da_peca(itens: list, nome_peca: str) -> list:
-    """Mantém só os preços dos anúncios que são a peça-alvo NOVA.
+def _precos_por_condicao(itens: list, nome_peca: str) -> dict:
+    """Separa os preços dos anúncios da peça-alvo em NOVO e USADO, pelo título.
 
-    Descarta: (1) PARTES/acessórios (mangueira, kit, reparo...) que vêm baratos e
-    puxam a mediana pra baixo; (2) peças USADAS/recondicionadas (o preço-alvo é o de
-    NOVA). Também exige que o título cite o núcleo do nome da peça (ex 'turbina').
-    Ex: ao buscar o OEM de uma turbina, o ML lista 'Mangueira Turbina' (R$130) e
-    'Turbina Usada' (R$800) — ambos saem; sobra a turbina nova.
-    Se o filtro deixar poucos dados (<3), devolve tudo — melhor dado ruidoso (avisado)
-    que nenhum dado.
+    1) Descarta PARTES/acessórios (mangueira, kit, reparo...) e anúncios que não citam
+       o núcleo do nome da peça (ex 'turbina') — vêm baratos e contaminam o preço.
+    2) Classifica o resto: título com termo de usado/recondicionado -> USADO; senão NOVO.
+    O ML não separa novo/usado por OEM (a URL de condição traz produto errado), por isso
+    a classificação é pelo título. Retorna {'novo': [precos], 'usado': [precos]}.
     """
     if not itens:
-        return []
+        return {"novo": [], "usado": []}
     nucleo = ""
     if nome_peca:
         # primeira palavra significativa do nome (ex "Caixa Filtro Ar" -> "caixa")
         m = re.search(r'[a-záàâãéêíóôõúç]{3,}', nome_peca.lower())
         nucleo = m.group(0) if m else ""
-    bons, fora_parte, fora_usado = [], [], []
+    novos, usados, fora_parte = [], [], []
     for it in itens:
         t = (it.get("titulo") or "").lower()
         preco = it.get("preco")
         if not preco:
             continue
         tem_parte = any(termo in t for termo in _TERMOS_PARTE)
-        tem_usado = any(termo in t for termo in _TERMOS_USADO)
         tem_nucleo = (nucleo in t) if nucleo else True
         if tem_parte or not tem_nucleo:
             fora_parte.append((round(preco), it.get("titulo", "")[:50]))
-        elif tem_usado:
-            fora_usado.append((round(preco), it.get("titulo", "")[:50]))
+        elif any(termo in t for termo in _TERMOS_USADO):
+            usados.append(preco)
         else:
-            bons.append(preco)
+            novos.append(preco)
     if fora_parte:
         print(f"[PREÇO] {len(fora_parte)} descartados (parte/acessório, não é '{nome_peca}'): "
               + "; ".join(f"R${p} {t}" for p, t in fora_parte[:5]) + ("..." if len(fora_parte) > 5 else ""))
-    if fora_usado:
-        print(f"[PREÇO] {len(fora_usado)} descartados (usado/recondicionado — queremos NOVO): "
-              + "; ".join(f"R${p} {t}" for p, t in fora_usado[:5]) + ("..." if len(fora_usado) > 5 else ""))
-    if len(bons) < 3:
-        # filtro agressivo demais p/ esta peça — usa todos menos as partes (mantém o foco em peça inteira)
-        sobra = [it.get("preco") for it in itens
-                 if it.get("preco") and not any(termo in (it.get("titulo") or "").lower() for termo in _TERMOS_PARTE)]
-        print(f"[PREÇO] filtro de novo deixou só {len(bons)} — usando {len(sobra)} (novo+usado, sem partes)")
-        return sobra or [it.get("preco") for it in itens if it.get("preco")]
-    return bons
+    print(f"[PREÇO] novo={len(novos)} | usado={len(usados)}")
+    return {"novo": novos, "usado": usados}
 
 
 def _faixa_preco(precos: list) -> dict:
@@ -873,9 +862,10 @@ def buscar_compat():
         nome_peca = _nome_peca_do_titulo(anuncios, oem)
         titulos_anuncios = [a.get("titulo", "") for a in anuncios if a.get("titulo")][:10]
 
-        # Preço de mercado da peça NOVA: usa os preços que a própria busca já raspou
-        # (1 navegador, não 3), descarta partes/acessórios e usados pelo título e
-        # corta outliers (IQR). O ML não separa novo/usado por OEM de forma confiável.
+        # Preço de mercado por condição (novo/usado): usa os preços que a própria busca
+        # já raspou (1 navegador, não 3), descarta partes/acessórios, classifica
+        # novo/usado pelo título e corta outliers (IQR). Formato esperado pelo painel:
+        # precos.novo / precos.usado, cada um {qtd, min, max, sugerido, ruidoso}.
         # dedup por título: o ML repete o mesmo anúncio patrocinado várias vezes;
         # contar a repetição enviesaria a mediana para o preço desse anúncio.
         itens_preco, vistos_preco = [], set()
@@ -885,7 +875,8 @@ def buscar_compat():
             if praw and chave and chave not in vistos_preco:
                 vistos_preco.add(chave)
                 itens_preco.append({"preco": int(praw), "titulo": a.get("titulo", "")})
-        preco = _faixa_preco(_filtrar_precos_da_peca(itens_preco, nome_peca))
+        _pc = _precos_por_condicao(itens_preco, nome_peca)
+        precos = {"novo": _faixa_preco(_pc["novo"]), "usado": _faixa_preco(_pc["usado"])}
 
         print(f"[LOCAL] Concluído em {round(time.time()-t0,1)}s — "
               f"{len(aprovados)} aprovadas, {len(rejeitados)} rejeitadas")
@@ -895,7 +886,7 @@ def buscar_compat():
             "fonte": "ml_local",
             "compatibilidades_confirmadas": compat_confirmadas,
             "tabela": tabela,
-            "preco": preco,
+            "precos": precos,
             "nome_peca": nome_peca,
             "titulos": titulos_anuncios,
             "grau_de_confianca": confianca,
