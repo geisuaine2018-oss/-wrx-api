@@ -4207,11 +4207,34 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             estado = {}
         ids_atuais = {str(p.get("id")) for p in rows if p.get("id")}
         estado = {k: v for k, v in estado.items() if k in ids_atuais}   # prune antigos
+
+        # ── 1 disparo por NÚMERO enquanto tiver pedido aberto ──────────────────
+        #   rows vem ordenado por criado_em.asc. Para cada telefone só UM pedido
+        #   pode disparar: o que já começou a ser avisado (está no estado) ou,
+        #   se nenhum começou, o mais antigo aberto. Pedidos extras do mesmo
+        #   número ficam de fora até o ativo ser resolvido (sair de
+        #   aguardando/verificando), aí o próximo do cliente volta a disparar.
+        def _fone_de(p):
+            f = "".join(ch for ch in str(p.get("phone") or "") if ch.isdigit())
+            return f or ("id:" + str(p.get("id") or ""))
+        ativo_por_fone = {}
+        for p in rows:                                   # 1ª passada: já em andamento
+            pid = str(p.get("id") or "")
+            if pid and pid in estado:
+                ativo_por_fone.setdefault(_fone_de(p), pid)
+        for p in rows:                                   # 2ª passada: mais antigo aberto
+            pid = str(p.get("id") or "")
+            if pid:
+                ativo_por_fone.setdefault(_fone_de(p), pid)
+        pids_ativos = set(ativo_por_fone.values())
+
         novos = 0
         for p in rows:
             pid = str(p.get("id") or "")
             peca = (p.get("peca") or "").strip()
             if not pid or not peca:
+                continue
+            if pid not in pids_ativos:                   # pedido repetido do mesmo número
                 continue
             ja = set(estado.get(pid, []))
             alvos = [e for e in abertos if e not in ja]
