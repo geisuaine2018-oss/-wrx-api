@@ -2535,6 +2535,34 @@ if USE_FLASK:
             pass
         return jsonify({"ok": True, "sku": sku, "grupo": "pending_publish"})
 
+    @app.route("/integracoes/mercadolivre/pausar-item", methods=["POST", "OPTIONS"])
+    def ml_pausar_item():
+        # Pausa, reativa ou encerra ("exclui") um anuncio ML por ml_id.
+        # status: paused | active | closed. ML nao deleta itens — "excluir" = closed.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        ml_id = (data.get("ml_id") or data.get("mlId") or "").strip()
+        conta = data.get("nome", "default")
+        novo = (data.get("status") or "paused").strip()
+        if not ml_id:
+            return jsonify({"ok": False, "erro": "ml_id obrigatorio"}), 400
+        if novo not in ("paused", "active", "closed"):
+            return jsonify({"ok": False, "erro": "status deve ser paused, active ou closed"}), 400
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": f"conta '{conta}' sem token ML"}), 401
+        try:
+            r = requests.put(
+                f"https://api.mercadolibre.com/items/{ml_id}",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"status": novo}, timeout=15)
+            if r.status_code == 200:
+                return jsonify({"ok": True, "ml_id": ml_id, "status": novo})
+            return jsonify({"ok": False, "erro": f"ML {r.status_code}: {r.text[:200]}"}), 502
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 500
+
     @app.route("/integracoes/mercadolivre/publicar", methods=["POST", "OPTIONS"])
     def ml_publicar():
         if request.method == "OPTIONS":
