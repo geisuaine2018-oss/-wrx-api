@@ -2312,10 +2312,13 @@ if USE_FLASK:
         verifier, challenge = _pkce_pair()
         # Embute conta+verifier no state para evitar problema de múltiplos workers
         state_payload = _base64.urlsafe_b64encode(f"{conta}:{verifier}".encode()).rstrip(b'=').decode()
+        # scope=offline_access é OBRIGATORIO p/ o ML devolver refresh_token.
+        # Sem ele, vem so o access_token de 6h e a conta "cai" toda hora (sem como renovar).
         url = (
             "https://auth.mercadolivre.com.br/authorization"
             f"?response_type=code&client_id={ML_CLIENT_ID.strip()}"
             f"&redirect_uri={_urlparse.quote(ML_REDIRECT_URI, safe='')}"
+            f"&scope={_urlparse.quote('offline_access read write')}"
             f"&state={state_payload}"
             f"&code_challenge={challenge}&code_challenge_method=S256"
         )
