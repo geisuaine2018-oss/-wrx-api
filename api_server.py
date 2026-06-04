@@ -4775,6 +4775,10 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     "package_height": int(data.get("altura") or 15),
                 },
             }
+            # NCM (info fiscal) — obrigatório em lojas Shopee que emitem nota fiscal
+            _ncm = str(data.get("ncm") or "").strip()
+            if _ncm and _ncm not in ("00000000", "0000000", "0"):
+                payload_shopee["tax_info"] = {"ncm": _ncm}
             try:
                 _r = requests.post(
                     f"{_SHOPEE_BASE}{path}",
