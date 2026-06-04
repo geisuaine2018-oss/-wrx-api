@@ -2632,6 +2632,9 @@ if USE_FLASK:
         modelo_form = (data.get("modelo") or "").strip()
         if "MODEL" not in attr_ids:
             attrs.append({"id": "MODEL", "value_name": modelo_form or marca_form or _titulo[:60] or "Universal"})
+        # VEHICLE_TYPE: obrigatório em categorias de autopeça (ex: MLB63512) — sem ele dá "Validation error"
+        if "VEHICLE_TYPE" not in attr_ids:
+            attrs.append({"id": "VEHICLE_TYPE", "value_name": "Carro/Caminhonete"})
         _pkg_defaults = [
             ("seller_package_height", f"{int(data.get('package_height') or 30)} cm"),
             ("seller_package_width",  f"{int(data.get('package_width')  or 30)} cm"),
