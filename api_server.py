@@ -2666,6 +2666,21 @@ if USE_FLASK:
                         )
                     except Exception:
                         pass
+                # Ficha fiscal (NCM/CEST/CSOSN) — Simples Nacional, origem nacional. Permite emissao de nota.
+                _ncm_ml = str(data.get("ncm") or "").strip()
+                if _ncm_ml and _ncm_ml not in ("00000000", "0000000", "0"):
+                    try:
+                        _fi = {"sku": sku, "title": _titulo, "type": "single", "measurement_unit": "UN",
+                               "tax_information": {"ncm": _ncm_ml, "origin_type": "reseller",
+                                                   "origin_detail": "0", "csosn": str(data.get("csosn") or "102")}}
+                        _cest_ml = str(data.get("cest") or "").strip()
+                        if _cest_ml and _cest_ml not in ("0000000", "00000000", "0"):
+                            _fi["tax_information"]["cest"] = _cest_ml
+                        requests.post("https://api.mercadolibre.com/items/fiscal_information",
+                                      headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                                      json=_fi, timeout=15)
+                    except Exception:
+                        pass
                 return jsonify({"ok": True, "mlId": item_id, "item": item, "conta": conta_nome})
             _err = _r.json() if _r.headers.get("content-type", "").startswith("application/json") else {}
             return jsonify({
