@@ -314,7 +314,8 @@ def pausar_anuncio_shopee(shop_id, item_id):
         # ja inativo no Shopee (vendido/unlisted/inexistente) -> nao e furo: corrige cache
         ja_inativo = any(k in low for k in
                          ["unlist", "not exist", "not found", "deleted", "banned",
-                          "sold", "not in", "invalid item", "out of stock"])
+                          "sold", "not in", "invalid item", "out of stock",
+                          "abnormal", "status is", "prohibited", "frozen", "review"])
         if sucesso or ja_inativo:
             try:
                 requests.patch(f"{SB_URL}/rest/v1/shopee_anuncios?shop_id=eq.{shop_id}&item_id=eq.{item_id}",
