@@ -378,17 +378,27 @@ def _processar_venda_ml_webhook(resource, user_id):
         order_id = str(resource or "").rstrip("/").split("/")[-1]
         if not order_id.isdigit():
             return
-        conta = _ml_conta_por_user(user_id) or CONTAS_ML[0]
-        token = _ml_token_provider(conta) if _ml_token_provider else None
-        if not token:
-            print(f"[WEBHOOK] sem token p/ conta {conta} (order {order_id})")
+        if not _ml_token_provider:
+            print(f"[WEBHOOK] sem token provider (order {order_id})")
             return
-        o = requests.get(f"https://api.mercadolibre.com/orders/{order_id}",
-                         headers={"Authorization": f"Bearer {token}"}, timeout=15)
-        if o.status_code != 200:
-            print(f"[WEBHOOK] order {order_id} HTTP {o.status_code}")
+        # A dona do pedido e a UNICA conta cujo token devolve 200. Tenta a conta
+        # mapeada pelo user_id primeiro (rapido) e, se falhar, as demais (robusto
+        # mesmo se o user_id nao resolver).
+        c = _ml_conta_por_user(user_id)
+        contas = ([c] + [x for x in CONTAS_ML if x != c]) if c else CONTAS_ML
+        od = None
+        for conta in contas:
+            token = _ml_token_provider(conta)
+            if not token:
+                continue
+            o = requests.get(f"https://api.mercadolibre.com/orders/{order_id}",
+                             headers={"Authorization": f"Bearer {token}"}, timeout=15)
+            if o.status_code == 200:
+                od = o.json()
+                break
+        if not od:
+            print(f"[WEBHOOK] order {order_id} nao encontrado em nenhuma conta ML")
             return
-        od = o.json()
         if od.get("status") != "paid":
             return  # só reage a venda PAGA
         for it in (od.get("order_items") or []):
