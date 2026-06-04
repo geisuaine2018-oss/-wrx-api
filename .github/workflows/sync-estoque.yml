@@ -1,0 +1,29 @@
+name: Sync estoque PartsHub (leve, anti-venda-dupla)
+
+# Mantem o pecas_estoque fresco SEM depender de rodar o sync pesado na mao.
+# 1) zera no nosso banco as pecas que venderam no PartsHub (sync_estoque_qtd.py)
+# 2) pausa os anuncios das que zeraram (reconciliar-estoque-zerado armado)
+# Roda de hora em hora. O sync_partshub.py completo (fotos/local/titulos)
+# continua sendo rodado a parte quando precisar.
+
+on:
+  schedule:
+    - cron: '5 * * * *'    # todo minuto 5 de cada hora
+  workflow_dispatch:
+
+jobs:
+  sync-estoque:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - name: Zerar pecas vendidas no pecas_estoque
+        run: python sync_estoque_qtd.py
+      - name: Pausar anuncios das pecas zeradas (ML + Shopee)
+        run: |
+          curl -s -m 150 -X POST \
+            "https://wrx-api-production.up.railway.app/integracoes/reconciliar-estoque-zerado?modo=armado" \
+            | head -c 600 || true
