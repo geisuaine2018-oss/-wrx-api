@@ -296,15 +296,34 @@ def pausar_anuncio_shopee(shop_id, item_id):
             params={"partner_id": _shopee_partner_id, "timestamp": ts,
                     "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
             json={"item_list": [{"item_id": int(item_id), "unlist": True}]}, timeout=15)
-        if r.status_code == 200 and not r.json().get("error"):
+        rj = {}
+        try:
+            rj = r.json()
+        except Exception:
+            pass
+        resp = rj.get("response") or {}
+        # sucesso = sem erro de topo E o item esta na success_list
+        sucesso = (r.status_code == 200 and not rj.get("error")
+                   and any(str(s.get("item_id")) == str(item_id) for s in (resp.get("success_list") or [])))
+        # motivo de falha por item (Shopee devolve failure_list com failed_reason)
+        fl = resp.get("failure_list") or []
+        motivo = " | ".join(
+            f"{f.get('item_id')}: {f.get('failed_reason') or f.get('failed_message') or f}"
+            for f in fl) if fl else (rj.get("message") or r.text[:200])
+        low = (motivo or "").lower()
+        # ja inativo no Shopee (vendido/unlisted/inexistente) -> nao e furo: corrige cache
+        ja_inativo = any(k in low for k in
+                         ["unlist", "not exist", "not found", "deleted", "banned",
+                          "sold", "not in", "invalid item", "out of stock"])
+        if sucesso or ja_inativo:
             try:
                 requests.patch(f"{SB_URL}/rest/v1/shopee_anuncios?shop_id=eq.{shop_id}&item_id=eq.{item_id}",
                                headers={**_sb_headers(), "Content-Type": "application/json"},
                                json={"status": "UNLIST"}, timeout=10)
             except Exception:
                 pass
-            return True, "unlist"
-        return False, f"HTTP {r.status_code}: {r.text[:160]}"
+            return True, ("unlist" if sucesso else f"ja inativo ({motivo})")
+        return False, f"shopee unlist falhou: {motivo}"
     except Exception as e:
         return False, str(e)
 
