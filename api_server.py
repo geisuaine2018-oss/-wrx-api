@@ -4704,7 +4704,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         sku = data.get("sku", "")
         titulo = data.get("titulo", "")
         preco = data.get("preco", 0)
-        descricao = data.get("descricao", titulo)
+        descricao = data.get("descricao") or titulo  # Shopee exige descricao; se vazia, usa o titulo
         condicao_recebida = data.get("condicao", "new")
         categoria = data.get("categoria", "")
         fotos = data.get("fotos", [])
