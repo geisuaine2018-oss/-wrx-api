@@ -4717,6 +4717,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": False, "erro": "Shopee nao autorizada.", "authUrl": f"{request.host_url}integracoes/shopee/oauth"}), 401
 
         sku = data.get("sku", "")
+        sku_interno = data.get("skuInterno") or sku  # SKU real da peca (quando o sku vem sufixado -SH1..-SH4 p/ multi-variacao)
         titulo = data.get("titulo", "")
         preco = data.get("preco", 0)
         descricao = data.get("descricao") or titulo  # Shopee exige descricao; se vazia, usa o titulo
@@ -4781,7 +4782,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 # Usa o SKU como número da peça (referência real do vendedor).
                 "attribute_list": [
                     {"attribute_id": 102293,
-                     "attribute_value_list": [{"value_id": 0, "original_value_name": str(sku)[:80]}]},
+                     "attribute_value_list": [{"value_id": 0, "original_value_name": str(sku_interno)[:80]}]},
                 ],
                 "weight": float(data.get("peso") or 1.0),
                 "dimension": {
@@ -5430,7 +5431,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return
         for order in d.get("response", {}).get("order_list", []):
             for item in order.get("item_list", []):
-                sku = (item.get("model_sku") or "").strip()
+                # Normaliza SKU: variacoes vem sufixadas (-SH1..-SH4); o estoque usa o SKU base
+                sku = re.sub(r'-(SH|DML|GML)\d+$', '', (item.get("model_sku") or "").strip(), flags=re.I)
                 qty = int(item.get("model_quantity_purchased", 1))
                 if not sku:
                     continue
@@ -5488,7 +5490,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         if request.method == "OPTIONS":
             return _options_resp()
         data = request.get_json(force=True) or {}
-        sku = (data.get("sku") or "").strip()
+        # Normaliza SKU: anuncios multi-variacao vem sufixados (-SH1..-SH4 / -DML#/-GML#); o estoque usa o SKU base
+        sku = re.sub(r'-(SH|DML|GML)\d+$', '', (data.get("sku") or "").strip(), flags=re.I)
         qty = int(data.get("qty", 1))
         if not sku:
             return jsonify({"ok": False, "erro": "sku obrigatorio"}), 400
