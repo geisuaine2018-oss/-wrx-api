@@ -27,6 +27,7 @@ import time
 import json
 import hmac
 import hashlib
+import threading
 import requests
 
 # ─── Config Supabase (chave publishable = só leitura do mapeamento p/ planejar) ──
@@ -345,6 +346,61 @@ def _registrar_log(relatorio):
     except Exception as e:
         print(f"[SYNC] log falhou: {e}")
 
+# ─── Webhook de venda ML (anti-venda-dupla INSTANTÂNEO) ──────────────────────────
+# O ML chama nossa URL no segundo em que vende. Reagimos na hora: busca o pedido,
+# pega o SKU e dispara a cascata (pausa os OUTROS anúncios do mesmo SKU). A trava
+# de peça única vive em planejar_pausa/_peca_unica (não pausa peça multi-unidade).
+_ml_user2conta = {}   # cache user_id(str) -> conta ML
+
+def _ml_conta_por_user(user_id):
+    """Descobre qual conta (default/geisa) é dona do user_id do ML (cacheado)."""
+    uid = str(user_id or "")
+    if uid in _ml_user2conta:
+        return _ml_user2conta[uid]
+    if not _ml_token_provider:
+        return None
+    for conta in CONTAS_ML:
+        token = _ml_token_provider(conta)
+        if not token:
+            continue
+        try:
+            me = requests.get("https://api.mercadolibre.com/users/me",
+                              headers={"Authorization": f"Bearer {token}"}, timeout=10)
+            if me.status_code == 200:
+                _ml_user2conta[str(me.json().get("id"))] = conta
+        except Exception:
+            pass
+    return _ml_user2conta.get(uid)
+
+def _processar_venda_ml_webhook(resource, user_id):
+    """Roda em thread (não trava a resposta ao ML): pedido -> SKU(s) -> cascata."""
+    try:
+        order_id = str(resource or "").rstrip("/").split("/")[-1]
+        if not order_id.isdigit():
+            return
+        conta = _ml_conta_por_user(user_id) or CONTAS_ML[0]
+        token = _ml_token_provider(conta) if _ml_token_provider else None
+        if not token:
+            print(f"[WEBHOOK] sem token p/ conta {conta} (order {order_id})")
+            return
+        o = requests.get(f"https://api.mercadolibre.com/orders/{order_id}",
+                         headers={"Authorization": f"Bearer {token}"}, timeout=15)
+        if o.status_code != 200:
+            print(f"[WEBHOOK] order {order_id} HTTP {o.status_code}")
+            return
+        od = o.json()
+        if od.get("status") != "paid":
+            return  # só reage a venda PAGA
+        for it in (od.get("order_items") or []):
+            item = it.get("item") or {}
+            sku = str(item.get("seller_sku") or item.get("seller_custom_field") or "").strip()
+            if not sku:
+                continue
+            rel = executar_sincronizacao(sku, "ml")
+            print(f"[WEBHOOK] order {order_id} sku {sku} -> pausados {rel.get('pausados')}/{rel.get('total')}")
+    except Exception as e:
+        print(f"[WEBHOOK] erro: {e}")
+
 # ─── Flask Blueprint (registrado pelo api_server com 1 linha) ────────────────────
 def get_blueprint():
     from flask import Blueprint, request, jsonify, Response
@@ -355,6 +411,23 @@ def get_blueprint():
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization"})
+
+    @bp.route("/integracoes/mercadolivre/webhook", methods=["POST", "GET", "OPTIONS"])
+    def ml_webhook():
+        """Recebe as notificações do ML. GET = validação/health; POST = notificação.
+        Responde 200 RÁPIDO e processa a venda em thread (o ML exige resposta ágil)."""
+        if request.method == "OPTIONS":
+            return _cors()
+        if request.method == "GET":
+            return jsonify({"ok": True, "webhook": "ml"}), 200
+        data = request.get_json(force=True, silent=True) or {}
+        topic = (data.get("topic") or "").lower()
+        if topic in ("orders_v2", "orders"):
+            threading.Thread(
+                target=_processar_venda_ml_webhook,
+                args=(data.get("resource"), data.get("user_id")),
+                daemon=True).start()
+        return jsonify({"ok": True}), 200
 
     @bp.route("/integracoes/shopee-etiqueta-diag", methods=["GET", "OPTIONS"])
     def shopee_etiqueta_diag():
