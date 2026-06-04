@@ -3444,7 +3444,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         data = request.get_json(force=True) or {}
         item_id = data.get("mlId") or data.get("item_id", "")
         video_id = data.get("videoId") or data.get("video_id", "")
-        conta_nome = data.get("conta", "default")
+        conta_nome = data.get("conta") or data.get("nome") or "default"
         if not item_id or not video_id:
             return jsonify({"ok": False, "erro": "mlId e videoId obrigatorios"}), 400
         token = _ml_get_user_token(conta_nome)
