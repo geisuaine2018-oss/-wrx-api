@@ -58,16 +58,13 @@ def _ml_preferir_categoria_carro(candidatos):
             return c
     return fallback
 
-def _ml_upload_picture(token, data_url):
-    """Sobe uma foto base64 (data: URL) pro serviço de imagens do ML e retorna o id.
-    O ML não aceita data: URL como source — fotos editadas (ex: fundo removido) precisam
-    ser enviadas como arquivo. Retorna o picture id, ou None se falhar."""
-    import base64 as _b64
+# Cache de fotos já enviadas ao ML: (conta, chave_foto) -> picture_id.
+# Evita reenviar a MESMA foto a cada um dos 10 anúncios do mesmo produto.
+_ML_PIC_CACHE = {}
+
+def _ml_upload_bytes(token, raw, mime="image/jpeg", ext="jpg"):
+    """Sobe bytes de imagem pro serviço de imagens do ML e retorna o picture id (ou None)."""
     try:
-        header, b64 = data_url.split(",", 1)
-        mime = "image/png" if "image/png" in header else "image/jpeg"
-        ext = "png" if mime == "image/png" else "jpg"
-        raw = _b64.b64decode(b64)
         rr = requests.post(
             "https://api.mercadolibre.com/pictures/items/upload",
             headers={"Authorization": f"Bearer {token}"},
@@ -78,6 +75,54 @@ def _ml_upload_picture(token, data_url):
     except Exception:
         pass
     return None
+
+def _ml_quadrar_bytes(raw, lado=1600):
+    """Centraliza a imagem num quadrado branco lado×lado (padrão ML). Compositа a
+    transparência sobre branco (não vira preto). Retorna JPEG bytes, ou None se falhar."""
+    try:
+        from PIL import Image
+        import io as _io
+        im = Image.open(_io.BytesIO(raw)).convert("RGBA")
+        im.thumbnail((lado, lado), Image.LANCZOS)
+        fundo = Image.new("RGBA", (lado, lado), (255, 255, 255, 255))
+        fundo.paste(im, ((lado - im.width) // 2, (lado - im.height) // 2), im)
+        buf = _io.BytesIO()
+        fundo.convert("RGB").save(buf, format="JPEG", quality=90)
+        return buf.getvalue()
+    except Exception:
+        return None
+
+def _ml_foto_para_pic(token, conta_nome, foto):
+    """Converte uma foto (URL http ou data:base64) num picture do ML, quadrada em
+    1600 branco e enviada como arquivo. Cacheia por (conta, foto). Fallback: se algo
+    falhar e a foto for URL http, devolve {'source': url} (o ML busca direto)."""
+    import hashlib as _hl
+    try:
+        if foto.startswith("data:image"):
+            import base64 as _b64
+            raw = _b64.b64decode(foto.split(",", 1)[1])
+            chave = "b64:" + _hl.md5(raw).hexdigest()
+        elif foto.startswith("http"):
+            chave = "url:" + foto
+            raw = None
+        else:
+            return None
+        ckey = (conta_nome, chave)
+        if ckey in _ML_PIC_CACHE:
+            return {"id": _ML_PIC_CACHE[ckey]}
+        if raw is None:
+            rr = requests.get(foto, timeout=25)
+            if rr.status_code != 200:
+                return {"source": foto}
+            raw = rr.content
+        quadrada = _ml_quadrar_bytes(raw)
+        pid = _ml_upload_bytes(token, quadrada, "image/jpeg", "jpg") if quadrada else None
+        if pid:
+            _ML_PIC_CACHE[ckey] = pid
+            return {"id": pid}
+        return {"source": foto} if foto.startswith("http") else None
+    except Exception:
+        return {"source": foto} if foto.startswith("http") else None
 
 # Instala Chromium automaticamente no Railway se não existir
 def _ensure_playwright_chromium():
@@ -2667,17 +2712,15 @@ if USE_FLASK:
                 "authUrl": f"https://wrx-api-production.up.railway.app/integracoes/mercadolivre/oauth?conta={conta_nome}",
                 "grupo": "pending_publish"
             }), 401
-        # Fotos: URL http vira source; foto editada (base64/data: URL) sobe pro ML e vira id.
+        # Fotos: todas viram quadrado branco 1600×1600 e sobem pro ML (cache por conta).
+        # Fallback p/ {'source': url} se quadrar/subir falhar (não quebra a publicação).
         _pics = []
         for _f in (data.get("fotos", []) or [])[:10]:
             if not _f:
                 continue
-            if _f.startswith("http://") or _f.startswith("https://"):
-                _pics.append({"source": _f})
-            elif _f.startswith("data:image"):
-                _pid = _ml_upload_picture(token, _f)
-                if _pid:
-                    _pics.append({"id": _pid})
+            _p = _ml_foto_para_pic(token, conta_nome, _f)
+            if _p:
+                _pics.append(_p)
         preco = float(data.get("preco", 0) or 0)
         if preco <= 0:
             return jsonify({"ok": False, "erro": "preco invalido"}), 400
