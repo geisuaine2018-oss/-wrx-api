@@ -13,6 +13,30 @@ import json, re, os, subprocess, time, threading, sys
 import requests
 from datetime import datetime as _datetime
 
+# Cache em memória dos atributos de categoria do ML (evita rechamar a cada anúncio do mesmo SKU)
+_ML_CAT_ATTRS_CACHE = {}
+
+def _ml_categoria_attrs(cat_id):
+    """Retorna {attr_id: attr} dos atributos da categoria ML. Usado para tratar
+    atributos de VALOR FIXO (ex: VEHICLE_TYPE em algumas categorias), que dão
+    'Validation error' se mandarmos um valor/id divergente do fixado pela categoria."""
+    if not cat_id:
+        return {}
+    cached = _ML_CAT_ATTRS_CACHE.get(cat_id)
+    if cached is not None:
+        return cached
+    m = {}
+    try:
+        rr = requests.get(f"https://api.mercadolibre.com/categories/{cat_id}/attributes", timeout=15)
+        if rr.status_code == 200:
+            for a in (rr.json() or []):
+                if isinstance(a, dict) and a.get("id"):
+                    m[a["id"]] = a
+    except Exception:
+        pass
+    _ML_CAT_ATTRS_CACHE[cat_id] = m
+    return m
+
 # Instala Chromium automaticamente no Railway se não existir
 def _ensure_playwright_chromium():
     if os.name != "posix":
@@ -2632,9 +2656,26 @@ if USE_FLASK:
         modelo_form = (data.get("modelo") or "").strip()
         if "MODEL" not in attr_ids:
             attrs.append({"id": "MODEL", "value_name": modelo_form or marca_form or _titulo[:60] or "Universal"})
-        # VEHICLE_TYPE: obrigatório em categorias de autopeça (ex: MLB63512) — sem ele dá "Validation error"
+        # VEHICLE_TYPE: obrigatório em muitas categorias de autopeça, MAS algumas o definem
+        # como valor FIXO (ex: MLB457680 -> "Agrícola"). Mandar valor divergente dá "Validation error".
+        # Consultamos a categoria: fixo -> não manda (o ML preenche); lista -> manda o value_id certo.
         if "VEHICLE_TYPE" not in attr_ids:
-            attrs.append({"id": "VEHICLE_TYPE", "value_name": "Carro/Caminhonete"})
+            _cat_attrs = _ml_categoria_attrs(ml_payload["category_id"])
+            _vt = _cat_attrs.get("VEHICLE_TYPE")
+            if _vt is None:
+                # categoria não lista VEHICLE_TYPE: mantém o comportamento antigo (autopeças genéricas)
+                if not _cat_attrs:
+                    attrs.append({"id": "VEHICLE_TYPE", "value_name": "Carro/Caminhonete"})
+            else:
+                _tags = _vt.get("tags") or {}
+                _vals = _vt.get("values") or []
+                if _tags.get("fixed"):
+                    pass  # ML define sozinho -> não enviar
+                elif _vals:
+                    _esc = next((v for v in _vals if "carro" in (v.get("name") or "").lower()), _vals[0])
+                    attrs.append({"id": "VEHICLE_TYPE", "value_id": _esc.get("id"), "value_name": _esc.get("name")})
+                else:
+                    attrs.append({"id": "VEHICLE_TYPE", "value_name": "Carro/Caminhonete"})
         _pkg_defaults = [
             ("seller_package_height", f"{int(data.get('package_height') or 30)} cm"),
             ("seller_package_width",  f"{int(data.get('package_width')  or 30)} cm"),
