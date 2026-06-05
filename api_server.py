@@ -37,6 +37,27 @@ def _ml_categoria_attrs(cat_id):
     _ML_CAT_ATTRS_CACHE[cat_id] = m
     return m
 
+def _ml_preferir_categoria_carro(candidatos):
+    """Entre as categorias candidatas do predictor do ML, prefere a de VEHICLE_TYPE
+    'Carro/Caminhonete'. Muitas categorias de autopeça são iguais e só mudam o tipo de
+    veículo (Agrícola, Linha Pesada, Carro/Caminhonete); como é desmonte de CARRO,
+    sempre queremos a de carro. Retorna o candidato escolhido (ou None p/ usar o 1º)."""
+    fallback = None
+    for c in (candidatos or []):
+        cid = c.get("category_id")
+        if not cid:
+            continue
+        vt = _ml_categoria_attrs(cid).get("VEHICLE_TYPE")
+        if vt is None:
+            # categoria sem VEHICLE_TYPE (autopeça genérica) serve de bom fallback
+            if fallback is None:
+                fallback = c
+            continue
+        nomes = [(v.get("name") or "").lower() for v in (vt.get("values") or [])]
+        if any("carro" in n or "caminhon" in n for n in nomes):
+            return c
+    return fallback
+
 # Instala Chromium automaticamente no Railway se não existir
 def _ensure_playwright_chromium():
     if os.name != "posix":
@@ -2473,16 +2494,23 @@ if USE_FLASK:
         hdrs = {"Accept": "application/json"}
         if token:
             hdrs["Authorization"] = f"Bearer {token}"
+        # Busca mais candidatas que o pedido (mín. 6) p/ poder preferir a categoria de CARRO
+        try:
+            _fetch_limit = max(int(limit or 1), 6)
+        except Exception:
+            _fetch_limit = 6
         try:
             _r = requests.get(
                 f"https://api.mercadolibre.com/sites/{site_id}/domain_discovery/search",
-                params={"limit": limit, "q": q}, headers=hdrs, timeout=10
+                params={"limit": _fetch_limit, "q": q}, headers=hdrs, timeout=10
             )
             if _r.status_code == 200:
-                _data = _r.json()
-                if _data:
-                    return jsonify(_data[0])
-                return jsonify({"erro": "sem categoria"}), 404
+                _data = _r.json() or []
+                if not _data:
+                    return jsonify({"erro": "sem categoria"}), 404
+                # Desmonte de carro: prefere a candidata com VEHICLE_TYPE Carro/Caminhonete
+                _escolhida = _ml_preferir_categoria_carro(_data) or _data[0]
+                return jsonify(_escolhida)
             return jsonify({"erro": f"ML {_r.status_code}"}), _r.status_code
         except Exception as _e:
             return jsonify({"erro": str(_e)}), 500
