@@ -469,8 +469,9 @@ def get_blueprint():
         sp = _shopee_call(shop, "/api/v2/logistics/get_shipping_parameter", {"order_sn": order_sn})
         tn = _shopee_call(shop, "/api/v2/logistics/get_tracking_number", {"order_sn": order_sn})
         od = _shopee_call(shop, "/api/v2/order/get_order_detail",
-                          {"order_sn_list": order_sn, "response_optional_fields": "order_status"})
-        r = jsonify({"shipping_parameter": sp, "tracking_number": tn, "order_detail": od})
+                          {"order_sn_list": order_sn, "response_optional_fields": "order_status,shipping_carrier"})
+        ti = _shopee_call(shop, "/api/v2/logistics/get_tracking_info", {"order_sn": order_sn})
+        r = jsonify({"shipping_parameter": sp, "tracking_number": tn, "order_detail": od, "tracking_info": ti})
         r.headers["Access-Control-Allow-Origin"] = "*"; return r
 
     @bp.route("/integracoes/shopee-etiqueta-diag", methods=["GET", "OPTIONS"])
