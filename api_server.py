@@ -2611,15 +2611,29 @@ if USE_FLASK:
                             cat_nome = (esc or {}).get("category_name", "") or ""
                     except Exception:
                         pass
+                nome = j.get("name") or ""
+                marca = _at("BRAND") or _at("VEHICLE_BRAND") or _at("MANUFACTURER")
+                modelo = _at("MODEL") or _at("VEHICLE_MODEL")
+                if not modelo and marca and nome:
+                    mm = re.search(re.escape(marca) + r'\s+([A-Za-zÀ-ÿ0-9\-]{2,})', nome, re.I)
+                    if mm:
+                        modelo = mm.group(1)
+                # Posição (lado / eixo) a partir do atributo do ML + do nome
+                _low = ((_at("VEHICLE_PARTS_POSITION") or "") + " " + nome).lower()
+                pos_lado = "Direita" if "direit" in _low else ("Esquerda" if "esquerd" in _low else "")
+                pos_eixo = "Traseira" if ("trasei" in _low or "vigia" in _low) else ("Dianteira" if "diantei" in _low else "")
                 return {
                     "id": j.get("id") or pid,
-                    "nome": j.get("name") or "",
+                    "nome": nome,
                     "category_id": cat,
                     "categoria_nome": cat_nome,
                     "domain_id": j.get("domain_id") or "",
-                    "marca": _at("BRAND"),
-                    "modelo": _at("MODEL"),
+                    "marca": marca,
+                    "modelo": modelo,
                     "part_number": _at("PART_NUMBER"),
+                    "oem": _at("OEM") or _at("PART_NUMBER"),
+                    "posicao_lado": pos_lado,
+                    "posicao_eixo": pos_eixo,
                     "atributos": [{"id": a.get("id"), "nome": a.get("name"), "valor": a.get("value_name")}
                                   for a in attrs if a.get("value_name")],
                     "fotos": [(p.get("secure_url") or p.get("url")) for p in pics if (p.get("secure_url") or p.get("url"))],
