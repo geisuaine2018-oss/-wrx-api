@@ -504,17 +504,30 @@ def get_blueprint():
         if not (order_sn and shop):
             return Response('{"erro":"order_sn e shop obrigatorios"}', status=400,
                             mimetype="application/json", headers={"Access-Control-Allow-Origin": "*"})
+        # 0) GARANTE o despacho (ship_order) — sem tracking a etiqueta NUNCA fica pronta
+        #    (erro "logistics.package_can_not_print"). Método dropoff (info_needed vazio).
+        tn = _shopee_call(shop, "/api/v2/logistics/get_tracking_number", {"order_sn": order_sn})
+        tracking = (((tn or {}).get("response", {}) or {}).get("tracking_number") or "")
+        if not tracking:
+            sp = _shopee_call(shop, "/api/v2/logistics/get_shipping_parameter", {"order_sn": order_sn})
+            resp = (sp or {}).get("response", {}) or {}
+            # escolhe método disponível: dropoff (padrão) ou pickup
+            if resp.get("pickup") is not None and resp.get("dropoff") is None:
+                _shopee_post(shop, "/api/v2/logistics/ship_order", {"order_sn": order_sn, "pickup": {}})
+            else:
+                _shopee_post(shop, "/api/v2/logistics/ship_order", {"order_sn": order_sn, "dropoff": {}})
+            time.sleep(3)
         body = {"order_list": [{"order_sn": order_sn, "shipping_document_type": "NORMAL_AIR_WAYBILL"}]}
         # 1) cria o documento (assíncrono na Shopee)
         _shopee_post(shop, "/api/v2/logistics/create_shipping_document", body)
-        # 2) espera ficar READY (create é assíncrono)
-        for _ in range(6):
+        # 2) espera ficar READY (create é assíncrono, pode demorar após o ship_order)
+        for _ in range(12):
             res = _shopee_post(shop, "/api/v2/logistics/get_shipping_document_result", body)
             rl = ((res or {}).get("response", {}) or {}).get("result_list", [])
             status = rl[0].get("status") if rl else None
             if status == "READY":
                 break
-            time.sleep(2)
+            time.sleep(3)
         # 3) baixa o PDF
         r = _shopee_post(shop, "/api/v2/logistics/download_shipping_document", body, raw=True)
         if r is not None and r.status_code == 200 and r.headers.get("content-type", "").lower().startswith("application/pdf"):
