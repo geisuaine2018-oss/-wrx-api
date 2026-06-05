@@ -468,7 +468,9 @@ def get_blueprint():
         shop = request.args.get("shop", "").strip()
         sp = _shopee_call(shop, "/api/v2/logistics/get_shipping_parameter", {"order_sn": order_sn})
         tn = _shopee_call(shop, "/api/v2/logistics/get_tracking_number", {"order_sn": order_sn})
-        r = jsonify({"shipping_parameter": sp, "tracking_number": tn})
+        od = _shopee_call(shop, "/api/v2/order/get_order_detail",
+                          {"order_sn_list": order_sn, "response_optional_fields": "order_status"})
+        r = jsonify({"shipping_parameter": sp, "tracking_number": tn, "order_detail": od})
         r.headers["Access-Control-Allow-Origin"] = "*"; return r
 
     @bp.route("/integracoes/shopee-etiqueta-diag", methods=["GET", "OPTIONS"])
@@ -484,7 +486,7 @@ def get_blueprint():
         info = (((param or {}).get("response", {}) or {}).get("result_list", []) or [{}])[0].get("info_list", [{}])
         tipos = info[0].get("selectable_shipping_document_type") if info else None
         sugerido = info[0].get("suggest_shipping_document_type") if info else None
-        tipo = sugerido or (tipos[0] if tipos else "NORMAL_AIR_WAYBILL")
+        tipo = request.args.get("tipo", "").strip() or sugerido or (tipos[0] if tipos else "NORMAL_AIR_WAYBILL")
         bt = {"order_list": [{"order_sn": order_sn, "shipping_document_type": tipo}]}
         create = _shopee_post(shop, "/api/v2/logistics/create_shipping_document", bt)
         time.sleep(2)
