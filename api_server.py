@@ -2641,6 +2641,50 @@ if USE_FLASK:
         except Exception as _e:
             return jsonify({"erro": str(_e)}), 500
 
+    @app.route("/integracoes/mercadolivre/_diag-foto", methods=["GET", "OPTIONS"])
+    def ml_diag_foto():
+        """DIAGNÓSTICO temporário: roda baixar->quadrar->subir e diz onde quebra."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        url = (request.args.get("url") or "").strip()
+        conta = request.args.get("conta") or "default"
+        out = {"url": url, "etapas": {}}
+        token = _ml_get_user_token(conta)
+        out["tem_token"] = bool(token)
+        try:
+            rr = requests.get(url, timeout=25)
+            out["etapas"]["download"] = {"status": rr.status_code, "bytes": len(rr.content)}
+            raw = rr.content if rr.status_code == 200 else None
+        except Exception as e:
+            out["etapas"]["download"] = {"erro": str(e)}
+            raw = None
+        if raw:
+            try:
+                from PIL import Image
+                import io as _io
+                im = Image.open(_io.BytesIO(raw)).convert("RGBA")
+                im.thumbnail((1600, 1600), Image.LANCZOS)
+                fundo = Image.new("RGBA", (1600, 1600), (255, 255, 255, 255))
+                fundo.paste(im, ((1600 - im.width) // 2, (1600 - im.height) // 2), im)
+                buf = _io.BytesIO()
+                fundo.convert("RGB").save(buf, format="JPEG", quality=90)
+                sq = buf.getvalue()
+                out["etapas"]["quadrar"] = {"ok": True, "bytes": len(sq)}
+            except Exception as e:
+                out["etapas"]["quadrar"] = {"erro": repr(e)}
+                sq = None
+            if sq and token:
+                try:
+                    up = requests.post(
+                        "https://api.mercadolibre.com/pictures/items/upload",
+                        headers={"Authorization": f"Bearer {token}"},
+                        files={"file": ("foto.jpg", sq, "image/jpeg")}, timeout=40
+                    )
+                    out["etapas"]["upload"] = {"status": up.status_code, "resp": up.text[:300]}
+                except Exception as e:
+                    out["etapas"]["upload"] = {"erro": repr(e)}
+        return jsonify(out)
+
     @app.route("/integracoes/mercadolivre/status-sku", methods=["GET", "OPTIONS"])
     def ml_status_sku():
         if request.method == "OPTIONS":
