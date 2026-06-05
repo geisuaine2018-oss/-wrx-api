@@ -2824,6 +2824,31 @@ if USE_FLASK:
                                       json=_fi, timeout=15)
                     except Exception:
                         pass
+                # Grava no banco (ml_anuncios) com o SKU BASE p/ o card do estoque
+                # refletir NA HORA (sem esperar o sync). Service key prevalece (evita RLS).
+                try:
+                    _sku_base = (data.get("skuInterno") or sku.split("-")[0] or sku).strip()
+                    _thumb = item.get("thumbnail") or ""
+                    if not _thumb:
+                        _pp = item.get("pictures") or []
+                        if _pp:
+                            _thumb = _pp[0].get("secure_url") or _pp[0].get("url") or ""
+                    _sb_key = os.environ.get("SUPABASE_SERVICE_KEY") or _WRX_SB_KEY
+                    requests.post(
+                        f"{_WRX_SB_URL}/rest/v1/ml_anuncios?on_conflict=ml_id,conta",
+                        headers={"apikey": _sb_key, "Authorization": f"Bearer {_sb_key}",
+                                 "Content-Type": "application/json",
+                                 "Prefer": "resolution=merge-duplicates"},
+                        json={
+                            "ml_id": item_id, "conta": conta_nome, "sku": _sku_base,
+                            "titulo": _titulo, "preco": preco,
+                            "estoque": int(data.get("quantidade", 1) or 1),
+                            "status": item.get("status", "active"),
+                            "thumbnail": _thumb, "vinculado": True,
+                        }, timeout=8
+                    )
+                except Exception:
+                    pass
                 return jsonify({"ok": True, "mlId": item_id, "item": item, "conta": conta_nome})
             _err = _r.json() if _r.headers.get("content-type", "").startswith("application/json") else {}
             return jsonify({
