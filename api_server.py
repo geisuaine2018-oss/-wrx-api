@@ -58,6 +58,27 @@ def _ml_preferir_categoria_carro(candidatos):
             return c
     return fallback
 
+def _ml_upload_picture(token, data_url):
+    """Sobe uma foto base64 (data: URL) pro serviço de imagens do ML e retorna o id.
+    O ML não aceita data: URL como source — fotos editadas (ex: fundo removido) precisam
+    ser enviadas como arquivo. Retorna o picture id, ou None se falhar."""
+    import base64 as _b64
+    try:
+        header, b64 = data_url.split(",", 1)
+        mime = "image/png" if "image/png" in header else "image/jpeg"
+        ext = "png" if mime == "image/png" else "jpg"
+        raw = _b64.b64decode(b64)
+        rr = requests.post(
+            "https://api.mercadolibre.com/pictures/items/upload",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": (f"foto.{ext}", raw, mime)}, timeout=40
+        )
+        if rr.status_code in (200, 201):
+            return (rr.json() or {}).get("id")
+    except Exception:
+        pass
+    return None
+
 # Instala Chromium automaticamente no Railway se não existir
 def _ensure_playwright_chromium():
     if os.name != "posix":
@@ -2646,7 +2667,17 @@ if USE_FLASK:
                 "authUrl": f"https://wrx-api-production.up.railway.app/integracoes/mercadolivre/oauth?conta={conta_nome}",
                 "grupo": "pending_publish"
             }), 401
-        fotos = [f for f in data.get("fotos", []) if f and (f.startswith("http://") or f.startswith("https://"))]
+        # Fotos: URL http vira source; foto editada (base64/data: URL) sobe pro ML e vira id.
+        _pics = []
+        for _f in (data.get("fotos", []) or [])[:10]:
+            if not _f:
+                continue
+            if _f.startswith("http://") or _f.startswith("https://"):
+                _pics.append({"source": _f})
+            elif _f.startswith("data:image"):
+                _pid = _ml_upload_picture(token, _f)
+                if _pid:
+                    _pics.append({"id": _pid})
         preco = float(data.get("preco", 0) or 0)
         if preco <= 0:
             return jsonify({"ok": False, "erro": "preco invalido"}), 400
@@ -2663,8 +2694,8 @@ if USE_FLASK:
             "seller_custom_field": sku,
             "shipping": {"mode": "me2", "free_shipping": bool(data.get("freeShipping", False))}
         }
-        if fotos:
-            ml_payload["pictures"] = [{"source": f} for f in fotos[:10]]
+        if _pics:
+            ml_payload["pictures"] = _pics
         attrs = list(data.get("attributes") or [])
         attr_ids = {a.get("id") for a in attrs}
         # Atributos obrigatórios: PART_NUMBER, BRAND, MODEL, dimensões de embalagem
