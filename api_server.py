@@ -2618,8 +2618,8 @@ if USE_FLASK:
                     mm = re.search(re.escape(marca) + r'\s+([A-Za-zÀ-ÿ0-9\-]{2,})', nome, re.I)
                     if mm:
                         modelo = mm.group(1)
-                # Posição (lado / eixo) a partir do atributo do ML + do nome
-                _low = ((_at("VEHICLE_PARTS_POSITION") or "") + " " + nome).lower()
+                # Posição (lado / eixo) a partir do atributo do ML + do nome + da categoria
+                _low = ((_at("VEHICLE_PARTS_POSITION") or "") + " " + nome + " " + (cat_nome or "")).lower()
                 pos_lado = "Direita" if "direit" in _low else ("Esquerda" if "esquerd" in _low else "")
                 pos_eixo = "Traseira" if ("trasei" in _low or "vigia" in _low) else ("Dianteira" if "diantei" in _low else "")
                 return {
