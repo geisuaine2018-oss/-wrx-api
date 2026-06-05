@@ -2599,6 +2599,7 @@ if USE_FLASK:
                 # Categoria: o produto de catálogo não traz category_id direto.
                 # Descobre pelo predizer (que prefere categoria de carro).
                 cat = j.get("category_id") or ""
+                cat_nome = ""
                 if not cat and j.get("name"):
                     try:
                         ds = requests.get("https://api.mercadolibre.com/sites/MLB/domain_discovery/search",
@@ -2607,12 +2608,14 @@ if USE_FLASK:
                             cands = ds.json() or []
                             esc = _ml_preferir_categoria_carro(cands) or (cands[0] if cands else {})
                             cat = (esc or {}).get("category_id", "") or ""
+                            cat_nome = (esc or {}).get("category_name", "") or ""
                     except Exception:
                         pass
                 return {
                     "id": j.get("id") or pid,
                     "nome": j.get("name") or "",
                     "category_id": cat,
+                    "categoria_nome": cat_nome,
                     "domain_id": j.get("domain_id") or "",
                     "marca": _at("BRAND"),
                     "modelo": _at("MODEL"),
