@@ -487,11 +487,19 @@ def get_blueprint():
         tipos = info[0].get("selectable_shipping_document_type") if info else None
         sugerido = info[0].get("suggest_shipping_document_type") if info else None
         tipo = request.args.get("tipo", "").strip() or sugerido or (tipos[0] if tipos else "NORMAL_AIR_WAYBILL")
-        bt = {"order_list": [{"order_sn": order_sn, "shipping_document_type": tipo}]}
+        # pega o package_number (muitos pedidos exigem no create)
+        od = _shopee_call(shop, "/api/v2/order/get_order_detail",
+                          {"order_sn_list": order_sn, "response_optional_fields": "package_list"})
+        pkgs = (((od or {}).get("response", {}) or {}).get("order_list", [{}]) or [{}])[0].get("package_list", []) or []
+        pkg = pkgs[0].get("package_number") if pkgs else None
+        item = {"order_sn": order_sn, "shipping_document_type": tipo}
+        if pkg:
+            item["package_number"] = pkg
+        bt = {"order_list": [item]}
         create = _shopee_post(shop, "/api/v2/logistics/create_shipping_document", bt)
         time.sleep(2)
         result = _shopee_post(shop, "/api/v2/logistics/get_shipping_document_result", bt)
-        r = jsonify({"tipo_usado": tipo, "param": param, "create": create, "result": result})
+        r = jsonify({"tipo_usado": tipo, "package_number": pkg, "param": param, "create": create, "result": result})
         r.headers["Access-Control-Allow-Origin"] = "*"; return r
 
     @bp.route("/integracoes/shopee-etiqueta", methods=["GET", "OPTIONS"])
