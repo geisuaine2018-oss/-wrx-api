@@ -459,6 +459,18 @@ def get_blueprint():
                 daemon=True).start()
         return jsonify({"ok": True}), 200
 
+    @bp.route("/integracoes/shopee-envio-diag", methods=["GET", "OPTIONS"])
+    def shopee_envio_diag():
+        """Diagnóstico do ENVIO (logística) do pedido: método (pickup/dropoff), se já tem tracking."""
+        if request.method == "OPTIONS":
+            return _cors()
+        order_sn = request.args.get("order_sn", "").strip()
+        shop = request.args.get("shop", "").strip()
+        sp = _shopee_call(shop, "/api/v2/logistics/get_shipping_parameter", {"order_sn": order_sn})
+        tn = _shopee_call(shop, "/api/v2/logistics/get_tracking_number", {"order_sn": order_sn})
+        r = jsonify({"shipping_parameter": sp, "tracking_number": tn})
+        r.headers["Access-Control-Allow-Origin"] = "*"; return r
+
     @bp.route("/integracoes/shopee-etiqueta-diag", methods=["GET", "OPTIONS"])
     def shopee_etiqueta_diag():
         """Diagnóstico do fluxo de etiqueta Shopee: tipos suportados, create, result."""
