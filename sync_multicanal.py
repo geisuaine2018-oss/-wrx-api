@@ -543,30 +543,50 @@ def get_blueprint():
         pkgs = (((od or {}).get("response", {}) or {}).get("order_list", [{}]) or [{}])[0].get("package_list", []) or []
         pkg = pkgs[0].get("package_number") if pkgs else None
 
-        # 2) tenta cada tipo (com e sem package): cria, espera READY, baixa. Retorna o 1º PDF.
+        def _pdf_resp(r):
+            return (r is not None and r.status_code == 200
+                    and r.headers.get("content-type", "").lower().startswith("application/pdf"))
+        def _combos():
+            for tipo in tipos:
+                for usar_pkg in ([True, False] if pkg else [False]):
+                    item = {"order_sn": order_sn, "shipping_document_type": tipo}
+                    if usar_pkg and pkg:
+                        item["package_number"] = pkg
+                    yield {"order_list": [item]}
+
         ultimo = "sem resposta"
-        for tipo in tipos:
-            for usar_pkg in ([True, False] if pkg else [False]):
-                item = {"order_sn": order_sn, "shipping_document_type": tipo}
-                if usar_pkg and pkg:
-                    item["package_number"] = pkg
-                body = {"order_list": [item]}
-                _shopee_post(shop, "/api/v2/logistics/create_shipping_document", body)
-                for _ in range(6):
-                    res = _shopee_post(shop, "/api/v2/logistics/get_shipping_document_result", body)
-                    rl = ((res or {}).get("response", {}) or {}).get("result_list", [])
-                    if rl and rl[0].get("status") == "READY":
-                        break
-                    time.sleep(3)
-                r = _shopee_post(shop, "/api/v2/logistics/download_shipping_document", body, raw=True)
-                if r is not None and r.status_code == 200 and r.headers.get("content-type", "").lower().startswith("application/pdf"):
-                    return Response(r.content, mimetype="application/pdf", headers={
-                        "Access-Control-Allow-Origin": "*",
-                        "Content-Disposition": f'inline; filename="etiqueta_shopee_{order_sn}.pdf"'})
-                try:
-                    ultimo = (r.json() if r is not None else {}).get("message", "")[:160] or ultimo
-                except Exception:
-                    ultimo = (r.text[:160] if r is not None else ultimo)
+        # FASE 1 (rápida): doc pode JÁ existir (gerado antes/painel/cron) → só baixa
+        for body in _combos():
+            r = _shopee_post(shop, "/api/v2/logistics/download_shipping_document", body, raw=True)
+            if _pdf_resp(r):
+                return Response(r.content, mimetype="application/pdf", headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Content-Disposition": f'inline; filename="etiqueta_shopee_{order_sn}.pdf"'})
+            try:
+                ultimo = (r.json() if r is not None else {}).get("message", "")[:160] or ultimo
+            except Exception:
+                ultimo = (r.text[:160] if r is not None else ultimo)
+        # FASE 2: não existe ainda → cria no tipo sugerido e espera pouco (evita timeout)
+        _item = {"order_sn": order_sn, "shipping_document_type": tipos[0] if tipos else "NORMAL_AIR_WAYBILL"}
+        if pkg:
+            _item["package_number"] = pkg
+        body = {"order_list": [_item]}
+        _shopee_post(shop, "/api/v2/logistics/create_shipping_document", body)
+        for _ in range(4):
+            res = _shopee_post(shop, "/api/v2/logistics/get_shipping_document_result", body)
+            rl = ((res or {}).get("response", {}) or {}).get("result_list", [])
+            if rl and rl[0].get("status") == "READY":
+                break
+            time.sleep(3)
+        r = _shopee_post(shop, "/api/v2/logistics/download_shipping_document", body, raw=True)
+        if _pdf_resp(r):
+            return Response(r.content, mimetype="application/pdf", headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Disposition": f'inline; filename="etiqueta_shopee_{order_sn}.pdf"'})
+        try:
+            ultimo = (r.json() if r is not None else {}).get("message", "")[:160] or ultimo
+        except Exception:
+            ultimo = (r.text[:160] if r is not None else ultimo)
         return Response('{"erro":"etiqueta nao disponivel","detalhe":"%s"}' % ultimo, status=422,
                         mimetype="application/json", headers={"Access-Control-Allow-Origin": "*"})
 
