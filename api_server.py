@@ -2581,6 +2581,66 @@ if USE_FLASK:
         except Exception as _e:
             return jsonify({"erro": str(_e)}), 500
 
+    @app.route("/integracoes/mercadolivre/catalogo", methods=["GET", "OPTIONS"])
+    def ml_catalogo():
+        """Puxa a ficha de um PRODUTO DE CATÁLOGO do ML — igual ao PartsHub.
+        Aceita CÓDIGO (ex: MLB12345678, com texto/URL junto) OU NOME (busca no catálogo).
+        Por código: devolve a ficha direta. Por nome: busca e devolve a 1ª ficha + opções."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        bruto = (request.args.get("id") or request.args.get("q") or "").strip()
+        if not bruto:
+            return jsonify({"erro": "informe o codigo ou nome"}), 400
+        token = _get_ml_token()
+        hdrs = {"Accept": "application/json"}
+        if token:
+            hdrs["Authorization"] = f"Bearer {token}"
+
+        def _ficha(pid):
+            try:
+                r = requests.get(f"https://api.mercadolibre.com/products/{pid}", headers=hdrs, timeout=12)
+                if r.status_code != 200:
+                    return None
+                j = r.json() or {}
+                attrs = j.get("attributes") or []
+                pics = j.get("pictures") or []
+                _at = lambda aid: next((x.get("value_name") for x in attrs if x.get("id") == aid and x.get("value_name")), "")
+                return {
+                    "id": j.get("id") or pid,
+                    "nome": j.get("name") or "",
+                    "category_id": j.get("category_id") or "",
+                    "domain_id": j.get("domain_id") or "",
+                    "marca": _at("BRAND"),
+                    "modelo": _at("MODEL"),
+                    "part_number": _at("PART_NUMBER"),
+                    "atributos": [{"id": a.get("id"), "nome": a.get("name"), "valor": a.get("value_name")}
+                                  for a in attrs if a.get("value_name")],
+                    "fotos": [(p.get("secure_url") or p.get("url")) for p in pics if (p.get("secure_url") or p.get("url"))],
+                }
+            except Exception:
+                return None
+
+        m = re.search(r'MLB\d{4,}', bruto, re.I)
+        if m:
+            f = _ficha(m.group(0).upper())
+            if not f:
+                return jsonify({"erro": "catalogo nao encontrado", "id": m.group(0).upper()}), 404
+            return jsonify({"ok": True, "produto": f, "resultados": [{"id": f["id"], "nome": f["nome"]}]})
+
+        # Busca por NOME no catálogo
+        try:
+            rs = requests.get("https://api.mercadolibre.com/products/search",
+                              params={"site_id": "MLB", "status": "active", "q": bruto},
+                              headers=hdrs, timeout=12)
+            resultados = []
+            if rs.status_code == 200:
+                for p in (rs.json().get("results") or [])[:8]:
+                    resultados.append({"id": p.get("id"), "nome": p.get("name")})
+            produto = _ficha(resultados[0]["id"]) if resultados else None
+            return jsonify({"ok": True, "resultados": resultados, "produto": produto})
+        except Exception as _e:
+            return jsonify({"erro": str(_e)}), 500
+
     @app.route("/integracoes/mercadolivre/status-sku", methods=["GET", "OPTIONS"])
     def ml_status_sku():
         if request.method == "OPTIONS":
