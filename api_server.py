@@ -5588,6 +5588,22 @@ CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
         t.start()
         print("[STARTUP] cron WhatsApp ativo (checa novidades a cada 2 min)")
 
+    def _cron_shopee_etiquetas_loop():
+        """Thread: a cada 15 min pré-gera etiquetas Shopee (ship_order + create_shipping_document),
+        pra a etiqueta já estar pronta na hora da conferência (a Shopee demora pra liberar)."""
+        import threading
+        def _loop():
+            time.sleep(60)  # espera o servidor subir
+            while True:
+                try:
+                    requests.get(f"http://127.0.0.1:{PORT}/integracoes/shopee-pregerar-etiquetas", timeout=300)
+                except Exception as _e:
+                    print(f"[CRON-SHOPEE-ETQ] erro: {_e}")
+                time.sleep(900)  # 15 minutos
+        t = threading.Thread(target=_loop, daemon=True)
+        t.start()
+        print("[STARTUP] cron Shopee etiquetas ativo (pre-gera a cada 15 min)")
+
     def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace") if hasattr(sys.stdout, "reconfigure") else None
         print(f"WRX-Search API Server - porta {PORT}")
@@ -5596,6 +5612,7 @@ CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
         print(f"  http://localhost:{PORT}/ping")
         host = "0.0.0.0" if _IS_RAILWAY else "127.0.0.1"
         _cron_whatsapp_loop()
+        _cron_shopee_etiquetas_loop()
         app.run(host=host, port=PORT, debug=False, threaded=True)
 
 else:

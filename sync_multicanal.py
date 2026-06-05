@@ -573,6 +573,46 @@ def get_blueprint():
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
 
+    @bp.route("/integracoes/shopee-pregerar-etiquetas", methods=["GET", "POST", "OPTIONS"])
+    def shopee_pregerar_etiquetas():
+        """CRON: pré-gera as etiquetas dos pedidos Shopee a despachar (ship_order + create_shipping_document).
+        A Shopee demora pra validar o tracking/gerar o doc — pré-gerando, na conferência a etiqueta já está pronta."""
+        if request.method == "OPTIONS":
+            return _cors()
+        feitos = []; jatinha = []; erros = []
+        agora = int(time.time())
+        for shop in SHOPS_SHOPEE:
+            sns = []
+            for status in ("READY_TO_SHIP", "PROCESSED"):
+                d = _shopee_call(shop, "/api/v2/order/get_order_list", {
+                    "order_status": status, "page_size": 50, "time_range_field": "create_time",
+                    "time_from": agora - 14 * 86400, "time_to": agora})
+                for o in ((d or {}).get("response", {}) or {}).get("order_list", []):
+                    if o.get("order_sn"):
+                        sns.append(o["order_sn"])
+            for sn in sns:
+                try:
+                    tn = _shopee_call(shop, "/api/v2/logistics/get_tracking_number", {"order_sn": sn})
+                    tracking = (((tn or {}).get("response", {}) or {}).get("tracking_number") or "")
+                    if not tracking:
+                        sp = _shopee_call(shop, "/api/v2/logistics/get_shipping_parameter", {"order_sn": sn})
+                        resp = (sp or {}).get("response", {}) or {}
+                        if resp.get("pickup") is not None and resp.get("dropoff") is None:
+                            _shopee_post(shop, "/api/v2/logistics/ship_order", {"order_sn": sn, "pickup": {}})
+                        else:
+                            _shopee_post(shop, "/api/v2/logistics/ship_order", {"order_sn": sn, "dropoff": {}})
+                        feitos.append(sn)
+                    else:
+                        jatinha.append(sn)
+                    # inicia a geração do documento (assíncrono) — não baixa aqui
+                    _shopee_post(shop, "/api/v2/logistics/create_shipping_document",
+                                 {"order_list": [{"order_sn": sn, "shipping_document_type": "NORMAL_AIR_WAYBILL"}]})
+                except Exception as e:
+                    erros.append({"order_sn": sn, "erro": str(e)[:120]})
+        r = jsonify({"ok": True, "despachados_agora": len(feitos), "ja_despachados": len(jatinha), "erros": erros})
+        r.headers["Access-Control-Allow-Origin"] = "*"
+        return r
+
     @bp.route("/integracoes/ml-a-enviar", methods=["GET", "OPTIONS"])
     def ml_a_enviar():
         """Lista pedidos ML prontos pra enviar (ready_to_ship) — pra tela de expedição.
