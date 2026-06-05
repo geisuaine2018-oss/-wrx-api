@@ -76,53 +76,44 @@ def _ml_upload_bytes(token, raw, mime="image/jpeg", ext="jpg"):
         pass
     return None
 
-def _ml_quadrar_bytes(raw, lado=1600):
-    """Centraliza a imagem num quadrado branco lado×lado (padrão ML). Compositа a
-    transparência sobre branco (não vira preto). Retorna JPEG bytes, ou None se falhar."""
+def _ml_achatar_branco(raw):
+    """Achata a transparência sobre branco MANTENDO o tamanho (sem padding —
+    o ML apara bordas brancas, então padding seria inútil). JPEG bytes ou None."""
     try:
         from PIL import Image
         import io as _io
         im = Image.open(_io.BytesIO(raw)).convert("RGBA")
-        im.thumbnail((lado, lado), Image.LANCZOS)
-        fundo = Image.new("RGBA", (lado, lado), (255, 255, 255, 255))
-        fundo.paste(im, ((lado - im.width) // 2, (lado - im.height) // 2), im)
+        fundo = Image.new("RGBA", im.size, (255, 255, 255, 255))
+        fundo.paste(im, (0, 0), im)
         buf = _io.BytesIO()
-        fundo.convert("RGB").save(buf, format="JPEG", quality=90)
+        fundo.convert("RGB").save(buf, format="JPEG", quality=92)
         return buf.getvalue()
     except Exception:
         return None
 
 def _ml_foto_para_pic(token, conta_nome, foto):
-    """Converte uma foto (URL http ou data:base64) num picture do ML, quadrada em
-    1600 branco e enviada como arquivo. Cacheia por (conta, foto). Fallback: se algo
-    falhar e a foto for URL http, devolve {'source': url} (o ML busca direto)."""
+    """URL http -> {'source': url} (o ML busca direto; mesmo resultado).
+    Foto editada (base64) -> achata sobre branco e sobe como arquivo (não tem URL).
+    Cacheia o upload da base64 por (conta, foto)."""
     import hashlib as _hl
     try:
-        if foto.startswith("data:image"):
-            import base64 as _b64
-            raw = _b64.b64decode(foto.split(",", 1)[1])
-            chave = "b64:" + _hl.md5(raw).hexdigest()
-        elif foto.startswith("http"):
-            chave = "url:" + foto
-            raw = None
-        else:
+        if foto.startswith("http"):
+            return {"source": foto}
+        if not foto.startswith("data:image"):
             return None
-        ckey = (conta_nome, chave)
+        import base64 as _b64
+        raw = _b64.b64decode(foto.split(",", 1)[1])
+        ckey = (conta_nome, "b64:" + _hl.md5(raw).hexdigest())
         if ckey in _ML_PIC_CACHE:
             return {"id": _ML_PIC_CACHE[ckey]}
-        if raw is None:
-            rr = requests.get(foto, timeout=25)
-            if rr.status_code != 200:
-                return {"source": foto}
-            raw = rr.content
-        quadrada = _ml_quadrar_bytes(raw)
-        pid = _ml_upload_bytes(token, quadrada, "image/jpeg", "jpg") if quadrada else None
+        flat = _ml_achatar_branco(raw) or raw
+        pid = _ml_upload_bytes(token, flat, "image/jpeg", "jpg")
         if pid:
             _ML_PIC_CACHE[ckey] = pid
             return {"id": pid}
-        return {"source": foto} if foto.startswith("http") else None
+        return None
     except Exception:
-        return {"source": foto} if foto.startswith("http") else None
+        return None
 
 # Instala Chromium automaticamente no Railway se não existir
 def _ensure_playwright_chromium():
@@ -2640,50 +2631,6 @@ if USE_FLASK:
             return jsonify({"ok": True, "resultados": resultados, "produto": produto})
         except Exception as _e:
             return jsonify({"erro": str(_e)}), 500
-
-    @app.route("/integracoes/mercadolivre/_diag-foto", methods=["GET", "OPTIONS"])
-    def ml_diag_foto():
-        """DIAGNÓSTICO temporário: roda baixar->quadrar->subir e diz onde quebra."""
-        if request.method == "OPTIONS":
-            return _options_resp()
-        url = (request.args.get("url") or "").strip()
-        conta = request.args.get("conta") or "default"
-        out = {"url": url, "etapas": {}}
-        token = _ml_get_user_token(conta)
-        out["tem_token"] = bool(token)
-        try:
-            rr = requests.get(url, timeout=25)
-            out["etapas"]["download"] = {"status": rr.status_code, "bytes": len(rr.content)}
-            raw = rr.content if rr.status_code == 200 else None
-        except Exception as e:
-            out["etapas"]["download"] = {"erro": str(e)}
-            raw = None
-        if raw:
-            try:
-                from PIL import Image
-                import io as _io
-                im = Image.open(_io.BytesIO(raw)).convert("RGBA")
-                im.thumbnail((1600, 1600), Image.LANCZOS)
-                fundo = Image.new("RGBA", (1600, 1600), (255, 255, 255, 255))
-                fundo.paste(im, ((1600 - im.width) // 2, (1600 - im.height) // 2), im)
-                buf = _io.BytesIO()
-                fundo.convert("RGB").save(buf, format="JPEG", quality=90)
-                sq = buf.getvalue()
-                out["etapas"]["quadrar"] = {"ok": True, "bytes": len(sq)}
-            except Exception as e:
-                out["etapas"]["quadrar"] = {"erro": repr(e)}
-                sq = None
-            if sq and token:
-                try:
-                    up = requests.post(
-                        "https://api.mercadolibre.com/pictures/items/upload",
-                        headers={"Authorization": f"Bearer {token}"},
-                        files={"file": ("foto.jpg", sq, "image/jpeg")}, timeout=40
-                    )
-                    out["etapas"]["upload"] = {"status": up.status_code, "resp": up.text[:300]}
-                except Exception as e:
-                    out["etapas"]["upload"] = {"erro": repr(e)}
-        return jsonify(out)
 
     @app.route("/integracoes/mercadolivre/status-sku", methods=["GET", "OPTIONS"])
     def ml_status_sku():
