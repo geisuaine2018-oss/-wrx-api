@@ -595,17 +595,26 @@ def get_blueprint():
         """Lista pedidos Shopee prontos pra enviar (READY_TO_SHIP) — order_sn, sku, cliente, package."""
         if request.method == "OPTIONS":
             return _cors()
+        debug = request.args.get("debug") == "1"
         pedidos = []
+        diag = []
         agora = int(time.time())
         for shop in SHOPS_SHOPEE:
             sns = []
+            _at = (_shopee_token_provider(shop) if _shopee_token_provider else (None, None))
+            shop_diag = {"shop": shop, "token": bool(_at and _at[0]), "por_status": {}, "erros": []}
             for status in ("READY_TO_SHIP", "PROCESSED"):  # a despachar
                 d = _shopee_call(shop, "/api/v2/order/get_order_list", {
                     "order_status": status, "page_size": 50, "time_range_field": "create_time",
                     "time_from": agora - 14 * 86400, "time_to": agora})
-                for o in ((d or {}).get("response", {}) or {}).get("order_list", []):
+                _ol = ((d or {}).get("response", {}) or {}).get("order_list", [])
+                shop_diag["por_status"][status] = len(_ol)
+                if d and d.get("error"):
+                    shop_diag["erros"].append({"status": status, "error": d.get("error"), "message": d.get("message")})
+                for o in _ol:
                     if o.get("order_sn"):
                         sns.append(o["order_sn"])
+            diag.append(shop_diag)
             for i in range(0, len(sns), 50):
                 dd = _shopee_call(shop, "/api/v2/order/get_order_detail", {
                     "order_sn_list": ",".join(sns[i:i+50]),
@@ -617,7 +626,10 @@ def get_blueprint():
                                     "package": pkg[0].get("package_number") if pkg else None,
                                     "itens": [{"sku": x.get("item_sku"), "titulo": x.get("item_name")}
                                               for x in (o.get("item_list") or [])]})
-        r = jsonify({"ok": True, "total": len(pedidos), "pedidos": pedidos})
+        out = {"ok": True, "total": len(pedidos), "pedidos": pedidos}
+        if debug:
+            out["diag"] = diag
+        r = jsonify(out)
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
 
