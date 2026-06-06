@@ -366,12 +366,8 @@ def atualizar_supabase(pecas):
                 "posicao":         p.get("posicao") or "",
                 "atualizado":      datetime.now(timezone.utc).isoformat()
             })
-            # Preserva NCM/CEST ja preenchidos: so grava se o PartsHub tiver valor
-            # (se vier vazio, NAO inclui no upsert -> mantem o que ja esta no Supabase).
-            _ncm_ph = (p.get("ncm") or "").strip()
-            _cest_ph = (p.get("cest") or "").strip()
-            if _ncm_ph:  lote[-1]["ncm"]  = _ncm_ph
-            if _cest_ph: lote[-1]["cest"] = _cest_ph
+            # NCM/CEST NAO entram no sync (sao preenchidos manualmente no sistema e preservados).
+            # Antes eram add condicionalmente -> chaves diferentes no lote -> erro PGRST102 (keys must match).
         if not lote:
             continue
         r = requests.post(
