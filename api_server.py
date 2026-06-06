@@ -2126,6 +2126,43 @@ if USE_FLASK:
         except Exception as e:
             return jsonify({"erro": str(e)}), 500
 
+    @app.route("/gerar-titulos", methods=["POST", "OPTIONS"])
+    def rota_gerar_titulos():
+        # Gera titulos com a GEMINI_API_KEY do servidor (frontend nao precisa de chave local)
+        if request.method == "OPTIONS":
+            return Response(status=204, headers={"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST,OPTIONS", "Access-Control-Allow-Headers": "Content-Type"})
+        try:
+            data = request.get_json(force=True)
+            nome = (data.get("nome") or "").strip()
+            if not nome:
+                return jsonify({"erro": "nome obrigatorio"}), 400
+            key = os.environ.get("GEMINI_API_KEY", "").strip()
+            if not key:
+                return jsonify({"erro": "GEMINI_API_KEY ausente no servidor"}), 500
+            import requests as _rq, re as _re, json as _json
+            prompt = ('Gere 5 titulos otimizados para anuncio de autopeca no Mercado Livre para a peca: "' + nome +
+                      '". Maximo 60 caracteres cada, sem aspas. Responda SOMENTE em JSON: {"titulos":["t1","t2","t3","t4","t5"]}')
+            titulos = []
+            for versao, modelo in [("v1beta", "gemini-2.5-flash"), ("v1beta", "gemini-flash-latest"), ("v1", "gemini-2.0-flash")]:
+                try:
+                    url = "https://generativelanguage.googleapis.com/" + versao + "/models/" + modelo + ":generateContent?key=" + key
+                    r = _rq.post(url, json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": 500, "temperature": 0.3}}, timeout=30)
+                    if r.status_code != 200:
+                        print("[TITULOS] " + modelo + " HTTP " + str(r.status_code) + ": " + r.text[:150]); continue
+                    txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                    m = _re.search(r"\{[\s\S]*\}", txt)
+                    if m:
+                        titulos = (_json.loads(m.group(0)).get("titulos") or [])
+                        if titulos:
+                            break
+                except Exception as _e_t:
+                    print("[TITULOS] excecao " + modelo + ": " + str(_e_t)); continue
+            if not titulos:
+                return jsonify({"erro": "IA nao retornou titulos"}), 502
+            return jsonify({"titulos": [str(t)[:60] for t in titulos[:5]]})
+        except Exception as e:
+            return jsonify({"erro": str(e)}), 500
+
     @app.route("/foto/<filename>")
     def rota_foto(filename):
         """Serve imagens de carros para o Desmonte X."""
