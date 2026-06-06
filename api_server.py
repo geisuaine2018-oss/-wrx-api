@@ -3109,14 +3109,28 @@ if USE_FLASK:
     def ml_anuncios_db():
         if request.method == "OPTIONS":
             return _options_resp()
-        # Tenta Supabase primeiro
+        # Tenta Supabase primeiro — PAGINADO (PostgREST corta em 1000 por requisicao;
+        # com limit=5000 vinha so 1000 e a maioria dos SKUs aparecia como "Sem anuncio").
         try:
-            r = requests.get(
-                f"{_WRX_SB_URL}/rest/v1/ml_anuncios?select=*&order=sync_at.desc&limit=5000",
-                headers=_wrx_headers(), timeout=10
-            )
-            if r.status_code == 200:
-                dados = r.json()
+            dados = []
+            _off = 0
+            while True:
+                r = requests.get(
+                    f"{_WRX_SB_URL}/rest/v1/ml_anuncios?select=*&order=sync_at.desc&limit=1000&offset={_off}",
+                    headers=_wrx_headers(), timeout=15
+                )
+                if r.status_code != 200:
+                    break
+                _rows = r.json()
+                if not _rows:
+                    break
+                dados.extend(_rows)
+                if len(_rows) < 1000:
+                    break
+                _off += 1000
+                if _off > 50000:
+                    break
+            if dados:
                 # Agrupa por SKU para manter compatibilidade com o formato do cache
                 por_sku = {}
                 for d in dados:
