@@ -2038,12 +2038,20 @@ if USE_FLASK:
             # 0. Pixian.ai (API paga — melhor qualidade). Credenciais em env var no Railway
             #    (PIXIAN_API_ID / PIXIAN_API_SECRET). Se OK, devolve já; senão cai no fallback abaixo.
             try:
-                _px_id = os.environ.get("PIXIAN_API_ID", "").strip()
-                _px_secret = os.environ.get("PIXIAN_API_SECRET", "").strip()
+                def _px_env(_n):
+                    # le a variavel tolerando espaco/tab invisivel no NOME (acontece ao colar no Railway)
+                    _v = os.environ.get(_n)
+                    if _v is None:
+                        for _k, _vv in os.environ.items():
+                            if _k.strip() == _n:
+                                _v = _vv; break
+                    return (_v or "").strip()
+                _px_id = _px_env("PIXIAN_API_ID")
+                _px_secret = _px_env("PIXIAN_API_SECRET")
                 if _px_id and _px_secret:
                     import requests as _rq
                     _px_data = {"image.base64": img_b64, "output.format": "png"}
-                    if os.environ.get("PIXIAN_TEST", "").strip().lower() in ("1", "true", "sim"):
+                    if _px_env("PIXIAN_TEST").lower() in ("1", "true", "sim"):
                         _px_data["test"] = "true"  # modo teste: nao gasta credito (qualidade reduzida)
                     _px_resp = _rq.post(
                         "https://api.pixian.ai/api/v2/remove-background",
@@ -2052,7 +2060,9 @@ if USE_FLASK:
                     if _px_resp.status_code == 200 and _px_resp.content:
                         return jsonify({"png": base64.b64encode(_px_resp.content).decode()})
                     else:
-                        print(f"[PIXIAN] {_px_resp.status_code}: {_px_resp.text[:200]}")
+                        print(f"[PIXIAN] HTTP {_px_resp.status_code}: {_px_resp.text[:300]}")
+                else:
+                    print(f"[PIXIAN] credenciais ausentes; chaves PIXIAN no env: {[repr(_k) for _k in os.environ if 'PIXIAN' in _k.upper()]}")
             except Exception as _e_px:
                 print(f"[PIXIAN] excecao: {_e_px}")
             # modelo isnet-general-use: recorta autopeças muito melhor que o u2net padrão
