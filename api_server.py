@@ -2157,7 +2157,7 @@ if USE_FLASK:
                 except Exception as _e:
                     _diag["gemini_excecao"] = str(_e)
                 return jsonify(_diag), 502
-            return jsonify({"titulos": [str(t)[:60] for t in titulos[:5]]})
+            return jsonify({"titulos": [str(t)[:90] for t in titulos[:5]]})
         except Exception as e:
             return jsonify({"erro": str(e)}), 500
 
