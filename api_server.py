@@ -2144,7 +2144,16 @@ if USE_FLASK:
             data_ia = _gemini(key, prompt)  # funcao testada (usa thinkingBudget=0)
             titulos = (data_ia or {}).get("titulos") or []
             if not titulos:
-                return jsonify({"erro": "IA nao retornou titulos"}), 502
+                _diag = {"erro": "IA nao retornou titulos"}
+                try:
+                    import requests as _rq
+                    _u = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + key
+                    _r = _rq.post(_u, json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": 1800, "temperature": 0.3, "thinkingConfig": {"thinkingBudget": 0}}}, timeout=40)
+                    _diag["gemini_status"] = _r.status_code
+                    _diag["gemini_body"] = _r.text[:400]
+                except Exception as _e:
+                    _diag["gemini_excecao"] = str(_e)
+                return jsonify(_diag), 502
             return jsonify({"titulos": [str(t)[:60] for t in titulos[:5]]})
         except Exception as e:
             return jsonify({"erro": str(e)}), 500
