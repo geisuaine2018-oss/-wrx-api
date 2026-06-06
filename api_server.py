@@ -3367,6 +3367,74 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             })
         return jsonify({"resultado": resultado})
 
+    @app.route("/integracoes/mercadolivre/relatorio-vinculo", methods=["GET", "OPTIONS"])
+    def ml_relatorio_vinculo():
+        # SOMENTE LEITURA: nao escreve nada no ML. Conta ativos vinculados vs nao
+        # vinculados (sem SKU no titulo / SKU nao existe no estoque) + amostra.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        tokens_data = _ml_load_tokens()
+        if not tokens_data:
+            return jsonify({"ok": False, "erro": "ML nao autorizado"}), 401
+        skus_sistema = set()
+        try:
+            r_pecas = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque?select=sku&limit=20000",
+                headers=_wrx_headers(), timeout=20)
+            if r_pecas.status_code == 200:
+                for p in r_pecas.json():
+                    if p.get("sku"):
+                        skus_sistema.add(str(p["sku"]).strip().upper())
+        except Exception:
+            pass
+        resumo = {"skus_no_sistema": len(skus_sistema), "contas": [],
+                  "total_ativos": 0, "vinculados": 0, "sem_sku_no_titulo": 0, "sku_nao_existe": 0}
+        amostra = []
+        for conta_nome in list(tokens_data.keys()):
+            token = _ml_get_user_token(conta_nome)
+            if not token:
+                continue
+            user_id = tokens_data.get(conta_nome, {}).get("user_id", "") or ""
+            if not user_id:
+                try:
+                    _r = requests.get("https://api.mercadolibre.com/users/me",
+                                      headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                    if _r.status_code == 200:
+                        user_id = str(_r.json().get("id", ""))
+                except Exception:
+                    pass
+            if not user_id:
+                continue
+            ids = _ml_buscar_todos_ids(token, user_id, "active")
+            itens = _ml_buscar_detalhes_lote(token, ids)
+            c_total = c_vinc = c_sem = c_nao = 0
+            for item in itens:
+                sku = _ml_extrair_sku(item).upper()
+                c_total += 1
+                if not sku:
+                    c_sem += 1
+                    if len(amostra) < 40:
+                        amostra.append({"conta": conta_nome, "id": item.get("id"),
+                                        "titulo": (item.get("title") or "")[:60],
+                                        "motivo": "sem SKU no titulo", "sku": ""})
+                elif sku in skus_sistema:
+                    c_vinc += 1
+                else:
+                    c_nao += 1
+                    if len(amostra) < 40:
+                        amostra.append({"conta": conta_nome, "id": item.get("id"),
+                                        "titulo": (item.get("title") or "")[:60],
+                                        "motivo": "SKU nao existe no estoque", "sku": sku})
+            resumo["contas"].append({"conta": conta_nome, "ativos": c_total,
+                                     "vinculados": c_vinc, "sem_sku": c_sem, "sku_nao_existe": c_nao})
+            resumo["total_ativos"] += c_total
+            resumo["vinculados"] += c_vinc
+            resumo["sem_sku_no_titulo"] += c_sem
+            resumo["sku_nao_existe"] += c_nao
+        resumo["amostra_nao_vinculados"] = amostra
+        resumo["ok"] = True
+        return jsonify(resumo)
+
     # ── ML: helpers de vínculo/painel ────────────────────────────────────────
     def _sb_count(r):
         try:
