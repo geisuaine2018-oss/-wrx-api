@@ -2035,6 +2035,26 @@ if USE_FLASK:
                 return jsonify({"erro": "Campo 'imagem' obrigatório"}), 400
             img_bytes = base64.b64decode(img_b64)
             resultado = None
+            # 0. Pixian.ai (API paga — melhor qualidade). Credenciais em env var no Railway
+            #    (PIXIAN_API_ID / PIXIAN_API_SECRET). Se OK, devolve já; senão cai no fallback abaixo.
+            try:
+                _px_id = os.environ.get("PIXIAN_API_ID", "").strip()
+                _px_secret = os.environ.get("PIXIAN_API_SECRET", "").strip()
+                if _px_id and _px_secret:
+                    import requests as _rq
+                    _px_data = {"image.base64": img_b64, "output.format": "png"}
+                    if os.environ.get("PIXIAN_TEST", "").strip().lower() in ("1", "true", "sim"):
+                        _px_data["test"] = "true"  # modo teste: nao gasta credito (qualidade reduzida)
+                    _px_resp = _rq.post(
+                        "https://api.pixian.ai/api/v2/remove-background",
+                        auth=(_px_id, _px_secret), data=_px_data, timeout=60,
+                    )
+                    if _px_resp.status_code == 200 and _px_resp.content:
+                        return jsonify({"png": base64.b64encode(_px_resp.content).decode()})
+                    else:
+                        print(f"[PIXIAN] {_px_resp.status_code}: {_px_resp.text[:200]}")
+            except Exception as _e_px:
+                print(f"[PIXIAN] excecao: {_e_px}")
             # modelo isnet-general-use: recorta autopeças muito melhor que o u2net padrão
             MODELO_REMBG = "isnet-general-use"
             # 1. rembg direto (com sessão do modelo melhor, cacheada)
