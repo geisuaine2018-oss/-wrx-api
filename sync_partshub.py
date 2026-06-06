@@ -264,6 +264,21 @@ def parse_compat(cv):
                 result.append(" ".join(parts))
     return result
 
+def _cv_brand_model(cv):
+    """(marca, modelo, ano) do PRIMEIRO compatible_vehicle — o PartsHub guarda a marca/modelo
+    AQUI, nao em vehicle_brand/vehicle_model (que vem vazio)."""
+    if isinstance(cv, str):
+        try:
+            cv = json.loads(cv)
+        except Exception:
+            return ("", "", "")
+    if isinstance(cv, list) and cv and isinstance(cv[0], dict):
+        v = cv[0]
+        return (str(v.get("brandName") or v.get("brand") or "").strip(),
+                str(v.get("modelName") or v.get("model") or "").strip(),
+                str(v.get("year") or "").strip())
+    return ("", "", "")
+
 # ── Construir objeto cache ────────────────────────────────────────────────────
 def montar_peca(p, photos_map, locais_existentes, mapas_loc=None):
     part_id = p.get("id") or ""
@@ -281,6 +296,7 @@ def montar_peca(p, photos_map, locais_existentes, mapas_loc=None):
 
     sku   = str(p.get("sku") or "")
     oem   = (p.get("oem_part_number") or p.get("oem_code") or p.get("part_number") or "").strip()
+    _bm   = _cv_brand_model(p.get("compatible_vehicles"))  # marca/modelo/ano vem da compatibilidade
 
     medidas = {}
     if p.get("height") is not None: medidas["altura"]    = p["height"]
@@ -290,9 +306,9 @@ def montar_peca(p, photos_map, locais_existentes, mapas_loc=None):
     return {
         "sku":             sku,
         "titulo":          (p.get("name") or "").strip(),
-        "marca":           (p.get("vehicle_brand") or p.get("part_brand") or "").strip(),
-        "modelo":          (p.get("vehicle_model") or p.get("part_model") or "").strip(),
-        "ano":             str(p.get("vehicle_year") or "").strip(),
+        "marca":           ((p.get("vehicle_brand") or p.get("part_brand") or "").strip() or _bm[0]),
+        "modelo":          ((p.get("vehicle_model") or p.get("part_model") or "").strip() or _bm[1]),
+        "ano":             (str(p.get("vehicle_year") or "").strip() or _bm[2]),
         "oem":             oem,
         "preco":           float(p.get("price_sale") or 0),
         "custo":           float(p.get("price_cost") or 0),
