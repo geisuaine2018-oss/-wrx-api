@@ -2139,8 +2139,11 @@ if USE_FLASK:
             key = os.environ.get("GEMINI_API_KEY", "").strip()
             if not key:
                 return jsonify({"erro": "GEMINI_API_KEY ausente no servidor"}), 500
-            prompt = ('Gere 5 titulos otimizados para anuncio de autopeca no Mercado Livre para a peca: "' + nome +
-                      '". Maximo 60 caracteres cada, sem aspas. Responda SOMENTE em JSON: {"titulos":["t1","t2","t3","t4","t5"]}')
+            prompt = ('Gere 5 titulos DIFERENTES e otimizados para anuncio de autopeca, para a peca: "' + nome +
+                      '". Cada titulo com ATE 90 caracteres, variando o enfoque: '
+                      '(1) marca + modelo + ano; (2) destacando a compatibilidade/veiculos; '
+                      '(3) aplicacao/funcao da peca; (4) versao curta e direta; (5) com palavras-chave de busca. '
+                      'Sem aspas, sem numeracao no inicio. Responda SOMENTE em JSON: {"titulos":["t1","t2","t3","t4","t5"]}')
             data_ia = _gemini(key, prompt)  # funcao testada (usa thinkingBudget=0)
             titulos = (data_ia or {}).get("titulos") or []
             if not titulos:
