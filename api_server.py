@@ -3175,6 +3175,34 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 return jsonify({"ok": True, "msg": "Tabela ml_anuncios criada com sucesso"})
         return jsonify({"ok": False, "msg": "Execute o SQL manualmente no Supabase", "sql": sql})
 
+    def _ml_carregar_skus_sistema():
+        # Carrega TODOS os SKUs de pecas_estoque com PAGINACAO. O PostgREST corta em
+        # 1000 linhas por requisicao (mesmo com limit=20000) — por isso so vinha 1000,
+        # e a maioria dos anuncios caia como "nao vinculado" falsamente.
+        skus = set()
+        off = 0
+        try:
+            while True:
+                rp = requests.get(
+                    f"{_WRX_SB_URL}/rest/v1/pecas_estoque?select=sku&limit=1000&offset={off}",
+                    headers=_wrx_headers(), timeout=20)
+                if rp.status_code != 200:
+                    break
+                rows = rp.json()
+                if not rows:
+                    break
+                for p in rows:
+                    if p.get("sku"):
+                        skus.add(str(p["sku"]).strip().upper())
+                if len(rows) < 1000:
+                    break
+                off += 1000
+                if off > 60000:
+                    break
+        except Exception:
+            pass
+        return skus
+
     @app.route("/integracoes/mercadolivre/sincronizar-anuncios", methods=["POST", "GET", "OPTIONS"])
     def ml_sincronizar_anuncios():
         if request.method == "OPTIONS":
@@ -3189,18 +3217,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         incluir_enc = (request.args.get("incluir_encerrados") == "1") or bool((request.get_json(silent=True) or {}).get("incluir_encerrados"))
 
         # Carrega SKUs do sistema para fazer vínculo
-        skus_sistema = set()
-        try:
-            r_pecas = requests.get(
-                f"{_WRX_SB_URL}/rest/v1/pecas_estoque?select=sku&limit=20000",
-                headers=_wrx_headers(), timeout=15
-            )
-            if r_pecas.status_code == 200:
-                for p in r_pecas.json():
-                    if p.get("sku"):
-                        skus_sistema.add(str(p["sku"]).strip().upper())
-        except Exception:
-            pass
+        skus_sistema = _ml_carregar_skus_sistema()
 
         por_sku = {}
         total_anuncios = 0
@@ -3376,17 +3393,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         tokens_data = _ml_load_tokens()
         if not tokens_data:
             return jsonify({"ok": False, "erro": "ML nao autorizado"}), 401
-        skus_sistema = set()
-        try:
-            r_pecas = requests.get(
-                f"{_WRX_SB_URL}/rest/v1/pecas_estoque?select=sku&limit=20000",
-                headers=_wrx_headers(), timeout=20)
-            if r_pecas.status_code == 200:
-                for p in r_pecas.json():
-                    if p.get("sku"):
-                        skus_sistema.add(str(p["sku"]).strip().upper())
-        except Exception:
-            pass
+        skus_sistema = _ml_carregar_skus_sistema()
         resumo = {"skus_no_sistema": len(skus_sistema), "contas": [],
                   "total_ativos": 0, "vinculados": 0, "sem_sku_no_titulo": 0, "sku_nao_existe": 0}
         amostra = []
