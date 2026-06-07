@@ -2139,11 +2139,55 @@ if USE_FLASK:
             key = os.environ.get("GEMINI_API_KEY", "").strip()
             if not key:
                 return jsonify({"erro": "GEMINI_API_KEY ausente no servidor"}), 500
-            prompt = ('Gere 5 titulos DIFERENTES e otimizados para anuncio de autopeca, para a peca: "' + nome +
-                      '". Cada titulo com ATE 90 caracteres, variando o enfoque: '
-                      '(1) marca + modelo + ano; (2) destacando a compatibilidade/veiculos; '
-                      '(3) aplicacao/funcao da peca; (4) versao curta e direta; (5) com palavras-chave de busca. '
-                      'Sem aspas, sem numeracao no inicio. Responda SOMENTE em JSON: {"titulos":["t1","t2","t3","t4","t5"]}')
+            # Dados estruturados da peca (frontend manda; se nao mandar, usa so o nome)
+            marca = (data.get("marca") or "").strip()
+            modelo = (data.get("modelo") or "").strip()
+            motor = (data.get("motor") or "").strip()
+            eixo = (data.get("posicaoEixo") or data.get("eixo") or "").strip()
+            lado = (data.get("posicaoLado") or data.get("lado") or "").strip()
+            oem = (data.get("oem") or data.get("codigo") or "").strip()
+            descricao = (data.get("descricao") or "").strip()
+            carros = data.get("carros") or data.get("compat") or []
+            # normaliza lista de carros -> "Veiculo Ano"
+            linhas_carros = []
+            try:
+                for c in carros[:12]:
+                    if isinstance(c, dict):
+                        v = (c.get("veiculo") or c.get("nome") or "").strip()
+                        a = (str(c.get("anos") or c.get("ano") or "")).strip()
+                        if v:
+                            linhas_carros.append((v + " " + a).strip())
+                    elif isinstance(c, str) and c.strip():
+                        linhas_carros.append(c.strip())
+            except Exception:
+                pass
+            ctx = ["Peca: " + nome]
+            if marca or modelo:
+                ctx.append("Marca/Modelo: " + (marca + " " + modelo).strip())
+            if motor:
+                ctx.append("Motorizacao: " + motor)
+            if eixo or lado:
+                ctx.append("Posicao/Lado: " + (eixo + " " + lado).strip())
+            if oem:
+                ctx.append("Codigo/OEM: " + oem)
+            if linhas_carros:
+                ctx.append("Veiculos compativeis (priorize estes, NAO invente outros): " + "; ".join(linhas_carros))
+            if descricao:
+                ctx.append("Descricao (use como apoio): " + descricao[:600])
+            prompt = (
+                "Voce e especialista em titulos de anuncio de autopecas (Mercado Livre e Shopee). "
+                "Monte 5 titulos para a peca abaixo, do MAIS COMPLETO ao mais curto.\n\n"
+                "DADOS:\n- " + "\n- ".join(ctx) + "\n\n"
+                "REGRAS OBRIGATORIAS:\n"
+                "1. Sempre comece pelo TIPO da peca + MARCA + MODELO (modelo e obrigatorio quando existir).\n"
+                "2. Se houver motorizacao (ex: 1.0 Turbo, 1.6 16V), inclua nos titulos mais completos.\n"
+                "3. Inclua o ANO no formato curto tipo 22/26 — use SOMENTE os anos dos veiculos compativeis. NUNCA invente ano.\n"
+                "4. Se houver lado/posicao (Dianteira/Traseira, Direita/Esquerda), inclua.\n"
+                "5. Pode incluir o codigo/OEM da peca, ou a palavra 'Original'.\n"
+                "6. Priorize os veiculos compativeis listados; NAO invente outros carros nem outras compatibilidades.\n"
+                "7. Cada titulo com ATE 90 caracteres. Sem aspas, sem numeracao no inicio.\n"
+                'Responda SOMENTE em JSON: {"titulos":["t1","t2","t3","t4","t5"]}'
+            )
             data_ia = _gemini(key, prompt)  # funcao testada (usa thinkingBudget=0)
             titulos = (data_ia or {}).get("titulos") or []
             if not titulos:
