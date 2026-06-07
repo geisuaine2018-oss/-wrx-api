@@ -5400,6 +5400,36 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 })
         return jsonify({"ok": True, "total": len(todos), "itens": todos})
 
+    @app.route("/integracoes/shopee/violacoes", methods=["GET", "OPTIONS"])
+    def shopee_violacoes():
+        # Lista produtos em VIOLACAO (BANNED) das lojas Shopee, com nome+SKU.
+        # O MOTIVO de cada um a API nao devolve confiavel -> ver no Seller Centre.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        tokens = _shopee_load_tokens()
+        if not tokens:
+            return jsonify({"ok": False, "erro": "Shopee nao autorizada"}), 401
+        statuses = (request.args.get("status") or "BANNED").upper().split(",")
+        todos = []
+        for sid in list(tokens.keys()):
+            access_token, shop_id_int = _shopee_get_token(sid)
+            if not access_token:
+                continue
+            for st in statuses:
+                refs = _shopee_list_items_all(access_token, shop_id_int, status=st.strip())
+                ids = [x["item_id"] for x in refs if x.get("item_id")]
+                if not ids:
+                    continue
+                for item in _shopee_get_item_details(access_token, shop_id_int, ids):
+                    todos.append({
+                        "shop_id": sid,
+                        "item_id": item.get("item_id"),
+                        "titulo": item.get("item_name", ""),
+                        "sku": _shopee_extract_sku(item),
+                        "status": item.get("item_status", st),
+                    })
+        return jsonify({"ok": True, "total": len(todos), "itens": todos})
+
     # ── Shopee: cache local (arquivo JSON) + Supabase opcional ───────────────────
 
     _SHOPEE_CACHE_FILE = os.path.join(_INTEG_DIR, "wrx_shopee_anuncios.json")
