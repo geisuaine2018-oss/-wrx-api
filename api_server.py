@@ -387,7 +387,11 @@ def _revisao_filtrar_pares(pares, consulta, eh_oem=False):
             continue
         vend = (par.get("vendedor") or "").strip().lower()
         if titulo:
-            if not eh_oem and principal and principal not in tl:
+            # RELEVÂNCIA pela PALAVRA-CABEÇA: o anúncio tem que COMEÇAR com a mesma
+            # palavra do produto. Ex: "porta" não casa com "Maçaneta Porta...",
+            # "farol" não casa com "Lâmpada Do Farol...". Bem mais preciso que "contém".
+            res_head = (_revisao_tokens(titulo) or [""])[0]
+            if not eh_oem and principal and res_head != principal:
                 continue
             if not eh_oem and any(a in tl and a not in qlow for a in _REV_ACESSORIOS):
                 continue
