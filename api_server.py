@@ -5258,6 +5258,23 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     item_id = _d.get("response", {}).get("item_id", "")
                     print(f"[SHOPEE] SKU '{sku}' publicado no shop {sid}. item_id={item_id}, condicao={condicao_shopee}")
                     resultados.append({"shop_id": sid, "item_id": item_id, "condicao": condicao_shopee})
+                    # Grava JÁ na shopee_anuncios (como o ML faz) — senão o anúncio nao aparece
+                    # no painel do produto até o sync rodar. Chave SKU = sku_interno (base da peça).
+                    try:
+                        _sku_base = str(sku_interno or sku or "").strip().upper()
+                        if item_id and _sku_base:
+                            requests.post(
+                                f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?on_conflict=shop_id,item_id",
+                                headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates"},
+                                json=[{
+                                    "shop_id": str(sid), "item_id": str(item_id), "sku": _sku_base,
+                                    "titulo": str(titulo)[:200], "preco": float(preco or 0),
+                                    "estoque": 1, "status": "NORMAL", "fotos": []
+                                }],
+                                timeout=15
+                            )
+                    except Exception as _eg:
+                        print(f"[SHOPEE] aviso: nao gravou shopee_anuncios: {_eg}")
                 else:
                     msg = _d.get("message", _r.text[:200])
                     print(f"[SHOPEE] Erro shop {sid} SKU '{sku}': {msg} | RAW={_d}")
