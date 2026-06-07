@@ -5054,12 +5054,23 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         for u in urls[:9]:
             if not u:
                 continue
-            u = u.replace("http://", "https://")
             try:
-                img = requests.get(u, timeout=20)
-                if img.status_code != 200 or not img.content:
-                    print(f"[SHOPEE-IMG] falha baixar {u[:60]} status={img.status_code}")
-                    continue
+                # FOTO EDITADA vem em base64 (data:image/...): decodifica direto.
+                # Antes só fazia requests.get(url) e o data: falhava -> nenhuma foto subia -> publicação falhava.
+                if str(u).startswith("data:"):
+                    import base64 as _b64img
+                    try:
+                        content = _b64img.b64decode(str(u).split(",", 1)[1])
+                    except Exception as _ed:
+                        print(f"[SHOPEE-IMG] base64 invalido: {_ed}")
+                        continue
+                else:
+                    u = u.replace("http://", "https://")
+                    img = requests.get(u, timeout=20)
+                    if img.status_code != 200 or not img.content:
+                        print(f"[SHOPEE-IMG] falha baixar {u[:60]} status={img.status_code}")
+                        continue
+                    content = img.content
                 ts = int(time.time())
                 path = "/api/v2/media_space/upload_image"
                 sign = _shopee_sign(path, ts, access_token, shop_id_int)
@@ -5067,7 +5078,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     f"{_SHOPEE_BASE}{path}",
                     params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
                             "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
-                    files={"image": ("foto.jpg", img.content, "image/jpeg")},
+                    files={"image": ("foto.jpg", content, "image/jpeg")},
                     timeout=30
                 )
                 d = r.json()
