@@ -367,6 +367,23 @@ def _revisao_coletar_precos(consulta, eh_oem=False):
             break
     return precos
 
+def _revisao_aparar(precos):
+    """Corta outliers ANTES de calcular menor/media/sugestao.
+    Ex: miolo 450/500/600 -> nao deixa entrar o 250 (muito barato) nem o 1000 (muito caro).
+    Usa a MEDIANA (robusta) como referencia: mantem so 0.6x ate 1.7x dela; depois apara 10% das pontas."""
+    s = sorted(float(p) for p in precos if p and float(p) > 0)
+    if len(s) < 4:
+        return s  # poucos dados — nao da pra julgar outlier
+    mediana = s[len(s) // 2]
+    faixa = [p for p in s if mediana * 0.6 <= p <= mediana * 1.7]
+    if len(faixa) < 3:
+        faixa = s  # cortou demais — devolve tudo
+    n = len(faixa)
+    corte = int(n * 0.10)
+    if corte:
+        faixa = faixa[corte: n - corte] or faixa
+    return faixa
+
 def _buscar_api_ml_detalhado(codigo):
     """Busca via ML API com atributos completos por item."""
     items_detalhados = []
@@ -3050,7 +3067,8 @@ if USE_FLASK:
                 qtd = 0
                 if consulta:
                     try:
-                        precos = _revisao_coletar_precos(consulta, eh_oem=eh_oem)
+                        precos_brutos = _revisao_coletar_precos(consulta, eh_oem=eh_oem)
+                        precos = _revisao_aparar(precos_brutos)  # tira muito barato / muito caro
                         if precos:
                             menor = round(min(precos), 2)
                             media = round(sum(precos) / len(precos), 2)
