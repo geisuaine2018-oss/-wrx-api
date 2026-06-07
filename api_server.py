@@ -2889,6 +2889,270 @@ if USE_FLASK:
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e)}), 500
 
+    # ════════════════════════════════════════════════════════════════════════
+    # REVISÃO DE PREÇOS — revisa anúncios ativos vs concorrência (ML) p/ aprovação
+    # Fase 1: lote pequeno sob demanda. NUNCA altera preço sozinho — só com aprovação.
+    # ════════════════════════════════════════════════════════════════════════
+    _REVISAO_STATUS = {"rodando": False, "feitos": 0, "total": 0, "msg": "", "erro": ""}
+
+    def _revisao_atualizar_preco_ml(ml_id, conta, preco):
+        token = _ml_get_user_token(conta or "default")
+        if not token:
+            return False, f"conta '{conta}' sem token ML"
+        try:
+            r = requests.put(
+                f"https://api.mercadolibre.com/items/{ml_id}",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"price": float(preco)}, timeout=20)
+            if r.status_code == 200:
+                return True, ""
+            return False, f"ML {r.status_code}: {r.text[:200]}"
+        except Exception as e:
+            return False, str(e)
+
+    def _revisao_processar(limite):
+        # roda em thread separada — busca concorrência é lenta (scraping ~10-30s/item)
+        try:
+            _REVISAO_STATUS.update({"rodando": True, "feitos": 0, "total": 0, "msg": "selecionando anúncios ativos", "erro": ""})
+            # 1) Carrega anúncios ML ATIVOS (paginado — PostgREST corta em 1000)
+            anuncios = []
+            off = 0
+            while True:
+                r = requests.get(
+                    f"{_WRX_SB_URL}/rest/v1/ml_anuncios?select=*&status=eq.active&order=sku.asc&limit=1000&offset={off}",
+                    headers=_wrx_headers(), timeout=20)
+                if r.status_code != 200:
+                    break
+                rows = r.json()
+                if not rows:
+                    break
+                anuncios.extend(rows)
+                if len(rows) < 1000:
+                    break
+                off += 1000
+                if off > 50000:
+                    break
+            # estoque disponível + sku válido
+            anuncios = [a for a in anuncios if (a.get("estoque") or 0) > 0 and (a.get("sku") or "").strip()]
+            # já tem revisão pendente? evita reprocessar
+            ja = set()
+            try:
+                rr = requests.get(f"{_WRX_SB_URL}/rest/v1/revisao_precos?select=sku&status=eq.pendente&limit=5000",
+                                  headers=_wrx_headers(), timeout=15)
+                if rr.status_code == 200:
+                    ja = {(x.get("sku") or "").upper() for x in rr.json()}
+            except Exception:
+                pass
+            # prioridade: mais antigos primeiro (SKU sequencial). dedup por SKU.
+            vistos = set()
+            fila = []
+            for a in sorted(anuncios, key=lambda x: str(x.get("sku") or "")):
+                sku = (a.get("sku") or "").upper()
+                if sku in vistos or sku in ja:
+                    continue
+                vistos.add(sku)
+                fila.append(a)
+            fila = fila[:max(1, int(limite or 10))]
+            _REVISAO_STATUS["total"] = len(fila)
+            for a in fila:
+                sku = (a.get("sku") or "").strip()
+                meu = float(a.get("preco") or 0)
+                # OEM (e título) do cadastro
+                oem = ""
+                titulo_est = ""
+                try:
+                    pr = requests.get(
+                        f"{_WRX_SB_URL}/rest/v1/pecas_estoque?select=oem,titulo&sku=eq.{sku}&limit=1",
+                        headers=_wrx_headers(), timeout=15)
+                    if pr.status_code == 200 and pr.json():
+                        oem = (pr.json()[0].get("oem") or "").strip()
+                        titulo_est = (pr.json()[0].get("titulo") or "").strip()
+                except Exception:
+                    pass
+                consulta = oem or titulo_est or (a.get("titulo") or "")
+                menor = media = sug = 0.0
+                qtd = 0
+                if consulta:
+                    try:
+                        res = executar_busca(consulta) or {}
+                        precos = list(res.get("precos_novos") or []) + list(res.get("precos_usados") or [])
+                        precos = [float(p) for p in precos if p and float(p) > 0]
+                        if precos:
+                            menor = round(min(precos), 2)
+                            media = round(sum(precos) / len(precos), 2)
+                            qtd = len(precos)
+                        sug = float(res.get("preco_sugerido") or 0)
+                    except Exception as e:
+                        print(f"[REVISAO] erro busca sku={sku}: {e}")
+                # diferença: meu preço vs referência (sugestão; senão menor do mercado)
+                ref = sug or menor
+                dif = 0.0
+                if meu > 0 and ref > 0:
+                    dif = round((meu - ref) / meu * 100, 1)  # + = estou mais caro
+                absd = abs(dif)
+                prio = "manter" if absd <= 10 else ("revisar" if absd <= 20 else "alta")
+                row = {
+                    "sku": sku, "ml_id": a.get("ml_id", ""), "conta": a.get("conta", "default"),
+                    "titulo": a.get("titulo", "") or titulo_est, "thumbnail": a.get("thumbnail", ""), "oem": oem,
+                    "meu_preco": meu, "menor_mercado": menor, "media_mercado": media, "sugestao": sug,
+                    "diferenca_pct": dif, "prioridade": prio, "fonte_qtd": qtd, "status": "pendente",
+                }
+                try:
+                    requests.post(
+                        f"{_WRX_SB_URL}/rest/v1/revisao_precos",
+                        headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"},
+                        json=row, timeout=15)
+                except Exception as e:
+                    print(f"[REVISAO] erro gravar sku={sku}: {e}")
+                _REVISAO_STATUS["feitos"] += 1
+            _REVISAO_STATUS["msg"] = "concluído"
+        except Exception as e:
+            _REVISAO_STATUS["erro"] = str(e)
+            print(f"[REVISAO] erro geral: {e}")
+        finally:
+            _REVISAO_STATUS["rodando"] = False
+
+    @app.route("/revisao-precos/setup-tabela", methods=["GET", "POST", "OPTIONS"])
+    def revisao_setup_tabela():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        sql = """
+CREATE TABLE IF NOT EXISTS revisao_precos (
+  id BIGSERIAL PRIMARY KEY,
+  sku TEXT,
+  ml_id TEXT,
+  conta TEXT DEFAULT 'default',
+  titulo TEXT,
+  thumbnail TEXT,
+  oem TEXT,
+  meu_preco FLOAT DEFAULT 0,
+  menor_mercado FLOAT DEFAULT 0,
+  media_mercado FLOAT DEFAULT 0,
+  sugestao FLOAT DEFAULT 0,
+  diferenca_pct FLOAT DEFAULT 0,
+  prioridade TEXT DEFAULT 'manter',
+  fonte_qtd INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'pendente',
+  preco_aplicado FLOAT,
+  criado_em TIMESTAMPTZ DEFAULT NOW(),
+  revisado_em TIMESTAMPTZ,
+  UNIQUE(sku, conta)
+);
+CREATE INDEX IF NOT EXISTS idx_revisao_status ON revisao_precos(status);
+CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
+"""
+        service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+        if service_key:
+            try:
+                r = requests.post(
+                    f"{_WRX_SB_URL}/rest/v1/rpc/exec",
+                    headers={"apikey": service_key, "Authorization": f"Bearer {service_key}", "Content-Type": "application/json"},
+                    json={"sql": sql}, timeout=15)
+                if r.status_code in (200, 201, 204):
+                    return jsonify({"ok": True, "msg": "Tabela revisao_precos criada"})
+            except Exception:
+                pass
+        return jsonify({"ok": False, "msg": "Execute o SQL manualmente no Supabase", "sql": sql})
+
+    @app.route("/revisao-precos/rodar", methods=["POST", "OPTIONS"])
+    def revisao_rodar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        if _REVISAO_STATUS.get("rodando"):
+            return jsonify({"ok": False, "erro": "Já está rodando uma revisão", "status": _REVISAO_STATUS}), 409
+        data = request.get_json(force=True, silent=True) or {}
+        limite = int(data.get("limite") or 10)
+        limite = max(1, min(limite, 100))  # teto de segurança
+        import threading
+        t = threading.Thread(target=_revisao_processar, args=(limite,), daemon=True)
+        t.start()
+        return jsonify({"ok": True, "iniciado": True, "limite": limite})
+
+    @app.route("/revisao-precos/status", methods=["GET", "OPTIONS"])
+    def revisao_status():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        return jsonify({"ok": True, **_REVISAO_STATUS})
+
+    @app.route("/revisao-precos/listar", methods=["GET", "OPTIONS"])
+    def revisao_listar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        status = request.args.get("status", "pendente").strip()
+        try:
+            url = f"{_WRX_SB_URL}/rest/v1/revisao_precos?select=*&limit=2000"
+            if status and status != "todos":
+                url += f"&status=eq.{status}"
+            r = requests.get(url, headers=_wrx_headers(), timeout=20)
+            if r.status_code != 200:
+                return jsonify({"ok": False, "erro": f"Supabase {r.status_code}: {r.text[:200]}"}), 502
+            rows = r.json()
+            # ordena: alta > revisar > manter; depois maior diferença
+            ordem = {"alta": 0, "revisar": 1, "manter": 2}
+            rows.sort(key=lambda x: (ordem.get(x.get("prioridade"), 3), -abs(float(x.get("diferenca_pct") or 0))))
+            return jsonify({"ok": True, "itens": rows, "total": len(rows)})
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 500
+
+    def _revisao_patch(rev_id, campos):
+        try:
+            r = requests.patch(
+                f"{_WRX_SB_URL}/rest/v1/revisao_precos?id=eq.{rev_id}",
+                headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"},
+                json=campos, timeout=15)
+            return r.status_code in (200, 204)
+        except Exception:
+            return False
+
+    @app.route("/revisao-precos/aprovar", methods=["POST", "OPTIONS"])
+    def revisao_aprovar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True, silent=True) or {}
+        rev_id = data.get("id")
+        novo_preco = data.get("preco")  # opcional — se vier, é "Editar Preço"
+        if not rev_id:
+            return jsonify({"ok": False, "erro": "id obrigatório"}), 400
+        # busca a linha
+        try:
+            r = requests.get(f"{_WRX_SB_URL}/rest/v1/revisao_precos?id=eq.{rev_id}&limit=1",
+                             headers=_wrx_headers(), timeout=15)
+            rows = r.json() if r.status_code == 200 else []
+            if not rows:
+                return jsonify({"ok": False, "erro": "revisão não encontrada"}), 404
+            rev = rows[0]
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 500
+        preco = float(novo_preco) if novo_preco else float(rev.get("sugestao") or 0)
+        if preco <= 0:
+            return jsonify({"ok": False, "erro": "sem preço válido para aplicar (sugestão vazia). Use Editar Preço."}), 400
+        ml_id = rev.get("ml_id")
+        if not ml_id:
+            return jsonify({"ok": False, "erro": "anúncio sem ml_id"}), 400
+        ok, err = _revisao_atualizar_preco_ml(ml_id, rev.get("conta"), preco)
+        if not ok:
+            return jsonify({"ok": False, "erro": f"Falha ao atualizar no ML: {err}"}), 502
+        # atualiza preço no espelho ml_anuncios + marca aprovado
+        try:
+            requests.patch(f"{_WRX_SB_URL}/rest/v1/ml_anuncios?ml_id=eq.{ml_id}",
+                           headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"},
+                           json={"preco": preco}, timeout=15)
+        except Exception:
+            pass
+        _revisao_patch(rev_id, {"status": "aprovado", "preco_aplicado": preco, "revisado_em": "now"})
+        return jsonify({"ok": True, "ml_id": ml_id, "preco": preco})
+
+    @app.route("/revisao-precos/ignorar", methods=["POST", "OPTIONS"])
+    def revisao_ignorar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True, silent=True) or {}
+        rev_id = data.get("id")
+        if not rev_id:
+            return jsonify({"ok": False, "erro": "id obrigatório"}), 400
+        ok = _revisao_patch(rev_id, {"status": "ignorado", "revisado_em": "now"})
+        return jsonify({"ok": ok})
+
     @app.route("/integracoes/mercadolivre/publicar", methods=["POST", "OPTIONS"])
     def ml_publicar():
         if request.method == "OPTIONS":
