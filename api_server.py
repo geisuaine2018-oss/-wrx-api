@@ -6079,6 +6079,96 @@ CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
             "sql": sql.strip()
         })
 
+    # ── LOGIN DE FUNCIONÁRIO (usuário + senha, validado NO SERVIDOR) ──────────────
+    # Senha guardada com HASH (sha256+salt) no Supabase. Admin define as senhas.
+    import hashlib as _hashlib_auth
+    _AUTH_SALT = os.environ.get("AUTH_SALT", "dx-wrx-2026-salt-troque-isso")
+    _ADMIN_SENHA = os.environ.get("ADMIN_SENHA", "admin123")
+    def _func_hash(senha):
+        return _hashlib_auth.sha256((_AUTH_SALT + str(senha or "")).encode("utf-8")).hexdigest()
+    def _auth_sb_headers():
+        k = os.environ.get("SUPABASE_SERVICE_KEY") or _WRX_SB_KEY
+        return {"apikey": k, "Authorization": f"Bearer {k}", "Content-Type": "application/json"}
+
+    @app.route("/auth/func-setup", methods=["POST", "GET", "OPTIONS"])
+    def auth_func_setup():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+        sql = ("CREATE TABLE IF NOT EXISTS func_auth ("
+               "usuario TEXT PRIMARY KEY, senha_hash TEXT NOT NULL, nome TEXT, funcao TEXT, "
+               "criado_em TIMESTAMPTZ DEFAULT NOW());")
+        if service_key:
+            r = requests.post(f"{_WRX_SB_URL}/rest/v1/rpc/exec",
+                              headers={"apikey": service_key, "Authorization": f"Bearer {service_key}", "Content-Type": "application/json"},
+                              json={"sql": sql}, timeout=15)
+            if r.status_code in (200, 201, 204):
+                return jsonify({"ok": True, "msg": "Tabela func_auth criada"})
+        return jsonify({"ok": False, "msg": "Rode o SQL no Supabase (SQL Editor) ou configure SUPABASE_SERVICE_KEY", "sql": sql})
+
+    @app.route("/auth/func-login", methods=["POST", "OPTIONS"])
+    def auth_func_login():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        d = request.get_json(force=True) or {}
+        usuario = str(d.get("usuario") or "").strip().lower()
+        senha = str(d.get("senha") or "")
+        if not usuario or not senha:
+            return jsonify({"ok": False, "erro": "Informe usuário e senha"}), 400
+        try:
+            r = requests.get(f"{_WRX_SB_URL}/rest/v1/func_auth?usuario=eq.{usuario}&select=usuario,senha_hash,nome,funcao",
+                             headers=_auth_sb_headers(), timeout=12)
+            rows = r.json() if r.status_code == 200 else []
+        except Exception:
+            rows = []
+        if not rows or rows[0].get("senha_hash") != _func_hash(senha):
+            return jsonify({"ok": False, "erro": "Usuário ou senha incorretos"}), 401
+        u = rows[0]
+        return jsonify({"ok": True, "usuario": u["usuario"], "nome": u.get("nome") or u["usuario"], "funcao": u.get("funcao") or ""})
+
+    @app.route("/auth/func-list", methods=["POST", "OPTIONS"])
+    def auth_func_list():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        d = request.get_json(force=True) or {}
+        if str(d.get("admin") or "") != _ADMIN_SENHA:
+            return jsonify({"ok": False, "erro": "Senha de admin incorreta"}), 401
+        r = requests.get(f"{_WRX_SB_URL}/rest/v1/func_auth?select=usuario,nome,funcao&order=nome.asc",
+                         headers=_auth_sb_headers(), timeout=12)
+        return jsonify({"ok": True, "funcionarios": r.json() if r.status_code == 200 else []})
+
+    @app.route("/auth/func-set", methods=["POST", "OPTIONS"])
+    def auth_func_set():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        d = request.get_json(force=True) or {}
+        if str(d.get("admin") or "") != _ADMIN_SENHA:
+            return jsonify({"ok": False, "erro": "Senha de admin incorreta"}), 401
+        usuario = str(d.get("usuario") or "").strip().lower()
+        nome = str(d.get("nome") or usuario).strip()
+        senha = str(d.get("senha") or "")
+        funcao = str(d.get("funcao") or "").strip()
+        if not usuario or not senha:
+            return jsonify({"ok": False, "erro": "Informe usuário e senha"}), 400
+        rec = {"usuario": usuario, "senha_hash": _func_hash(senha), "nome": nome, "funcao": funcao}
+        r = requests.post(f"{_WRX_SB_URL}/rest/v1/func_auth?on_conflict=usuario",
+                          headers={**_auth_sb_headers(), "Prefer": "resolution=merge-duplicates"},
+                          json=[rec], timeout=12)
+        if r.status_code in (200, 201, 204):
+            return jsonify({"ok": True, "msg": f"Login de {nome} salvo"})
+        return jsonify({"ok": False, "erro": f"Erro ao salvar ({r.status_code}): {r.text[:200]}"}), 500
+
+    @app.route("/auth/func-del", methods=["POST", "OPTIONS"])
+    def auth_func_del():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        d = request.get_json(force=True) or {}
+        if str(d.get("admin") or "") != _ADMIN_SENHA:
+            return jsonify({"ok": False, "erro": "Senha de admin incorreta"}), 401
+        usuario = str(d.get("usuario") or "").strip().lower()
+        requests.delete(f"{_WRX_SB_URL}/rest/v1/func_auth?usuario=eq.{usuario}", headers=_auth_sb_headers(), timeout=12)
+        return jsonify({"ok": True})
+
     def _cron_whatsapp_loop():
         """Thread: a cada 2 min chama checar-novidades (avisa pergunta/venda/reclamação no WhatsApp)."""
         import threading
