@@ -5236,6 +5236,17 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             if not access_token:
                 erros.append(f"shop {sid}: token invalido")
                 continue
+            # EVITA DUPLICAR: se este SKU ja tem anuncio nesta loja, NAO publica de novo.
+            if not data.get("forcar"):
+                try:
+                    _chk = requests.get(
+                        f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?sku=eq.{sku_interno}&shop_id=eq.{sid}&select=item_id&limit=1",
+                        headers=_auth_sb_headers(), timeout=10)
+                    if _chk.status_code == 200 and _chk.json():
+                        resultados.append({"shop_id": sid, "item_id": _chk.json()[0].get("item_id"), "ja_existia": True})
+                        continue
+                except Exception:
+                    pass
             # Categoria-folha CORRETA: pergunta à Shopee pelo nome do produto
             cat_id = _shopee_categoria_recomendada(access_token, shop_id_int, titulo)
             if not cat_id:
