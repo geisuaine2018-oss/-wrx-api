@@ -3014,6 +3014,22 @@ if USE_FLASK:
                                       json=_fi, timeout=15)
                     except Exception:
                         pass
+                # Garante que o anúncio entre ATIVO (usuária quer publicado automático, não pausado).
+                _status_final = item.get("status", "active")
+                if _status_final != "active":
+                    try:
+                        _ra = requests.put(
+                            f"https://api.mercadolibre.com/items/{item_id}",
+                            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                            json={"status": "active"}, timeout=10
+                        )
+                        if _ra.status_code in (200, 201):
+                            _status_final = (_ra.json() or {}).get("status", _status_final)
+                            print(f"[ML] item {item_id} ativado (status={_status_final})")
+                        else:
+                            print(f"[ML] nao ativou item {item_id}: {_ra.status_code} {_ra.text[:200]}")
+                    except Exception as _ea:
+                        print(f"[ML] erro ao ativar item {item_id}: {_ea}")
                 # Grava no banco (ml_anuncios) com o SKU BASE p/ o card do estoque
                 # refletir NA HORA (sem esperar o sync). Service key prevalece (evita RLS).
                 try:
@@ -3033,7 +3049,7 @@ if USE_FLASK:
                             "ml_id": item_id, "conta": conta_nome, "sku": _sku_base,
                             "titulo": _titulo, "preco": preco,
                             "estoque": int(data.get("quantidade", 1) or 1),
-                            "status": item.get("status", "active"),
+                            "status": _status_final,
                             "thumbnail": _thumb, "vinculado": True,
                         }, timeout=8
                     )
