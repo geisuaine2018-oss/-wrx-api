@@ -292,6 +292,81 @@ def _buscar_api_ml(codigo):
             break
     return titles, novos, usados
 
+# ─── Coletor de preços LIMPO para a Revisão de Preços ──────────────────────────
+# Filtra a concorrência pra comparar com o PRODUTO CERTO (não acessório/relacionado),
+# tira vendedor com muitos anúncios iguais (atacado/revenda) e produto paralelo/danificado.
+# NÃO mexe no executar_busca (motor do cadastro) — é uma coleta separada.
+_REV_ACESSORIOS = [
+    "lampada", "lâmpada", "led", "xenon", "soquete", "lente", "capa", "moldura",
+    "friso", "sensor", "reparo", "conector", "chicote", "parafuso", "presilha",
+    "palheta", "guarnicao", "guarnição", "vigia", "defletor", "aplique", "adesivo",
+    "emblema", "protetor", "pelicula", "película", "cobertura",
+]
+_REV_RUINS = [
+    "paralel", "similar", "recondicion", "remanufatur", "retific", "danificad",
+    "avariad", "batid", "quebrad", "trincad", "p/ retirada", "para retirada",
+    "para conserto", "no estado", "sem garantia de funcionamento", "com defeito",
+    "concessionaria", "concessionária", "genuino", "genuíno",
+]
+
+def _revisao_tokens(txt):
+    import re as _re
+    txt = (txt or "").lower()
+    txt = _re.sub(r"[^a-z0-9çãõáéíóúâêôà ]", " ", txt)
+    stop = {"do", "da", "de", "para", "com", "sem", "e", "o", "a", "os", "as",
+            "p", "par", "kit", "novo", "nova", "usado", "usada", "original", "peca", "peça"}
+    return [w for w in txt.split() if len(w) >= 3 and w not in stop]
+
+def _revisao_coletar_precos(consulta, eh_oem=False):
+    """Coleta preços da concorrência ML (3 primeiras páginas) já FILTRADOS.
+    Retorna lista de preços limpos."""
+    token = _get_ml_token()
+    headers = {"Accept": "application/json", "Accept-Language": "pt-BR,pt;q=0.9"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    toks = _revisao_tokens(consulta)
+    principal = toks[0] if toks else ""
+    qlow = (consulta or "").lower()
+    por_vendedor = {}
+    precos = []
+    for offset in (0, 50, 100):  # 3 primeiras páginas
+        try:
+            r = requests.get(
+                "https://api.mercadolibre.com/sites/MLB/search",
+                params={"q": consulta, "limit": 50, "offset": offset},
+                headers=headers, timeout=20)
+            if r.status_code != 200:
+                break
+            results = r.json().get("results", [])
+            if not results:
+                break
+            for it in results:
+                titulo = (it.get("title") or "")
+                tl = titulo.lower()
+                preco = float(it.get("price") or 0)
+                if preco <= 5:
+                    continue
+                seller = str((it.get("seller") or {}).get("id") or it.get("seller_id") or "")
+                # 1) RELEVÂNCIA (busca por nome): título precisa ter a palavra principal
+                #    do produto. Ex: "farol" → descarta "lâmpada do farol".
+                if not eh_oem and principal and principal not in tl:
+                    continue
+                # 2) tira ACESSÓRIO/peça relacionada (só se não faz parte da consulta)
+                if not eh_oem and any(a in tl and a not in qlow for a in _REV_ACESSORIOS):
+                    continue
+                # 3) tira PARALELA / recondicionado / danificado / concessionária
+                if any(b in tl for b in _REV_RUINS):
+                    continue
+                # 4) tira VENDEDOR com mais de 2 anúncios (atacado/revenda em massa)
+                if seller:
+                    por_vendedor[seller] = por_vendedor.get(seller, 0) + 1
+                    if por_vendedor[seller] > 2:
+                        continue
+                precos.append(round(preco, 2))
+        except Exception:
+            break
+    return precos
+
 def _buscar_api_ml_detalhado(codigo):
     """Busca via ML API com atributos completos por item."""
     items_detalhados = []
@@ -2969,19 +3044,19 @@ if USE_FLASK:
                         titulo_est = (pr.json()[0].get("titulo") or "").strip()
                 except Exception:
                     pass
+                eh_oem = bool(oem)
                 consulta = oem or titulo_est or (a.get("titulo") or "")
                 menor = media = sug = 0.0
                 qtd = 0
                 if consulta:
                     try:
-                        res = executar_busca(consulta) or {}
-                        precos = list(res.get("precos_novos") or []) + list(res.get("precos_usados") or [])
-                        precos = [float(p) for p in precos if p and float(p) > 0]
+                        precos = _revisao_coletar_precos(consulta, eh_oem=eh_oem)
                         if precos:
                             menor = round(min(precos), 2)
                             media = round(sum(precos) / len(precos), 2)
                             qtd = len(precos)
-                        sug = float(res.get("preco_sugerido") or 0)
+                            # sugestão = mediana aparada (corta outliers) com 3% abaixo (regra da usuária)
+                            sug = round(calcular_preco_sugerido(precos) * 0.97, 2)
                     except Exception as e:
                         print(f"[REVISAO] erro busca sku={sku}: {e}")
                 # diferença: meu preço vs referência (sugestão; senão menor do mercado)
