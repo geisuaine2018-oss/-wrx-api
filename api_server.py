@@ -367,6 +367,39 @@ def _revisao_coletar_precos(consulta, eh_oem=False):
             break
     return precos
 
+def _revisao_filtrar_pares(pares, consulta, eh_oem=False):
+    """Aplica os MESMOS filtros (relevância, acessório, paralela, vendedor>2) sobre
+    pares (titulo, preco, vendedor) vindos de FORA — ex: raspados pelo navegador.
+    Retorna a lista de preços limpos (ainda sem aparar outliers)."""
+    toks = _revisao_tokens(consulta)
+    principal = toks[0] if toks else ""
+    qlow = (consulta or "").lower()
+    por_vendedor = {}
+    precos = []
+    for par in (pares or []):
+        titulo = (par.get("titulo") or "")
+        tl = titulo.lower()
+        try:
+            preco = float(par.get("preco") or 0)
+        except Exception:
+            continue
+        if preco <= 5:
+            continue
+        vend = (par.get("vendedor") or "").strip().lower()
+        if titulo:
+            if not eh_oem and principal and principal not in tl:
+                continue
+            if not eh_oem and any(a in tl and a not in qlow for a in _REV_ACESSORIOS):
+                continue
+            if any(b in tl for b in _REV_RUINS):
+                continue
+        if vend:
+            por_vendedor[vend] = por_vendedor.get(vend, 0) + 1
+            if por_vendedor[vend] > 2:
+                continue
+        precos.append(round(preco, 2))
+    return precos
+
 def _revisao_aparar(precos):
     """Corta outliers ANTES de calcular menor/media/sugestao.
     Ex: miolo 450/500/600 -> nao deixa entrar o 250 (muito barato) nem o 1000 (muito caro).
@@ -3160,6 +3193,47 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         t = threading.Thread(target=_revisao_processar, args=(limite,), daemon=True)
         t.start()
         return jsonify({"ok": True, "iniciado": True, "limite": limite})
+
+    @app.route("/revisao-precos/salvar-item", methods=["POST", "OPTIONS"])
+    def revisao_salvar_item():
+        # Recebe os preços JÁ RASPADOS (pelo navegador) e grava a linha calculada.
+        # Ponte enquanto o Railway não tem navegador headless p/ raspar sozinho.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        d = request.get_json(force=True, silent=True) or {}
+        sku = (d.get("sku") or "").strip()
+        if not sku:
+            return jsonify({"ok": False, "erro": "sku obrigatório"}), 400
+        oem = (d.get("oem") or "").strip()
+        # OEM "real" = parece código (tem dígito e não é palavra tipo 'original')
+        eh_oem = bool(re.search(r"\d", oem)) and oem.lower() not in ("original", "000", "0")
+        consulta = oem if eh_oem else (d.get("titulo") or "")
+        pares = d.get("pares") or []
+        precos = _revisao_filtrar_pares(pares, consulta, eh_oem=eh_oem)
+        precos = _revisao_aparar(precos)
+        meu = float(d.get("meu_preco") or 0)
+        menor = round(min(precos), 2) if precos else 0.0
+        media = round(sum(precos) / len(precos), 2) if precos else 0.0
+        sug = round(calcular_preco_sugerido(precos) * 0.97, 2) if precos else 0.0
+        ref = sug or menor
+        dif = round((meu - ref) / meu * 100, 1) if (meu > 0 and ref > 0) else 0.0
+        absd = abs(dif)
+        prio = "manter" if absd <= 10 else ("revisar" if absd <= 20 else "alta")
+        row = {
+            "sku": sku, "ml_id": d.get("ml_id", ""), "conta": d.get("conta", "default"),
+            "titulo": d.get("titulo", ""), "thumbnail": d.get("thumbnail", ""), "oem": oem,
+            "meu_preco": meu, "menor_mercado": menor, "media_mercado": media, "sugestao": sug,
+            "diferenca_pct": dif, "prioridade": prio, "fonte_qtd": len(precos), "status": "pendente",
+        }
+        try:
+            r = requests.post(
+                f"{_WRX_SB_URL}/rest/v1/revisao_precos",
+                headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"},
+                json=row, timeout=15)
+            ok = r.status_code in (200, 201, 204)
+            return jsonify({"ok": ok, "linha": row, "supabase": r.status_code})
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 500
 
     @app.route("/revisao-precos/status", methods=["GET", "OPTIONS"])
     def revisao_status():
