@@ -364,10 +364,12 @@ def atualizar_supabase(pecas):
                 "custo":           p.get("custo"),
                 "lado":            p.get("lado") or "",
                 "posicao":         p.get("posicao") or "",
+                # NCM/CEST vêm do PartsHub (cadastro) — necessários p/ a loja Shopee com Nota Fiscal (Mauricio).
+                # SEMPRE presentes em TODAS as linhas (chaves iguais) p/ não dar PGRST102.
+                "ncm":             p.get("ncm") or "",
+                "cest":            p.get("cest") or "",
                 "atualizado":      datetime.now(timezone.utc).isoformat()
             })
-            # NCM/CEST NAO entram no sync (sao preenchidos manualmente no sistema e preservados).
-            # Antes eram add condicionalmente -> chaves diferentes no lote -> erro PGRST102 (keys must match).
         if not lote:
             continue
         r = requests.post(
