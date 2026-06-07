@@ -2860,14 +2860,32 @@ if USE_FLASK:
         token = _ml_get_user_token(conta)
         if not token:
             return jsonify({"ok": False, "erro": f"conta '{conta}' sem token ML"}), 401
-        try:
-            r = requests.put(
+        def _put_status(st):
+            return requests.put(
                 f"https://api.mercadolibre.com/items/{ml_id}",
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                json={"status": novo}, timeout=15)
+                json={"status": st}, timeout=15)
+        try:
+            if novo == "closed":
+                # ML EXIGE pausar antes de encerrar (active->closed dá "status is not modifiable").
+                # Zera o estoque tambem (ajuda itens que travam pra fechar).
+                try:
+                    requests.put(f"https://api.mercadolibre.com/items/{ml_id}",
+                                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                                 json={"status": "paused", "available_quantity": 0}, timeout=15)
+                except Exception:
+                    pass
+                r = _put_status("closed")
+            else:
+                r = _put_status(novo)
             if r.status_code == 200:
                 return jsonify({"ok": True, "ml_id": ml_id, "status": novo})
-            return jsonify({"ok": False, "erro": f"ML {r.status_code}: {r.text[:200]}"}), 502
+            # Mensagem mais clara pro usuário
+            _txt = r.text[:300]
+            _amig = ""
+            if "not_modifiable" in _txt or "not modifiable" in _txt:
+                _amig = "O Mercado Livre não deixa encerrar este anúncio agora (pode estar em análise/revisão ou recém-criado). Tente pausar e encerrar mais tarde, ou encerre pelo painel do ML."
+            return jsonify({"ok": False, "erro": _amig or f"ML {r.status_code}: {_txt}", "ml_raw": _txt}), 502
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e)}), 500
 
