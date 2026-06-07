@@ -6187,6 +6187,66 @@ CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
         requests.delete(f"{_WRX_SB_URL}/rest/v1/func_auth?usuario=eq.{usuario}", headers=_auth_sb_headers(), timeout=12)
         return jsonify({"ok": True})
 
+    # ── SILHUETAS de carro na NUVEM (recortes reaproveitaveis em QUALQUER aparelho) ──
+    @app.route("/silhuetas/setup", methods=["POST", "GET", "OPTIONS"])
+    def silhuetas_setup():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+        sql = ("CREATE TABLE IF NOT EXISTS silhuetas ("
+               "chave TEXT PRIMARY KEY, veiculo TEXT, ano TEXT, png TEXT NOT NULL, "
+               "criado_em TIMESTAMPTZ DEFAULT NOW());")
+        if service_key:
+            r = requests.post(f"{_WRX_SB_URL}/rest/v1/rpc/exec",
+                              headers={"apikey": service_key, "Authorization": f"Bearer {service_key}", "Content-Type": "application/json"},
+                              json={"sql": sql}, timeout=15)
+            if r.status_code in (200, 201, 204):
+                return jsonify({"ok": True, "msg": "Tabela silhuetas criada"})
+        return jsonify({"ok": False, "msg": "Rode o SQL no Supabase (SQL Editor) ou configure SUPABASE_SERVICE_KEY", "sql": sql})
+
+    @app.route("/silhuetas/listar", methods=["GET", "OPTIONS"])
+    def silhuetas_listar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        try:
+            r = requests.get(f"{_WRX_SB_URL}/rest/v1/silhuetas?select=chave,veiculo,ano,png&order=criado_em.desc&limit=60",
+                             headers=_auth_sb_headers(), timeout=20)
+            return jsonify({"ok": r.status_code == 200, "silhuetas": r.json() if r.status_code == 200 else []})
+        except Exception as e:
+            return jsonify({"ok": False, "silhuetas": [], "erro": str(e)})
+
+    @app.route("/silhuetas/salvar", methods=["POST", "OPTIONS"])
+    def silhuetas_salvar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        d = request.get_json(force=True) or {}
+        chave = str(d.get("chave") or "").strip()
+        png = str(d.get("png") or "")
+        if not chave or not png.startswith("data:"):
+            return jsonify({"ok": False, "erro": "chave e png (data:) obrigatorios"}), 400
+        rec = {"chave": chave, "veiculo": str(d.get("veiculo") or ""), "ano": str(d.get("ano") or ""), "png": png}
+        try:
+            r = requests.post(f"{_WRX_SB_URL}/rest/v1/silhuetas?on_conflict=chave",
+                              headers={**_auth_sb_headers(), "Prefer": "resolution=merge-duplicates"},
+                              json=[rec], timeout=25)
+            ok = r.status_code in (200, 201, 204)
+            return jsonify({"ok": ok, "erro": (None if ok else r.text[:200])}), (200 if ok else 502)
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 500
+
+    @app.route("/silhuetas/excluir", methods=["POST", "OPTIONS"])
+    def silhuetas_excluir():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        d = request.get_json(force=True) or {}
+        chave = str(d.get("chave") or "").strip()
+        if chave:
+            try:
+                requests.delete(f"{_WRX_SB_URL}/rest/v1/silhuetas?chave=eq.{chave}", headers=_auth_sb_headers(), timeout=15)
+            except Exception:
+                pass
+        return jsonify({"ok": True})
+
     def _cron_whatsapp_loop():
         """Thread: a cada 2 min chama checar-novidades (avisa pergunta/venda/reclamação no WhatsApp)."""
         import threading
