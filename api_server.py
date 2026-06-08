@@ -3239,6 +3239,21 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e)}), 500
 
+    @app.route("/revisao-precos/limpar", methods=["POST", "OPTIONS"])
+    def revisao_limpar():
+        # Apaga as linhas (por status) — pra zerar a lista e começar limpo.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        d = request.get_json(force=True, silent=True) or {}
+        status = (d.get("status") or "pendente").strip()
+        try:
+            url = f"{_WRX_SB_URL}/rest/v1/revisao_precos?"
+            url += "id=gt.0" if status == "todos" else f"status=eq.{status}"
+            r = requests.delete(url, headers={**_wrx_headers(), "Prefer": "return=minimal"}, timeout=20)
+            return jsonify({"ok": r.status_code in (200, 204), "supabase": r.status_code})
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 500
+
     @app.route("/revisao-precos/status", methods=["GET", "OPTIONS"])
     def revisao_status():
         if request.method == "OPTIONS":
