@@ -3208,6 +3208,18 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         sku = (d.get("sku") or "").strip()
         if not sku:
             return jsonify({"ok": False, "erro": "sku obrigatório"}), 400
+        # PORTEIRO: usa o estoque FRESCO do PartsHub (pecas_estoque.qtd). Se a peça já
+        # foi vendida / está zerada, NÃO entra na revisão (o ml_anuncios fica defasado).
+        try:
+            er = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque?select=qtd&sku=eq.{sku}&limit=1",
+                headers=_wrx_headers(), timeout=12)
+            if er.status_code == 200 and er.json():
+                qtd_fresca = er.json()[0].get("qtd")
+                if qtd_fresca is not None and float(qtd_fresca) <= 0:
+                    return jsonify({"ok": True, "pulado": True, "motivo": "sem estoque (vendido)"})
+        except Exception:
+            pass
         oem = (d.get("oem") or "").strip()
         # OEM "real" = parece código (tem dígito e não é palavra tipo 'original')
         eh_oem = bool(re.search(r"\d", oem)) and oem.lower() not in ("original", "000", "0")
