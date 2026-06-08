@@ -3142,6 +3142,71 @@ if USE_FLASK:
         finally:
             _REVISAO_STATUS["rodando"] = False
 
+    @app.route("/cadastro-rapido", methods=["POST", "OPTIONS"])
+    def cadastro_rapido():
+        # Cadastro rápido (mobile) -> grava em pecas_estoque com origem='manual'
+        # (o sync do PartsHub NÃO mexe em origem!=null, então não some).
+        if request.method == "OPTIONS":
+            return _options_resp()
+        d = request.get_json(force=True, silent=True) or {}
+        nome = (d.get("nome") or d.get("titulo") or "").strip()
+        if not nome:
+            return jsonify({"ok": False, "erro": "nome obrigatório"}), 400
+        sku = (d.get("sku") or "").strip()
+        if not sku:
+            sku = "MAN" + str(int(time.time()))[-8:]  # gera um SKU manual único
+        def _num(v):
+            try:
+                return float(str(v).replace(",", ".")) if v not in (None, "") else None
+            except Exception:
+                return None
+        fotos = d.get("fotos") or []
+        if isinstance(fotos, str):
+            fotos = [fotos]
+        compat = d.get("compatibilidade") or []
+        if isinstance(compat, str):
+            compat = [c.strip() for c in compat.split(",") if c.strip()]
+        row = {
+            "sku": sku,
+            "titulo": (d.get("titulo") or nome).strip(),
+            "oem": (d.get("oem") or "").strip(),
+            "marca": (d.get("marca") or "").strip(),
+            "modelo": (d.get("modelo") or "").strip(),
+            "ano": (str(d.get("ano") or "").strip()),
+            "preco": _num(d.get("preco")) or 0,
+            "qtd": int(d.get("qtd") or 1),
+            "cond": (d.get("cond") or "Usada").strip(),
+            "categoria": (d.get("categoria") or "").strip(),
+            "peso": _num(d.get("peso")),
+            "altura": _num(d.get("altura")),
+            "largura": _num(d.get("largura")),
+            "comprimento": _num(d.get("comprimento")),
+            "fotos": fotos[:8],
+            "compatibilidade": compat,
+            "origem": "manual",
+        }
+        # remove chaves None (colunas de medida podem não existir ainda)
+        row = {k: v for k, v in row.items() if v is not None}
+        try:
+            r = requests.post(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque?on_conflict=sku",
+                headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
+                json=row, timeout=20)
+            if r.status_code in (200, 201, 204):
+                return jsonify({"ok": True, "sku": sku})
+            # se falhou por coluna inexistente (medidas/origem), tenta sem os extras
+            base = {k: row[k] for k in ("sku", "titulo", "oem", "marca", "modelo", "ano", "preco", "qtd", "cond", "categoria", "fotos", "compatibilidade") if k in row}
+            base["origem"] = "manual"
+            r2 = requests.post(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque?on_conflict=sku",
+                headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
+                json=base, timeout=20)
+            if r2.status_code in (200, 201, 204):
+                return jsonify({"ok": True, "sku": sku, "aviso": "salvo sem medidas (colunas podem faltar)"})
+            return jsonify({"ok": False, "erro": f"Supabase {r.status_code}: {r.text[:200]}"}), 502
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 500
+
     @app.route("/revisao-precos/setup-tabela", methods=["GET", "POST", "OPTIONS"])
     def revisao_setup_tabela():
         if request.method == "OPTIONS":
