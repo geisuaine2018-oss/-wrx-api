@@ -3171,6 +3171,84 @@ if USE_FLASK:
                 break
         return mx
 
+    @app.route("/locais", methods=["GET", "OPTIONS"])
+    def locais_estoque():
+        # Lista os locais de estoque que já existem (distintos) — pro picker do cadastro/localizar.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        locs = set()
+        off = 0
+        while True:
+            try:
+                r = requests.get(
+                    f"{_WRX_SB_URL}/rest/v1/pecas_estoque?select=loc&loc=not.is.null&limit=1000&offset={off}",
+                    headers=_wrx_headers(), timeout=20)
+                if r.status_code != 200:
+                    break
+                rows = r.json()
+            except Exception:
+                break
+            if not rows:
+                break
+            for x in rows:
+                v = (x.get("loc") or "").strip()
+                if v:
+                    locs.add(v)
+            if len(rows) < 1000:
+                break
+            off += 1000
+            if off > 300000:
+                break
+        return jsonify({"ok": True, "locais": sorted(locs)})
+
+    @app.route("/peca-info", methods=["GET", "OPTIONS"])
+    def peca_info():
+        # Carrega uma peça por SKU (pra tela de localizar): titulo, loc atual, foto.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        sku = (request.args.get("sku") or "").strip()
+        if not sku:
+            return jsonify({"ok": False, "erro": "sku obrigatório"}), 400
+        try:
+            g = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque?select=sku,titulo,loc,fotos,oem,marca,modelo&sku=eq.{sku}&limit=1",
+                headers=_wrx_headers(), timeout=15)
+            rows = g.json() if g.status_code == 200 else []
+        except Exception:
+            rows = []
+        if not rows:
+            return jsonify({"ok": False, "erro": "peça não encontrada"}), 404
+        return jsonify({"ok": True, "peca": rows[0]})
+
+    @app.route("/peca-localizar", methods=["POST", "OPTIONS"])
+    def peca_localizar():
+        # Salva SÓ a localização de uma peça (tela rápida do funcionário).
+        if request.method == "OPTIONS":
+            return _options_resp()
+        d = request.get_json(force=True, silent=True) or {}
+        sku = (d.get("sku") or "").strip()
+        loc = (d.get("loc") or "").strip()
+        if not sku:
+            return jsonify({"ok": False, "erro": "sku obrigatório"}), 400
+        try:
+            g = requests.get(f"{_WRX_SB_URL}/rest/v1/pecas_estoque?select=sku,titulo&sku=eq.{sku}&limit=1",
+                             headers=_wrx_headers(), timeout=15)
+            rows = g.json() if g.status_code == 200 else []
+        except Exception:
+            rows = []
+        if not rows:
+            return jsonify({"ok": False, "erro": "peça não encontrada (confere o código)"}), 404
+        try:
+            r = requests.patch(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque?sku=eq.{sku}",
+                headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"},
+                json={"loc": loc}, timeout=15)
+            if r.status_code in (200, 204):
+                return jsonify({"ok": True, "sku": sku, "titulo": rows[0].get("titulo"), "loc": loc})
+            return jsonify({"ok": False, "erro": f"Supabase {r.status_code}: {r.text[:150]}"}), 502
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 500
+
     @app.route("/proximo-sku", methods=["GET", "OPTIONS"])
     def proximo_sku():
         if request.method == "OPTIONS":
