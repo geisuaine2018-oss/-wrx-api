@@ -7,7 +7,7 @@ echo ============================================
 echo   REVISAO DE PRECOS - raspagem no seu PC
 echo ============================================
 echo.
-set /p QTD=Quantos anuncios revisar? (Enter = 10):
+set /p QTD=Quantos anuncios revisar? (numero, ou "tudo") [Enter = 10]:
 if "%QTD%"=="" set QTD=10
 echo.
 echo Rodando para %QTD% anuncios... (pode demorar alguns minutos)

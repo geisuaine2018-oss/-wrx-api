@@ -66,9 +66,9 @@ def carregar_anuncios(limite):
     print("Buscando seus anúncios ativos...")
     r = requests.get(f"{API}/integracoes/mercadolivre/anuncios-db", timeout=60)
     por_sku = (r.json() or {}).get("anunciosPorSku", {})
-    # já tem revisão pendente? pula
+    # já está na lista (qualquer status)? pula — pra re-checar é só "Limpar lista"
     try:
-        jr = requests.get(f"{API}/revisao-precos/listar?status=pendente", timeout=30)
+        jr = requests.get(f"{API}/revisao-precos/listar?status=todos", timeout=30)
         ja = {(x.get("sku") or "").upper() for x in (jr.json().get("itens") or [])}
     except Exception:
         ja = set()
@@ -98,8 +98,61 @@ def carregar_anuncios(limite):
     return itens[:limite]
 
 
+def _eh_captcha(pagina):
+    try:
+        u = (pagina.url or "").lower()
+        t = (pagina.title() or "").lower()
+        return ("captcha" in u) or ("seguridad" in t) or ("security" in t)
+    except Exception:
+        return False
+
+
+def _reaquecer(pagina):
+    """Volta na home do ML pra renovar cookies (reduz captcha)."""
+    try:
+        pagina.goto("https://www.mercadolivre.com.br/", timeout=20000, wait_until="domcontentloaded")
+        pagina.wait_for_timeout(1500)
+    except Exception:
+        pass
+
+
+def _raspar_produto(pagina, slug):
+    """Raspa as 3 páginas de um produto. Trata captcha (espera + reaquece + 1 retry).
+    Retorna (pares, bloqueado)."""
+    pares = []
+    bloqueado = False
+    for pag in ("", "_Desde_51", "_Desde_101"):
+        url = f"https://lista.mercadolivre.com.br/{slug}{pag}"
+        for tentativa in (1, 2):
+            try:
+                pagina.goto(url, timeout=30000, wait_until="domcontentloaded")
+                if _eh_captcha(pagina):
+                    if tentativa == 1:
+                        print("   (ML pediu captcha — esperando e tentando de novo...)")
+                        pagina.wait_for_timeout(6000)
+                        _reaquecer(pagina)
+                        continue  # tenta a mesma página de novo
+                    bloqueado = True
+                    break
+                try:
+                    pagina.wait_for_selector(
+                        "li.ui-search-layout__item, .ui-search-result__wrapper, .poly-card",
+                        timeout=12000)
+                except Exception:
+                    pass
+                pagina.wait_for_timeout(1000)
+                pares.extend(pagina.evaluate(JS_RASPAR) or [])
+                break
+            except Exception as e:
+                print(f"   (página falhou: {e})")
+                break
+    return pares, bloqueado
+
+
 def main():
-    limite = int(sys.argv[1]) if len(sys.argv) > 1 else 10
+    import random
+    arg = sys.argv[1] if len(sys.argv) > 1 else "10"
+    limite = 99999 if str(arg).strip().lower() in ("tudo", "todos", "all") else int(arg)
     itens = carregar_anuncios(limite)
     if not itens:
         print("Nenhum anúncio ativo novo pra revisar (talvez já estejam todos na lista).")
@@ -107,9 +160,10 @@ def main():
     print(f"Vou revisar {len(itens)} anúncios.\n")
 
     from playwright.sync_api import sync_playwright
+    com_preco = sem_preco = bloqueados = 0
     with sync_playwright() as pw:
-        # MESMA receita anti-bloqueio do local_compat_server (_raspar_ml), que já funciona:
-        # flag AutomationControlled off + esconde navigator.webdriver + abre a home p/ cookies.
+        # Receita anti-bloqueio do local_compat_server (_raspar_ml), que já funciona:
+        # flag AutomationControlled off + esconde navigator.webdriver + home p/ cookies.
         navegador = pw.chromium.launch(
             headless=True,
             args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
@@ -120,40 +174,19 @@ def main():
         )
         pagina = ctx.new_page()
         pagina.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
-        # abre o ML uma vez p/ pegar cookies (reduz captcha)
-        try:
-            pagina.goto("https://www.mercadolivre.com.br/", timeout=20000, wait_until="domcontentloaded")
-            pagina.wait_for_timeout(1000)
-        except Exception:
-            pass
+        _reaquecer(pagina)
         for i, it in enumerate(itens, 1):
             termo = query_do_titulo(it["titulo"]) or it["titulo"]
             slug = re.sub(r"\s+", "-", termo.strip())
-            pares = []
-            for pag in ("", "_Desde_51", "_Desde_101"):  # 3 páginas
-                url = f"https://lista.mercadolivre.com.br/{slug}{pag}"
-                try:
-                    pagina.goto(url, timeout=30000, wait_until="domcontentloaded")
-                    try:
-                        pagina.wait_for_selector(
-                            "li.ui-search-layout__item, .ui-search-result__wrapper, .poly-card",
-                            timeout=12000)
-                    except Exception:
-                        pass
-                    pagina.wait_for_timeout(1200)
-                    pares.extend(pagina.evaluate(JS_RASPAR) or [])
-                except Exception as e:
-                    print(f"   (página falhou: {e})")
+            pares, bloqueado = _raspar_produto(pagina, slug)
             # dedup global
-            vistos = set()
-            limpos = []
+            vistos, limpos = set(), []
             for p in pares:
                 k = f"{p.get('titulo')}|{p.get('preco')}"
                 if k in vistos:
                     continue
                 vistos.add(k)
                 limpos.append(p)
-            # manda pro sistema (ele filtra + calcula + grava)
             body = {
                 "sku": it["sku"], "ml_id": it["ml_id"], "conta": it["conta"],
                 "titulo": it["titulo"], "thumbnail": it["thumbnail"],
@@ -161,16 +194,30 @@ def main():
             }
             try:
                 rr = requests.post(f"{API}/revisao-precos/salvar-item", json=body, timeout=30)
-                linha = (rr.json() or {}).get("linha", {})
-                print(f"[{i}/{len(itens)}] {it['titulo'][:45]:45} | "
-                      f"meu R${it['meu_preco']:.0f}  menor R${linha.get('menor_mercado',0):.0f}  "
-                      f"média R${linha.get('media_mercado',0):.0f}  sug R${linha.get('sugestao',0):.0f}  "
-                      f"({linha.get('fonte_qtd',0)} preços) -> {linha.get('prioridade','')}")
+                resp = rr.json() or {}
+                if resp.get("pulado"):
+                    print(f"[{i}/{len(itens)}] {it['titulo'][:42]:42} | PULADO ({resp.get('motivo')})")
+                else:
+                    linha = resp.get("linha", {})
+                    q = linha.get('fonte_qtd', 0)
+                    com_preco += 1 if q else 0
+                    sem_preco += 0 if q else 1
+                    print(f"[{i}/{len(itens)}] {it['titulo'][:42]:42} | "
+                          f"meu R${it['meu_preco']:.0f}  menor R${linha.get('menor_mercado',0):.0f}  "
+                          f"média R${linha.get('media_mercado',0):.0f}  sug R${linha.get('sugestao',0):.0f}  "
+                          f"({q} preços){' [BLOQUEADO]' if bloqueado else ''} -> {linha.get('prioridade','')}")
             except Exception as e:
                 print(f"[{i}/{len(itens)}] ERRO ao salvar {it['sku']}: {e}")
-            time.sleep(1.0)
+            if bloqueado:
+                bloqueados += 1
+            # pausa variável (não força o ML) + reaquece a cada 10
+            time.sleep(1.2 + random.random() * 1.3)
+            if i % 10 == 0:
+                _reaquecer(pagina)
         navegador.close()
-    print("\nPronto! Abra a tela REVISÃO DE PREÇOS no painel pra aprovar/editar/ignorar.")
+    print(f"\nPronto! {com_preco} com preço, {sem_preco} sem preço"
+          + (f", {bloqueados} bloqueados pelo ML" if bloqueados else "")
+          + ". Abra a tela REVISÃO DE PREÇOS no painel.")
 
 
 if __name__ == "__main__":
