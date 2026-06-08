@@ -108,8 +108,24 @@ def main():
 
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
-        navegador = pw.chromium.launch(headless=True)
-        pagina = navegador.new_page(user_agent=UA, locale="pt-BR")
+        # MESMA receita anti-bloqueio do local_compat_server (_raspar_ml), que já funciona:
+        # flag AutomationControlled off + esconde navigator.webdriver + abre a home p/ cookies.
+        navegador = pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        )
+        ctx = navegador.new_context(
+            locale="pt-BR", user_agent=UA,
+            extra_http_headers={"Accept-Language": "pt-BR,pt;q=0.9"},
+        )
+        pagina = ctx.new_page()
+        pagina.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
+        # abre o ML uma vez p/ pegar cookies (reduz captcha)
+        try:
+            pagina.goto("https://www.mercadolivre.com.br/", timeout=20000, wait_until="domcontentloaded")
+            pagina.wait_for_timeout(1000)
+        except Exception:
+            pass
         for i, it in enumerate(itens, 1):
             termo = query_do_titulo(it["titulo"]) or it["titulo"]
             slug = re.sub(r"\s+", "-", termo.strip())
@@ -118,7 +134,13 @@ def main():
                 url = f"https://lista.mercadolivre.com.br/{slug}{pag}"
                 try:
                     pagina.goto(url, timeout=30000, wait_until="domcontentloaded")
-                    pagina.wait_for_timeout(1500)
+                    try:
+                        pagina.wait_for_selector(
+                            "li.ui-search-layout__item, .ui-search-result__wrapper, .poly-card",
+                            timeout=12000)
+                    except Exception:
+                        pass
+                    pagina.wait_for_timeout(1200)
                     pares.extend(pagina.evaluate(JS_RASPAR) or [])
                 except Exception as e:
                     print(f"   (página falhou: {e})")
