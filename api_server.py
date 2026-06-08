@@ -3142,6 +3142,42 @@ if USE_FLASK:
         finally:
             _REVISAO_STATUS["rodando"] = False
 
+    def _max_sku_numerico():
+        # Maior SKU numérico do pecas_estoque (pra gerar o próximo na sequência).
+        mx = 0
+        off = 0
+        while True:
+            try:
+                r = requests.get(
+                    f"{_WRX_SB_URL}/rest/v1/pecas_estoque?select=sku&limit=1000&offset={off}",
+                    headers=_wrx_headers(), timeout=20)
+                if r.status_code != 200:
+                    break
+                rows = r.json()
+            except Exception:
+                break
+            if not rows:
+                break
+            for x in rows:
+                s = str(x.get("sku") or "")
+                if s.isdigit():
+                    n = int(s)
+                    if n > mx:
+                        mx = n
+            if len(rows) < 1000:
+                break
+            off += 1000
+            if off > 300000:
+                break
+        return mx
+
+    @app.route("/proximo-sku", methods=["GET", "OPTIONS"])
+    def proximo_sku():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        mx = _max_sku_numerico()
+        return jsonify({"ok": True, "ultimo": mx, "proximo": mx + 1})
+
     @app.route("/cadastro-rapido", methods=["POST", "OPTIONS"])
     def cadastro_rapido():
         # Cadastro rápido (mobile) -> grava em pecas_estoque com origem='manual'
@@ -3154,7 +3190,8 @@ if USE_FLASK:
             return jsonify({"ok": False, "erro": "nome obrigatório"}), 400
         sku = (d.get("sku") or "").strip()
         if not sku:
-            sku = "MAN" + str(int(time.time()))[-8:]  # gera um SKU manual único
+            # próximo SKU na SEQUÊNCIA (maior numérico + 1), igual ao PartsHub
+            sku = str(_max_sku_numerico() + 1)
         def _num(v):
             try:
                 return float(str(v).replace(",", ".")) if v not in (None, "") else None
@@ -3176,6 +3213,7 @@ if USE_FLASK:
             "preco": _num(d.get("preco")) or 0,
             "qtd": int(d.get("qtd") or 1),
             "cond": (d.get("cond") or "Usada").strip(),
+            "loc": (d.get("loc") or "").strip(),
             "categoria": (d.get("categoria") or "").strip(),
             "peso": _num(d.get("peso")),
             "altura": _num(d.get("altura")),
@@ -3195,7 +3233,7 @@ if USE_FLASK:
             if r.status_code in (200, 201, 204):
                 return jsonify({"ok": True, "sku": sku})
             # se falhou por coluna inexistente (medidas/origem), tenta sem os extras
-            base = {k: row[k] for k in ("sku", "titulo", "oem", "marca", "modelo", "ano", "preco", "qtd", "cond", "categoria", "fotos", "compatibilidade") if k in row}
+            base = {k: row[k] for k in ("sku", "titulo", "oem", "marca", "modelo", "ano", "preco", "qtd", "cond", "loc", "categoria", "fotos", "compatibilidade") if k in row}
             base["origem"] = "manual"
             r2 = requests.post(
                 f"{_WRX_SB_URL}/rest/v1/pecas_estoque?on_conflict=sku",
