@@ -3129,7 +3129,7 @@ if USE_FLASK:
                 }
                 try:
                     requests.post(
-                        f"{_WRX_SB_URL}/rest/v1/revisao_precos",
+                        f"{_WRX_SB_URL}/rest/v1/revisao_precos?on_conflict=sku,conta",
                         headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"},
                         json=row, timeout=15)
                 except Exception as e:
@@ -3243,11 +3243,11 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         }
         try:
             r = requests.post(
-                f"{_WRX_SB_URL}/rest/v1/revisao_precos",
+                f"{_WRX_SB_URL}/rest/v1/revisao_precos?on_conflict=sku,conta",
                 headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"},
                 json=row, timeout=15)
             ok = r.status_code in (200, 201, 204)
-            return jsonify({"ok": ok, "linha": row, "supabase": r.status_code})
+            return jsonify({"ok": ok, "linha": row, "supabase": r.status_code, "sb_msg": (None if ok else r.text[:200])})
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e)}), 500
 
@@ -3315,7 +3315,7 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
             }
             try:
                 requests.post(
-                    f"{_WRX_SB_URL}/rest/v1/revisao_precos",
+                    f"{_WRX_SB_URL}/rest/v1/revisao_precos?on_conflict=sku,conta",
                     headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"},
                     json=row, timeout=12)
                 add += 1
