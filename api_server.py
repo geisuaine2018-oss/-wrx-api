@@ -3266,6 +3266,63 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e)}), 500
 
+    @app.route("/revisao-precos/fila", methods=["POST", "OPTIONS"])
+    def revisao_fila():
+        # Recebe SKUs SELECIONADOS no Estoque → grava como status='fila' (aguardando busca).
+        # O script local pega a fila, raspa e converte em 'pendente' com os preços.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        d = request.get_json(force=True, silent=True) or {}
+        skus = d.get("skus") or []
+        if not skus:
+            return jsonify({"ok": False, "erro": "skus obrigatório"}), 400
+        add = 0
+        pulados = 0
+        for raw in skus[:500]:
+            sku = str(raw).strip()
+            if not sku:
+                continue
+            # estoque fresco (PartsHub) — pula vendido/sem estoque
+            est = {}
+            try:
+                er = requests.get(
+                    f"{_WRX_SB_URL}/rest/v1/pecas_estoque?select=titulo,oem,preco,qtd&sku=eq.{sku}&limit=1",
+                    headers=_wrx_headers(), timeout=12)
+                if er.status_code == 200 and er.json():
+                    est = er.json()[0]
+            except Exception:
+                pass
+            if est.get("qtd") is not None and float(est.get("qtd") or 0) <= 0:
+                pulados += 1
+                continue
+            # dados do anúncio ML (ml_id + conta + preço p/ aprovar depois)
+            an = {}
+            try:
+                ar = requests.get(
+                    f"{_WRX_SB_URL}/rest/v1/ml_anuncios?select=ml_id,conta,titulo,preco,thumbnail&sku=eq.{sku}&limit=1",
+                    headers=_wrx_headers(), timeout=12)
+                if ar.status_code == 200 and ar.json():
+                    an = ar.json()[0]
+            except Exception:
+                pass
+            row = {
+                "sku": sku, "ml_id": an.get("ml_id", ""), "conta": an.get("conta", "default"),
+                "titulo": an.get("titulo") or est.get("titulo") or "", "thumbnail": an.get("thumbnail", ""),
+                "oem": est.get("oem", "") or "",
+                "meu_preco": float(an.get("preco") or est.get("preco") or 0),
+                "menor_mercado": 0, "media_mercado": 0, "sugestao": 0, "diferenca_pct": 0,
+                "prioridade": "manter", "fonte_qtd": 0, "status": "fila",
+            }
+            try:
+                requests.post(
+                    f"{_WRX_SB_URL}/rest/v1/revisao_precos",
+                    headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"},
+                    json=row, timeout=12)
+                add += 1
+            except Exception:
+                pass
+        return jsonify({"ok": True, "adicionados": add, "pulados_sem_estoque": pulados})
+
     @app.route("/revisao-precos/status", methods=["GET", "OPTIONS"])
     def revisao_status():
         if request.method == "OPTIONS":

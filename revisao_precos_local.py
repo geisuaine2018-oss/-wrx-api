@@ -98,6 +98,20 @@ def carregar_anuncios(limite):
     return itens[:limite]
 
 
+def carregar_fila():
+    """Peças que você SELECIONOU no Estoque (status='fila'). Têm prioridade."""
+    try:
+        r = requests.get(f"{API}/revisao-precos/listar?status=fila", timeout=30)
+        rows = r.json().get("itens") or []
+    except Exception:
+        rows = []
+    return [{
+        "sku": x.get("sku"), "ml_id": x.get("ml_id", ""), "conta": x.get("conta", "default"),
+        "titulo": x.get("titulo", ""), "thumbnail": x.get("thumbnail", ""),
+        "oem": x.get("oem", ""), "meu_preco": float(x.get("meu_preco") or 0),
+    } for x in rows if x.get("sku")]
+
+
 def _eh_captcha(pagina):
     try:
         u = (pagina.url or "").lower()
@@ -153,11 +167,16 @@ def main():
     import random
     arg = sys.argv[1] if len(sys.argv) > 1 else "10"
     limite = 99999 if str(arg).strip().lower() in ("tudo", "todos", "all") else int(arg)
-    itens = carregar_anuncios(limite)
-    if not itens:
-        print("Nenhum anúncio ativo novo pra revisar (talvez já estejam todos na lista).")
-        return
-    print(f"Vou revisar {len(itens)} anúncios.\n")
+    # 1º) peças que você SELECIONOU no Estoque (fila). Se houver, revisa SÓ essas.
+    itens = carregar_fila()
+    if itens:
+        print(f"Você selecionou {len(itens)} peça(s) no Estoque. Revisando essas.\n")
+    else:
+        itens = carregar_anuncios(limite)
+        if not itens:
+            print("Nenhum anúncio ativo novo pra revisar (talvez já estejam todos na lista).")
+            return
+        print(f"Vou revisar {len(itens)} anúncios (mais antigos primeiro).\n")
 
     from playwright.sync_api import sync_playwright
     com_preco = sem_preco = bloqueados = 0
@@ -176,7 +195,9 @@ def main():
         pagina.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
         _reaquecer(pagina)
         for i, it in enumerate(itens, 1):
-            termo = query_do_titulo(it["titulo"]) or it["titulo"]
+            oem = (it.get("oem") or "").strip()
+            eh_oem = bool(re.search(r"\d", oem)) and oem.lower() not in ("original", "000", "0")
+            termo = oem if eh_oem else (query_do_titulo(it["titulo"]) or it["titulo"])
             slug = re.sub(r"\s+", "-", termo.strip())
             pares, bloqueado = _raspar_produto(pagina, slug)
             # dedup global
@@ -190,7 +211,7 @@ def main():
             body = {
                 "sku": it["sku"], "ml_id": it["ml_id"], "conta": it["conta"],
                 "titulo": it["titulo"], "thumbnail": it["thumbnail"],
-                "oem": "", "meu_preco": it["meu_preco"], "pares": limpos,
+                "oem": oem if eh_oem else "", "meu_preco": it["meu_preco"], "pares": limpos,
             }
             try:
                 rr = requests.post(f"{API}/revisao-precos/salvar-item", json=body, timeout=30)
