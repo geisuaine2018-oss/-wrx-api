@@ -5782,6 +5782,12 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                             or "produto_nao_cadastrado"
                         )
                         item_salvo["responsavel"] = funcionario["nome"]
+                        item_salvo["resposta_funcionario"] = {
+                            "nome": funcionario["nome"],
+                            "whatsapp": funcionario["whatsapp"],
+                            "acao": acao,
+                            "recebido_em": evento["recebido_em"],
+                        }
                         if item_salvo["candidatos"]:
                             item_salvo["sku_sugerido"] = (
                                 item_salvo["candidatos"][0].get("sku")
@@ -5991,46 +5997,61 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             item = next((linha for linha in itens if linha.get("id") == item_id), None)
             if not item:
                 return jsonify({"ok": False, "erro": "item nao encontrado"}), 404
-            fotos = item.get("fotos") if isinstance(item.get("fotos"), list) else []
+            cadastro_automatico_permitido = (
+                item.get("status") == "produto_nao_cadastrado"
+                and not item.get("candidatos")
+                and not item.get("sku")
+            )
+            fotos = (
+                item.get("fotos_funcionario")
+                if isinstance(item.get("fotos_funcionario"), list)
+                else []
+            )
             duplicado = foto in fotos
             if not duplicado:
                 fotos.append(foto)
+                item["fotos_funcionario"] = fotos[:8]
+                # Mantido para compatibilidade com os fluxos antigos de cadastro.
                 item["fotos"] = fotos[:8]
-                item["status"] = "foto_recebida"
+                if not item.get("candidatos"):
+                    item["status"] = "foto_recebida"
                 item["responsavel"] = funcionario["nome"]
                 item["foto_recebida_em"] = _datetime.now().astimezone().isoformat()
+                item["resposta_funcionario"] = {
+                    "nome": funcionario["nome"],
+                    "whatsapp": funcionario["whatsapp"],
+                    "acao": "tenho",
+                    "recebido_em": item["foto_recebida_em"],
+                }
                 todos[pedido_id] = itens
                 try:
                     _pedidos_estado_save(itens_file, todos)
                 except Exception as e:
                     return jsonify({"ok": False, "erro": f"falha ao salvar foto: {e}"}), 500
 
+        cadastro_automatico = None
+        if not duplicado and cadastro_automatico_permitido:
+            cadastro_automatico, cadastro_http = _cadastrar_produto_encontrado_dados(
+                item_id,
+                funcionario,
+                {"preco": 0, "cond": "Usada", "loc": ""},
+            )
+            if cadastro_http in (200, 201):
+                item = cadastro_automatico.get("item") or item
+
         return jsonify({
             "ok": True,
             "duplicado": duplicado,
             "pedido_id": pedido_id,
             "item": item,
+            "cadastro_automatico": cadastro_automatico,
             "envio_cliente": False,
         })
 
-    @app.route("/integracoes/marcelo/cadastrar-produto-encontrado", methods=["POST", "OPTIONS"])
-    def marcelo_cadastrar_produto_encontrado():
-        """Cadastra no estoque uma peca encontrada, sem publicar anuncios."""
-        if request.method == "OPTIONS":
-            return _options_resp()
-
-        dados = request.get_json(silent=True) or {}
-        item_id = str(dados.get("item_id") or "").strip()
-        funcionario = _identificar_funcionario_pedido(
-            dados.get("phone") or dados.get("telefone")
-        )
-        if not funcionario:
-            return jsonify({"ok": False, "erro": "funcionario nao identificado"}), 403
-        if not re.fullmatch(r"\d+-\d+", item_id):
-            return jsonify({"ok": False, "erro": "item_id invalido"}), 400
+    def _cadastrar_produto_encontrado_dados(item_id, funcionario, dados):
         pedido_id = item_id.split("-", 1)[0]
         if not _evento_tenho_item(item_id, funcionario["whatsapp"]):
-            return jsonify({"ok": False, "erro": "resposta Tenho nao encontrada"}), 409
+            return {"ok": False, "erro": "resposta Tenho nao encontrada"}, 409
 
         try:
             consulta = requests.get(
@@ -6045,26 +6066,39 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             )
             pedidos = consulta.json() if consulta.status_code == 200 else []
         except Exception as e:
-            return jsonify({"ok": False, "erro": f"falha ao consultar pedido: {e}"}), 502
+            return {"ok": False, "erro": f"falha ao consultar pedido: {e}"}, 502
         if not isinstance(pedidos, list) or not pedidos:
-            return jsonify({"ok": False, "erro": "pedido nao encontrado"}), 404
+            return {"ok": False, "erro": "pedido nao encontrado"}, 404
 
         with _pedido_itens_lock:
             itens_file, todos, itens = _carregar_itens_pedido(pedidos[0])
             item = next((linha for linha in itens if linha.get("id") == item_id), None)
             if not item:
-                return jsonify({"ok": False, "erro": "item nao encontrado"}), 404
+                return {"ok": False, "erro": "item nao encontrado"}, 404
             if item.get("sku"):
-                return jsonify({
+                return {
                     "ok": True,
                     "criado": False,
                     "duplicado": True,
                     "sku": item["sku"],
                     "item": item,
-                })
-            fotos = item.get("fotos") if isinstance(item.get("fotos"), list) else []
+                }, 200
+            if item.get("candidatos"):
+                return {
+                    "ok": True,
+                    "criado": False,
+                    "produto_existente": True,
+                    "sku_sugerido": item.get("sku_sugerido"),
+                    "item": item,
+                }, 200
+            fotos = (
+                item.get("fotos_funcionario")
+                if isinstance(item.get("fotos_funcionario"), list)
+                else item.get("fotos") if isinstance(item.get("fotos"), list)
+                else []
+            )
             if not fotos:
-                return jsonify({"ok": False, "erro": "envie pelo menos uma foto"}), 409
+                return {"ok": False, "erro": "envie pelo menos uma foto"}, 409
 
             sku = str(_max_sku_numerico() + 1)
             titulo = " ".join(filter(None, [
@@ -6100,14 +6134,14 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     timeout=20,
                 )
                 if criacao.status_code not in (200, 201):
-                    return jsonify({
+                    return {
                         "ok": False,
                         "erro": "falha ao cadastrar produto no estoque",
                         "http": criacao.status_code,
                         "detalhe": criacao.text[:300],
-                    }), 502
+                    }, 502
             except Exception as e:
-                return jsonify({"ok": False, "erro": f"falha ao cadastrar produto: {e}"}), 502
+                return {"ok": False, "erro": f"falha ao cadastrar produto: {e}"}, 502
 
             item["sku"] = sku
             item["status"] = "produto_cadastrado_automaticamente"
@@ -6117,13 +6151,13 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             try:
                 _pedidos_estado_save(itens_file, todos)
             except Exception as e:
-                return jsonify({
+                return {
                     "ok": False,
                     "erro": f"produto criado, mas item nao foi atualizado: {e}",
                     "sku": sku,
-                }), 500
+                }, 500
 
-        return jsonify({
+        return {
             "ok": True,
             "criado": True,
             "sku": sku,
@@ -6131,7 +6165,27 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             "item": item,
             "publicado": False,
             "envio_cliente": False,
-        }), 201
+        }, 201
+
+    @app.route("/integracoes/marcelo/cadastrar-produto-encontrado", methods=["POST", "OPTIONS"])
+    def marcelo_cadastrar_produto_encontrado():
+        """Cadastra no estoque uma peca encontrada, sem publicar anuncios."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+
+        dados = request.get_json(silent=True) or {}
+        item_id = str(dados.get("item_id") or "").strip()
+        funcionario = _identificar_funcionario_pedido(
+            dados.get("phone") or dados.get("telefone")
+        )
+        if not funcionario:
+            return jsonify({"ok": False, "erro": "funcionario nao identificado"}), 403
+        if not re.fullmatch(r"\d+-\d+", item_id):
+            return jsonify({"ok": False, "erro": "item_id invalido"}), 400
+        resultado, http = _cadastrar_produto_encontrado_dados(
+            item_id, funcionario, dados
+        )
+        return jsonify(resultado), http
 
     def _waha_enviar_imagem(numero, url, legenda=""):
         num = "".join(ch for ch in str(numero) if ch.isdigit())
@@ -6684,6 +6738,75 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return emp in ("rafael", "geisa")
         return False                              # domingo: ninguem
 
+    def _mensagens_funcionarios_waha():
+        """Contingencia: le o WAHA quando o webhook/n8n nao persistiu a mensagem."""
+        try:
+            resposta = requests.get(
+                f"{WAHA_BASE}/api/messages",
+                params={
+                    "session": WAHA_SESSION,
+                    "chatId": "all",
+                    "limit": "200",
+                    "downloadMedia": "true",
+                    "filter.fromMe": "false",
+                },
+                headers=_waha_h({"Accept": "application/json"}),
+                timeout=25,
+            )
+            dados = resposta.json() if resposta.status_code == 200 else []
+        except Exception as e:
+            print(f"[RESPOSTAS-FUNC] falha ao ler WAHA: {e}")
+            return []
+        if isinstance(dados, dict):
+            dados = dados.get("data") or dados.get("messages") or []
+        if not isinstance(dados, list):
+            return []
+
+        mensagens = []
+        for linha in dados:
+            if not isinstance(linha, dict) or linha.get("fromMe") is True:
+                continue
+            origem = linha.get("from") or linha.get("chatId") or ""
+            numero = _normalizar_fone_pedido(origem)
+            if not numero or not _identificar_funcionario_pedido(numero):
+                continue
+            media = linha.get("media") if isinstance(linha.get("media"), dict) else {}
+            media_url = str(
+                linha.get("mediaUrl") or media.get("url") or ""
+            ).strip()
+            if media_url:
+                media_url = re.sub(
+                    r"^https?://(?:localhost|127\.0\.0\.1):3000",
+                    WAHA_BASE.rstrip("/"),
+                    media_url,
+                    flags=re.I,
+                )
+            mimetype = str(media.get("mimetype") or "").lower()
+            tipo = (
+                "audio" if mimetype.startswith("audio/")
+                else "image" if mimetype.startswith("image/")
+                else "media" if media_url
+                else "text"
+            )
+            timestamp = linha.get("timestamp")
+            try:
+                criado_em = _datetime.fromtimestamp(
+                    float(timestamp), tz=_datetime.now().astimezone().tzinfo
+                ).isoformat()
+            except (TypeError, ValueError, OSError):
+                criado_em = ""
+            mensagens.append({
+                "id": f"waha:{linha.get('id')}",
+                "numero": numero,
+                "chat_id": origem,
+                "mensagem": linha.get("body") or "",
+                "de_mim": False,
+                "criado_em": criado_em,
+                "tipo": tipo,
+                "media_url": media_url,
+            })
+        return mensagens
+
     @app.route("/integracoes/whatsapp/processar-respostas-funcionarios", methods=["GET", "POST", "OPTIONS"])
     def whatsapp_processar_respostas_funcionarios():
         """Le respostas ja salvas pelo n8n, sem alterar o webhook existente."""
@@ -6711,6 +6834,16 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": False, "erro": f"falha ao consultar mensagens: {e}"}), 502
         if not isinstance(mensagens, list):
             mensagens = []
+        ids_supabase = {
+            str(mensagem.get("id"))
+            for mensagem in mensagens
+            if isinstance(mensagem, dict) and mensagem.get("id") is not None
+        }
+        mensagens.extend(
+            mensagem
+            for mensagem in _mensagens_funcionarios_waha()
+            if str(mensagem.get("id")) not in ids_supabase
+        )
 
         mensagens_func = []
         for mensagem in mensagens:
@@ -6820,6 +6953,17 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                         "http": resposta.status_code,
                         "ok": resposta.status_code in (200, 201),
                     })
+                    if resposta.status_code in (200, 201):
+                        processadas.add(mid)
+                    elif resposta.status_code == 404:
+                        _waha_enviar(
+                            numero,
+                            (
+                                f"Nao encontrei o item #{item_id}. "
+                                "Confira o codigo mostrado no painel e responda "
+                                "novamente, por exemplo: TENHO #258-1."
+                            ),
+                        )
                 except Exception as e:
                     resultados.append({
                         "mensagem_id": mid,
@@ -6827,7 +6971,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                         "erro": str(e),
                     })
                     continue
-            processadas.add(mid)
+            elif not str(texto).strip() and mensagem.get("media_url"):
+                processadas.add(mid)
 
         # Mantem somente IDs ainda presentes na janela consultada.
         processadas = processadas.intersection(ids_atuais)

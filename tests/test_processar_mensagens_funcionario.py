@@ -125,6 +125,34 @@ class ProcessarMensagensFuncionarioTest(unittest.TestCase):
             },
         )
 
+    @patch("api_server._waha_enviar")
+    @patch("api_server.requests.post")
+    @patch("api_server.requests.get")
+    def test_codigo_invalido_nao_e_marcado_como_processado(
+        self, get, post, enviar
+    ):
+        estado = os.path.join(self.temp.name, "mensagens_func_processadas.json")
+        with open(estado, "w", encoding="utf-8") as arquivo:
+            json.dump([], arquivo)
+        get.return_value = RespostaFake(200, [{
+            "id": 13,
+            "numero": api_server.FUNCS_PEDIDO["robson"],
+            "mensagem": "Tenho #268-1",
+            "de_mim": False,
+            "criado_em": "2026-06-09T10:03:00Z",
+        }])
+        post.return_value = RespostaFake(404, {"erro": "pedido nao encontrado"})
+
+        resposta = self.client.post(
+            "/integracoes/whatsapp/processar-respostas-funcionarios"
+        )
+
+        self.assertEqual(resposta.status_code, 200)
+        self.assertEqual(resposta.json["processadas"], 0)
+        with open(estado, encoding="utf-8") as arquivo:
+            self.assertNotIn("13", json.load(arquivo))
+        enviar.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -113,6 +113,48 @@ class FotosCadastroPedidoTest(unittest.TestCase):
         self.assertEqual(resposta.status_code, 409)
         self.assertIn("foto", resposta.json["erro"])
 
+    @patch("api_server._max_sku_numerico", return_value=109999)
+    @patch("api_server.requests.post")
+    @patch("api_server.requests.get")
+    def test_foto_cadastra_automaticamente_quando_nao_existe_sku(
+        self, get, post, _max
+    ):
+        get.return_value = RespostaFake(200, [self.pedido])
+        post.return_value = RespostaFake(201, [{"sku": "110000"}])
+        with open(
+            os.path.join(self.temp.name, "pedido_itens.json"),
+            "w",
+            encoding="utf-8",
+        ) as arquivo:
+            json.dump({
+                "8421": [{
+                    "id": "8421-1",
+                    "peca": "Farol esquerdo",
+                    "veiculo": "Spin",
+                    "ano": "2023",
+                    "lado": "esquerdo",
+                    "status": "produto_nao_cadastrado",
+                    "candidatos": [],
+                }]
+            }, arquivo)
+
+        resposta = self.client.post(
+            "/integracoes/marcelo/pedido-item-foto",
+            json={
+                "phone": self.phone,
+                "item_id": "8421-1",
+                "foto": "https://exemplo.com/farol.jpg",
+            },
+        )
+
+        self.assertEqual(resposta.status_code, 200)
+        self.assertTrue(resposta.json["cadastro_automatico"]["criado"])
+        self.assertEqual(resposta.json["item"]["sku"], "110000")
+        self.assertEqual(
+            resposta.json["item"]["status"],
+            "produto_cadastrado_automaticamente",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
