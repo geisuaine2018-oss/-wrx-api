@@ -6376,7 +6376,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             if termo not in {
                 "direita", "direito", "esquerda", "esquerdo",
                 "dianteira", "dianteiro", "traseira", "traseiro",
-            }
+            } and not termo.isdigit()
         ]
 
         encontrados_peca = sum(
@@ -6399,7 +6399,20 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return 0
         if termos_principais and encontrados_principais / len(termos_principais) < 0.6:
             return 0
-        if termos_veiculo and encontrados_veiculo == 0:
+        if termos_veiculo and encontrados_veiculo / len(termos_veiculo) < 0.6:
+            return 0
+        acessorios_porta = {
+            "fechadura", "limitador", "maquina", "mecanismo", "trinco",
+            "puxador", "macaneta", "dobradica", "borracha", "vidro",
+            "forro", "moldura", "friso",
+        }
+        pedido_porta_completa = (
+            "porta" in termos_principais
+            and not any(termo in acessorios_porta for termo in termos_principais)
+        )
+        if pedido_porta_completa and any(
+            termo in titulo.split() for termo in acessorios_porta
+        ):
             return 0
         if exigir_ano and not ano_ok:
             return 0

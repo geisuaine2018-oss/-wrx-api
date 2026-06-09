@@ -161,6 +161,51 @@ class BuscaEstoquePedidoTest(unittest.TestCase):
         self.assertEqual(resposta.json["candidatos"][0]["sku"], "9640")
         self.assertFalse(resposta.json["candidatos"][0]["ano_compativel"])
 
+    @patch("api_server.requests.get")
+    def test_porta_duster_nao_aceita_outro_modelo_nem_acessorio(self, get):
+        get.return_value = RespostaFake(200, [
+            {
+                "sku": "108186",
+                "titulo": "Porta traseira direita Renault Logan 2014 2025",
+                "marca": "Renault",
+                "modelo": "Logan",
+                "qtd": 1,
+            },
+            {
+                "sku": "10508",
+                "titulo": "Fechadura traseira direita Peugeot 208",
+                "marca": "Peugeot",
+                "modelo": "208",
+                "qtd": 2,
+            },
+            {
+                "sku": "108229",
+                "titulo": "Limitador porta traseira direita Chevrolet Onix",
+                "marca": "Chevrolet",
+                "modelo": "Onix",
+                "qtd": 2,
+            },
+            {
+                "sku": "200001",
+                "titulo": "Porta dianteira direita Renault Duster 2015",
+                "marca": "Renault",
+                "modelo": "Duster",
+                "ano": "2015",
+                "qtd": 1,
+            },
+        ])
+
+        resposta = self.client.post("/integracoes/marcelo/buscar-estoque", json={
+            "peca": "2 porta dianteira direita e traseira",
+            "veiculo": "Renault Duster",
+            "ano": "2015",
+        })
+
+        self.assertEqual(
+            [item["sku"] for item in resposta.json["candidatos"]],
+            ["200001"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
