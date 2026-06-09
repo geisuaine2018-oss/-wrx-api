@@ -197,7 +197,7 @@ class BuscaEstoquePedidoTest(unittest.TestCase):
 
         resposta = self.client.post("/integracoes/marcelo/buscar-estoque", json={
             "peca": "2 porta dianteira direita e traseira",
-            "veiculo": "Renault Duster",
+            "veiculo": "Renault Duster 2015",
             "ano": "2015",
         })
 

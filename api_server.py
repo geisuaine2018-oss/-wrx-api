@@ -6369,7 +6369,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             str(produto.get("compatibilidade") or ""),
         ]))
         termos_peca = _termos_busca_estoque(peca)
-        termos_veiculo = _termos_busca_estoque(veiculo)
+        termos_veiculo = [
+            termo for termo in _termos_busca_estoque(veiculo)
+            if not termo.isdigit()
+            and not re.fullmatch(r"(?:19|20)\d{2}", termo)
+        ]
         termos_lado = _termos_busca_estoque(lado)
         termos_principais = [
             termo for termo in termos_peca
