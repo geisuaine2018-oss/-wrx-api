@@ -5895,10 +5895,25 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 exigir_ano=True,
             )
             if pontos < 55:
+                busca = _buscar_estoque_dados(
+                    item.get("peca"),
+                    item.get("veiculo"),
+                    item.get("ano"),
+                    item.get("lado"),
+                )
+                sugestao = next(
+                    (
+                        candidato for candidato in busca.get("candidatos", [])
+                        if candidato.get("ano_compativel") is not False
+                    ),
+                    None,
+                )
                 return jsonify({
                     "ok": False,
                     "erro": "sku nao corresponde ao item solicitado",
                     "pontuacao": pontos,
+                    "sku_sugerido": sugestao.get("sku") if sugestao else None,
+                    "titulo_sugerido": sugestao.get("titulo") if sugestao else None,
                 }), 409
             item["sku"] = sku
             item["status"] = "estoque_confirmado"
