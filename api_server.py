@@ -6806,6 +6806,146 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             )
             print(f"[SHOPEE] SKU {sku} pausado shop {sid}")
 
+    @app.route("/integracoes/finalizar-sku", methods=["POST", "OPTIONS"])
+    def finalizar_sku_todas_plataformas():
+        """Encerra todos os anuncios ML e Shopee vinculados ao SKU."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        sku = str(data.get("sku") or "").strip().upper()
+        confirmacao = str(data.get("confirmacao") or "").strip().upper()
+        if not sku:
+            return jsonify({"ok": False, "erro": "sku obrigatorio"}), 400
+        if confirmacao != sku:
+            return jsonify({"ok": False, "erro": "confirmacao do SKU invalida"}), 400
+
+        resultado = {"ml": [], "shopee": []}
+        try:
+            r_ml = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/ml_anuncios",
+                params={"select": "ml_id,conta,status", "sku": f"eq.{sku}"},
+                headers=_wrx_headers(), timeout=15,
+            )
+            anuncios_ml = r_ml.json() if r_ml.status_code == 200 else []
+        except Exception as e:
+            anuncios_ml = []
+            resultado["ml"].append({"ok": False, "erro": f"consulta: {e}"})
+
+        for anuncio in anuncios_ml:
+            ml_id = str(anuncio.get("ml_id") or "").strip()
+            conta = str(anuncio.get("conta") or "default").strip()
+            if not ml_id:
+                continue
+            if str(anuncio.get("status") or "").lower() == "closed":
+                resultado["ml"].append({"ok": True, "id": ml_id, "conta": conta, "ja_finalizado": True})
+                continue
+            token = _ml_get_user_token(conta)
+            if not token:
+                resultado["ml"].append({"ok": False, "id": ml_id, "conta": conta, "erro": "conta sem token"})
+                continue
+            headers_ml = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            try:
+                requests.put(
+                    f"https://api.mercadolibre.com/items/{ml_id}",
+                    headers=headers_ml,
+                    json={"status": "paused", "available_quantity": 0},
+                    timeout=15,
+                )
+                r = requests.put(
+                    f"https://api.mercadolibre.com/items/{ml_id}",
+                    headers=headers_ml,
+                    json={"status": "closed"},
+                    timeout=15,
+                )
+                ok = r.status_code == 200
+                erro = "" if ok else f"ML {r.status_code}: {r.text[:180]}"
+                resultado["ml"].append({"ok": ok, "id": ml_id, "conta": conta, "erro": erro})
+                if ok:
+                    requests.patch(
+                        f"{_WRX_SB_URL}/rest/v1/ml_anuncios",
+                        params={"ml_id": f"eq.{ml_id}", "conta": f"eq.{conta}"},
+                        headers=_wrx_headers(),
+                        json={"status": "closed", "estoque": 0},
+                        timeout=10,
+                    )
+            except Exception as e:
+                resultado["ml"].append({"ok": False, "id": ml_id, "conta": conta, "erro": str(e)})
+
+        try:
+            r_sh = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/shopee_anuncios",
+                params={"select": "shop_id,item_id,status", "sku": f"eq.{sku}"},
+                headers=_wrx_headers(), timeout=15,
+            )
+            anuncios_sh = r_sh.json() if r_sh.status_code == 200 else []
+        except Exception as e:
+            anuncios_sh = []
+            resultado["shopee"].append({"ok": False, "erro": f"consulta: {e}"})
+
+        for anuncio in anuncios_sh:
+            sid = str(anuncio.get("shop_id") or "").strip()
+            item_id = str(anuncio.get("item_id") or "").strip()
+            if not sid or not item_id:
+                continue
+            if str(anuncio.get("status") or "").upper() == "DELETED":
+                resultado["shopee"].append({"ok": True, "id": item_id, "shop_id": sid, "ja_finalizado": True})
+                continue
+            access_token, shop_id_int = _shopee_get_token(sid)
+            if not access_token:
+                resultado["shopee"].append({"ok": False, "id": item_id, "shop_id": sid, "erro": "loja sem token"})
+                continue
+            try:
+                ts = int(time.time())
+                path = "/api/v2/product/delete_item"
+                sign = _shopee_sign(path, ts, access_token, shop_id_int)
+                r = requests.post(
+                    f"{_SHOPEE_BASE}{path}",
+                    params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                            "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
+                    json={"item_id": int(item_id)}, timeout=20,
+                )
+                d = r.json()
+                ok = r.status_code == 200 and not d.get("error")
+                erro = d.get("message", "") if not ok else ""
+                if not ok:
+                    ts = int(time.time())
+                    path = "/api/v2/product/unlist_item"
+                    sign = _shopee_sign(path, ts, access_token, shop_id_int)
+                    r = requests.post(
+                        f"{_SHOPEE_BASE}{path}",
+                        params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                                "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
+                        json={"item_list": [{"item_id": int(item_id), "unlist": True}]},
+                        timeout=20,
+                    )
+                    d = r.json()
+                    ok = r.status_code == 200 and not d.get("error")
+                    erro = "" if ok else d.get("message", r.text[:180])
+                resultado["shopee"].append({"ok": ok, "id": item_id, "shop_id": sid, "erro": erro})
+                if ok:
+                    requests.patch(
+                        f"{_WRX_SB_URL}/rest/v1/shopee_anuncios",
+                        params={"shop_id": f"eq.{sid}", "item_id": f"eq.{item_id}"},
+                        headers=_wrx_headers(),
+                        json={"status": "DELETED", "estoque": 0,
+                              "sync_at": _datetime.utcnow().isoformat() + "Z"},
+                        timeout=10,
+                    )
+            except Exception as e:
+                resultado["shopee"].append({"ok": False, "id": item_id, "shop_id": sid, "erro": str(e)})
+
+        todos = resultado["ml"] + resultado["shopee"]
+        sucessos = sum(1 for item in todos if item.get("ok"))
+        falhas = sum(1 for item in todos if not item.get("ok"))
+        return jsonify({
+            "ok": falhas == 0,
+            "sku": sku,
+            "total": len(todos),
+            "sucessos": sucessos,
+            "falhas": falhas,
+            "resultado": resultado,
+        })
+
     # ── Shopee: venda manual (cascata) ───────────────────────────────────────────
 
     @app.route("/integracoes/shopee/venda-cascata", methods=["POST", "OPTIONS"])
