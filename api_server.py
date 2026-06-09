@@ -5592,6 +5592,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 if item.get("sku") or item.get("status") not in (
                     "aguardando_busca",
                     "produto_nao_cadastrado",
+                    "aguardando_confirmacao_fisica",
                 ):
                     continue
                 busca = _buscar_estoque_dados(
@@ -6323,7 +6324,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             for valor in re.findall(r"\b(?:19|20)\d{2}\b", texto_produto)
         ]
         if not ano_num or not anos_produto:
-            return True
+            return None
         ano_pedido = int(ano_num.group(0))
         return min(anos_produto) <= ano_pedido <= max(anos_produto)
 
@@ -6376,7 +6377,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         encontrados_lado = sum(
             1 for termo in termos_lado if termo_presente(termo, titulo)
         )
-        ano_ok = _ano_produto_compativel(produto, ano)
+        ano_status = _ano_produto_compativel(produto, ano)
+        ano_ok = ano_status is not False
 
         if not termos_peca or encontrados_peca == 0:
             return 0
@@ -6480,6 +6482,9 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         candidatos.sort(
             key=lambda item: (
                 item["pontuacao"],
+                item.get("ano_compativel") is True,
+                bool(item.get("fotos")),
+                float(item.get("preco") or 0) > 0,
                 float(item.get("qtd") or 0),
             ),
             reverse=True,
