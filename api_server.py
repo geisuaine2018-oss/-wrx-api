@@ -6757,6 +6757,24 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             _normalizar_fone_pedido(numero)
             for numero in FUNCS_PEDIDO.values()
         }
+        try:
+            consulta = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/funcionarios",
+                params={"select": "whatsapp", "limit": "200"},
+                headers=_wrx_headers(),
+                timeout=15,
+            )
+            funcionarios = (
+                consulta.json() if consulta.status_code == 200 else []
+            )
+            if isinstance(funcionarios, list):
+                numeros.update(
+                    _normalizar_fone_pedido(linha.get("whatsapp"))
+                    for linha in funcionarios
+                    if _normalizar_fone_pedido(linha.get("whatsapp"))
+                )
+        except Exception as e:
+            print(f"[RESPOSTAS-FUNC] falha ao listar funcionarios: {e}")
         for numero in numeros:
             try:
                 resposta = requests.get(
