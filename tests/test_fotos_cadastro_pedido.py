@@ -113,6 +113,22 @@ class FotosCadastroPedidoTest(unittest.TestCase):
         self.assertEqual(resposta.status_code, 409)
         self.assertIn("foto", resposta.json["erro"])
 
+    @patch("api_server.requests.patch")
+    @patch("api_server.requests.get")
+    def test_baixa_estoque_ao_vender(self, get, patch_req):
+        get.return_value = RespostaFake(200, [{"sku": "812", "qtd": 1}])
+        patch_req.return_value = RespostaFake(200, [{"sku": "812", "qtd": 0}])
+
+        resposta = self.client.post(
+            "/integracoes/marcelo/baixar-estoque",
+            json={"sku": "812", "qty": 1},
+        )
+
+        self.assertEqual(resposta.status_code, 200)
+        self.assertEqual(resposta.json["qtd_anterior"], 1)
+        self.assertEqual(resposta.json["qtd_nova"], 0)
+        self.assertTrue(resposta.json["zerado"])
+
     @patch("api_server._max_sku_numerico", return_value=109999)
     @patch("api_server.requests.post")
     @patch("api_server.requests.get")

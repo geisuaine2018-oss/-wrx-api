@@ -7250,6 +7250,68 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         except Exception as e:
             return False, str(e)
 
+    @app.route("/integracoes/marcelo/baixar-estoque", methods=["POST", "OPTIONS"])
+    def marcelo_baixar_estoque():
+        """Baixa quantidade do estoque quando a peça é vendida no CRM."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+
+        dados = request.get_json(silent=True) or {}
+        sku = str(dados.get("sku") or "").strip()
+        try:
+            qty = int(dados.get("qty") or 1)
+        except (TypeError, ValueError):
+            qty = 1
+        if not sku:
+            return jsonify({"ok": False, "erro": "sku obrigatorio"}), 400
+        if qty <= 0:
+            return jsonify({"ok": False, "erro": "qty invalido"}), 400
+
+        try:
+            consulta = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque",
+                params={"select": "sku,qtd", "sku": f"eq.{sku}", "limit": "1"},
+                headers=_wrx_headers(),
+                timeout=15,
+            )
+            itens = consulta.json() if consulta.status_code == 200 else []
+        except Exception as e:
+            return jsonify({"ok": False, "erro": f"falha ao consultar estoque: {e}"}), 502
+        if not isinstance(itens, list) or not itens:
+            return jsonify({"ok": False, "erro": "sku nao encontrado"}), 404
+
+        item = itens[0]
+        qtd_atual = int(item.get("qtd") or 0)
+        nova_qtd = max(0, qtd_atual - qty)
+        try:
+            alteracao = requests.patch(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque",
+                params={"sku": f"eq.{sku}"},
+                headers=_wrx_headers(),
+                json={
+                    "qtd": nova_qtd,
+                    "atualizado": _datetime.utcnow().isoformat() + "Z",
+                },
+                timeout=15,
+            )
+            if alteracao.status_code not in (200, 204):
+                return jsonify({
+                    "ok": False,
+                    "erro": "falha ao baixar estoque",
+                    "http": alteracao.status_code,
+                    "detalhe": alteracao.text[:200],
+                }), 502
+        except Exception as e:
+            return jsonify({"ok": False, "erro": f"falha ao baixar estoque: {e}"}), 502
+
+        return jsonify({
+            "ok": True,
+            "sku": sku,
+            "qtd_anterior": qtd_atual,
+            "qtd_nova": nova_qtd,
+            "zerado": nova_qtd == 0,
+        })
+
     @app.route("/integracoes/whatsapp/enviar", methods=["POST", "OPTIONS"])
     def whatsapp_enviar():
         if request.method == "OPTIONS":
