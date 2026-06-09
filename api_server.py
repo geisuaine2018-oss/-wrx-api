@@ -3619,21 +3619,32 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         preco = float(novo_preco) if novo_preco else float(rev.get("sugestao") or 0)
         if preco <= 0:
             return jsonify({"ok": False, "erro": "sem preço válido para aplicar (sugestão vazia). Use Editar Preço."}), 400
+        sku = (rev.get("sku") or "").strip()
         ml_id = rev.get("ml_id")
-        if not ml_id:
-            return jsonify({"ok": False, "erro": "anúncio sem ml_id"}), 400
-        ok, err = _revisao_atualizar_preco_ml(ml_id, rev.get("conta"), preco)
-        if not ok:
-            return jsonify({"ok": False, "erro": f"Falha ao atualizar no ML: {err}"}), 502
-        # atualiza preço no espelho ml_anuncios + marca aprovado
-        try:
-            requests.patch(f"{_WRX_SB_URL}/rest/v1/ml_anuncios?ml_id=eq.{ml_id}",
-                           headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"},
-                           json={"preco": preco}, timeout=15)
-        except Exception:
-            pass
+        avisos = []
+        # 1) SEMPRE grava o preço no PRODUTO (pra publicar já com o preço revisado)
+        if sku:
+            try:
+                requests.patch(f"{_WRX_SB_URL}/rest/v1/pecas_estoque?sku=eq.{sku}",
+                               headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"},
+                               json={"preco": preco}, timeout=15)
+            except Exception:
+                avisos.append("não consegui gravar no produto")
+        # 2) Se JÁ tem anúncio no ML, atualiza o preço lá também
+        if ml_id:
+            ok, err = _revisao_atualizar_preco_ml(ml_id, rev.get("conta"), preco)
+            if ok:
+                try:
+                    requests.patch(f"{_WRX_SB_URL}/rest/v1/ml_anuncios?ml_id=eq.{ml_id}",
+                                   headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"},
+                                   json={"preco": preco}, timeout=15)
+                except Exception:
+                    pass
+            else:
+                avisos.append(f"ML não atualizado: {err}")
         _revisao_patch(rev_id, {"status": "aprovado", "preco_aplicado": preco, "revisado_em": "now"})
-        return jsonify({"ok": True, "ml_id": ml_id, "preco": preco})
+        return jsonify({"ok": True, "ml_id": ml_id or "", "sku": sku, "preco": preco,
+                        "aplicado": ("produto + anúncio" if ml_id else "produto"), "avisos": avisos})
 
     @app.route("/revisao-precos/ignorar", methods=["POST", "OPTIONS"])
     def revisao_ignorar():
@@ -5406,7 +5417,1072 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         "rafael": "5521993745355",
         "geisa":  "5521985243301",
     }
+    _pedido_entrada_lock = _threading.Lock()
+    _pedido_itens_lock = _threading.Lock()
+    _respostas_func_lock = _threading.Lock()
     _pedidos_manha_lock = _threading.Lock()
+
+    def _normalizar_fone_pedido(valor):
+        numero = "".join(ch for ch in str(valor or "") if ch.isdigit())
+        if len(numero) in (10, 11):
+            numero = "55" + numero
+        return numero
+
+    def _identificar_funcionario_pedido(phone):
+        numero = _normalizar_fone_pedido(phone)
+        for nome, whatsapp in FUNCS_PEDIDO.items():
+            if numero == _normalizar_fone_pedido(whatsapp):
+                return {"nome": nome.title(), "whatsapp": numero, "origem": "config"}
+        try:
+            consulta = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/funcionarios",
+                params={
+                    "select": "id,nome,whatsapp",
+                    "whatsapp": f"eq.{numero}",
+                    "limit": "1",
+                },
+                headers=_wrx_headers(),
+                timeout=12,
+            )
+            rows = consulta.json() if consulta.status_code == 200 else []
+            if isinstance(rows, list) and rows:
+                return {
+                    "id": rows[0].get("id"),
+                    "nome": rows[0].get("nome") or numero,
+                    "whatsapp": numero,
+                    "origem": "funcionarios",
+                }
+        except Exception:
+            pass
+        return None
+
+    def _carregar_itens_pedido(pedido):
+        pedido_id = str(pedido.get("id") or "")
+        itens_file = os.path.join(_INTEG_DIR, "pedido_itens.json")
+        try:
+            with open(itens_file, encoding="utf-8") as arquivo:
+                todos = json.load(arquivo)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            todos = {}
+        itens = todos.get(pedido_id)
+        if not isinstance(itens, list) or not itens:
+            itens = [{
+                "id": f"{pedido_id}-1",
+                "pedido_id": pedido_id,
+                "peca": pedido.get("peca") or "",
+                "veiculo": pedido.get("veiculo") or "",
+                "ano": pedido.get("ano") or "",
+                "lado": pedido.get("lado") or "",
+                "status": "aguardando_busca",
+                "origem": "pedido_principal",
+                "criado_em": pedido.get("criado_em"),
+            }]
+            todos[pedido_id] = itens
+        return itens_file, todos, itens
+
+    @app.route("/integracoes/marcelo/pedido-item", methods=["POST", "OPTIONS"])
+    def marcelo_adicionar_item_pedido():
+        """Adiciona outra peca ao mesmo pedido sem criar pedido duplicado."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+
+        dados = request.get_json(silent=True) or {}
+        pedido_id = str(dados.get("pedido_id") or "").strip()
+        peca = str(dados.get("peca") or "").strip()
+        if not pedido_id or not peca:
+            return jsonify({"ok": False, "erro": "pedido_id e peca sao obrigatorios"}), 400
+
+        try:
+            consulta = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pedidos",
+                params={
+                    "select": "id,phone,nome,peca,veiculo,ano,lado,status,criado_em",
+                    "id": f"eq.{pedido_id}",
+                    "limit": "1",
+                },
+                headers=_wrx_headers(),
+                timeout=15,
+            )
+            pedidos = consulta.json() if consulta.status_code == 200 else []
+        except Exception as e:
+            return jsonify({"ok": False, "erro": f"falha ao consultar pedido: {e}"}), 502
+        if not isinstance(pedidos, list) or not pedidos:
+            return jsonify({"ok": False, "erro": "pedido nao encontrado"}), 404
+
+        pedido = pedidos[0]
+        if pedido.get("status") in ("pago", "concluido", "cancelado"):
+            return jsonify({"ok": False, "erro": "pedido ja encerrado"}), 409
+
+        novo = {
+            "peca": peca,
+            "veiculo": str(dados.get("veiculo") or pedido.get("veiculo") or "").strip(),
+            "ano": str(dados.get("ano") or pedido.get("ano") or "").strip(),
+            "lado": str(dados.get("lado") or "").strip(),
+        }
+        chave_nova = "|".join(
+            _texto_busca_estoque(novo[campo])
+            for campo in ("peca", "veiculo", "ano", "lado")
+        )
+
+        with _pedido_itens_lock:
+            itens_file, todos, itens = _carregar_itens_pedido(pedido)
+            for item in itens:
+                chave_item = "|".join(
+                    _texto_busca_estoque(item.get(campo))
+                    for campo in ("peca", "veiculo", "ano", "lado")
+                )
+                if chave_item == chave_nova:
+                    return jsonify({
+                        "ok": True,
+                        "criado": False,
+                        "duplicado": True,
+                        "pedido": pedido,
+                        "item": item,
+                        "itens": itens,
+                    })
+
+            item = {
+                "id": f"{pedido_id}-{len(itens) + 1}",
+                "pedido_id": pedido_id,
+                **novo,
+                "status": "aguardando_busca",
+                "origem": str(dados.get("origem") or "manual").strip(),
+                "criado_em": _datetime.now().astimezone().isoformat(),
+            }
+            itens.append(item)
+            todos[pedido_id] = itens
+            try:
+                _pedidos_estado_save(itens_file, todos)
+            except Exception as e:
+                return jsonify({"ok": False, "erro": f"falha ao salvar item: {e}"}), 500
+
+        return jsonify({
+            "ok": True,
+            "criado": True,
+            "duplicado": False,
+            "pedido": pedido,
+            "item": item,
+            "itens": itens,
+        }), 201
+
+    @app.route("/integracoes/marcelo/pedido-itens/<pedido_id>", methods=["GET", "OPTIONS"])
+    def marcelo_listar_itens_pedido(pedido_id):
+        if request.method == "OPTIONS":
+            return _options_resp()
+        try:
+            consulta = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pedidos",
+                params={
+                    "select": "id,peca,veiculo,ano,lado,status,criado_em",
+                    "id": f"eq.{pedido_id}",
+                    "limit": "1",
+                },
+                headers=_wrx_headers(),
+                timeout=15,
+            )
+            pedidos = consulta.json() if consulta.status_code == 200 else []
+        except Exception as e:
+            return jsonify({"ok": False, "erro": f"falha ao consultar pedido: {e}"}), 502
+        if not isinstance(pedidos, list) or not pedidos:
+            return jsonify({"ok": False, "erro": "pedido nao encontrado"}), 404
+        with _pedido_itens_lock:
+            _, _, itens = _carregar_itens_pedido(pedidos[0])
+        return jsonify({
+            "ok": True,
+            "pedido_id": str(pedido_id),
+            "total": len(itens),
+            "itens": itens,
+        })
+
+    def _texto_busca_estoque(valor):
+        import unicodedata
+        texto = unicodedata.normalize("NFKD", str(valor or "").lower())
+        texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+        return " ".join(re.findall(r"[a-z0-9]+", texto))
+
+    def _termos_busca_estoque(valor):
+        ignorar = {
+            "a", "as", "com", "da", "das", "de", "do", "dos", "e", "em",
+            "para", "por", "um", "uma", "peca", "preciso", "quero",
+        }
+        return [
+            termo for termo in _texto_busca_estoque(valor).split()
+            if len(termo) >= 2 and termo not in ignorar
+        ]
+
+    def _interpretar_resposta_funcionario(dados):
+        texto = _texto_busca_estoque(
+            dados.get("mensagem") or dados.get("resposta") or ""
+        )
+        acao_informada = _texto_busca_estoque(dados.get("acao") or "")
+        if acao_informada in ("nao tenho", "naotenho"):
+            acao = "nao_tenho"
+        elif acao_informada == "tenho":
+            acao = "tenho"
+        elif re.search(r"\bnao\s+tenho\b", texto):
+            acao = "nao_tenho"
+        elif re.search(r"\btenho\b", texto):
+            acao = "tenho"
+        else:
+            acao = ""
+
+        pedido_id = str(dados.get("pedido_id") or "").strip()
+        item_id = str(dados.get("item_id") or "").strip()
+        if not pedido_id:
+            origem = str(dados.get("mensagem") or dados.get("resposta") or "")
+            encontrado = re.search(r"#\s*(\d+)(?:-(\d+))?", origem)
+            pedido_id = encontrado.group(1) if encontrado else ""
+            if encontrado and encontrado.group(2):
+                item_id = f"{pedido_id}-{encontrado.group(2)}"
+        if pedido_id and not item_id:
+            item_id = f"{pedido_id}-1"
+        return acao, pedido_id, item_id
+
+    @app.route("/integracoes/marcelo/resposta-funcionario", methods=["POST", "OPTIONS"])
+    def marcelo_resposta_funcionario():
+        """Registra Tenho/Nao tenho sem enviar qualquer mensagem ao cliente."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+
+        dados = request.get_json(silent=True) or {}
+        funcionario = _identificar_funcionario_pedido(
+            dados.get("phone") or dados.get("telefone")
+        )
+        if not funcionario:
+            return jsonify({"ok": False, "erro": "funcionario nao identificado"}), 403
+
+        acao, pedido_id, item_id = _interpretar_resposta_funcionario(dados)
+        if acao not in ("tenho", "nao_tenho") or not pedido_id.isdigit():
+            return jsonify({
+                "ok": False,
+                "erro": "use Tenho #PEDIDO ou Nao tenho #PEDIDO",
+            }), 400
+
+        try:
+            consulta = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pedidos",
+                params={
+                    "select": "id,phone,nome,peca,veiculo,ano,lado,status",
+                    "id": f"eq.{pedido_id}",
+                    "limit": "1",
+                },
+                headers=_wrx_headers(),
+                timeout=15,
+            )
+            pedidos = consulta.json() if consulta.status_code == 200 else []
+        except Exception as e:
+            return jsonify({"ok": False, "erro": f"falha ao consultar pedido: {e}"}), 502
+        if not isinstance(pedidos, list) or not pedidos:
+            return jsonify({"ok": False, "erro": "pedido nao encontrado"}), 404
+
+        pedido = pedidos[0]
+        if pedido.get("status") in ("pago", "concluido", "cancelado"):
+            return jsonify({"ok": False, "erro": "pedido ja encerrado"}), 409
+        with _pedido_itens_lock:
+            _, _, itens = _carregar_itens_pedido(pedido)
+        item = next((linha for linha in itens if linha.get("id") == item_id), None)
+        if not item:
+            return jsonify({"ok": False, "erro": "item do pedido nao encontrado"}), 404
+
+        respostas_file = os.path.join(_INTEG_DIR, "respostas_func.json")
+        chave = f"{item_id}:{funcionario['whatsapp']}:{acao}"
+        with _respostas_func_lock:
+            try:
+                with open(respostas_file, encoding="utf-8") as arquivo:
+                    respostas = json.load(arquivo)
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                respostas = {}
+            if chave in respostas:
+                return jsonify({
+                    "ok": True,
+                    "duplicado": True,
+                    "evento": respostas[chave],
+                    "pedido": pedido,
+                })
+
+            novo_status = "atendimento" if acao == "tenho" else "verificando"
+            try:
+                alteracao = requests.patch(
+                    f"{_WRX_SB_URL}/rest/v1/pedidos",
+                    params={"id": f"eq.{pedido_id}"},
+                    headers={**_wrx_headers(), "Prefer": "return=representation"},
+                    json={"status": novo_status},
+                    timeout=15,
+                )
+                if alteracao.status_code not in (200, 204):
+                    return jsonify({
+                        "ok": False,
+                        "erro": "falha ao atualizar status do pedido",
+                        "http": alteracao.status_code,
+                    }), 502
+            except Exception as e:
+                return jsonify({"ok": False, "erro": f"falha ao atualizar pedido: {e}"}), 502
+
+            evento = {
+                "pedido_id": pedido_id,
+                "item_id": item_id,
+                "peca": item.get("peca"),
+                "acao": acao,
+                "status": novo_status,
+                "funcionario": funcionario["nome"],
+                "whatsapp": funcionario["whatsapp"],
+                "recebido_em": _datetime.now().astimezone().isoformat(),
+            }
+            respostas[chave] = evento
+            try:
+                _pedidos_estado_save(respostas_file, respostas)
+            except Exception as e:
+                return jsonify({
+                    "ok": False,
+                    "erro": f"status atualizado, mas resposta nao foi salva: {e}",
+                }), 500
+
+        pedido["status"] = novo_status
+        return jsonify({
+            "ok": True,
+            "duplicado": False,
+            "evento": evento,
+            "pedido": pedido,
+            "envio_cliente": False,
+        })
+
+    def _evento_tenho_item(item_id, whatsapp):
+        respostas_file = os.path.join(_INTEG_DIR, "respostas_func.json")
+        try:
+            with open(respostas_file, encoding="utf-8") as arquivo:
+                respostas = json.load(arquivo)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            respostas = {}
+        return respostas.get(
+            f"{item_id}:{_normalizar_fone_pedido(whatsapp)}:tenho"
+        )
+
+    @app.route("/integracoes/marcelo/confirmar-estoque-item", methods=["POST", "OPTIONS"])
+    def marcelo_confirmar_estoque_item():
+        """Confirma fisicamente um SKU e o vincula ao item do pedido."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        dados = request.get_json(silent=True) or {}
+        item_id = str(dados.get("item_id") or "").strip()
+        sku = str(dados.get("sku") or "").strip()
+        funcionario = _identificar_funcionario_pedido(
+            dados.get("phone") or dados.get("telefone")
+        )
+        if not funcionario:
+            return jsonify({"ok": False, "erro": "funcionario nao identificado"}), 403
+        if not re.fullmatch(r"\d+-\d+", item_id) or not sku:
+            return jsonify({"ok": False, "erro": "item_id e sku sao obrigatorios"}), 400
+        pedido_id = item_id.split("-", 1)[0]
+
+        try:
+            pedido_req = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pedidos",
+                params={
+                    "select": "id,peca,veiculo,ano,lado,status,criado_em",
+                    "id": f"eq.{pedido_id}",
+                    "limit": "1",
+                },
+                headers=_wrx_headers(),
+                timeout=15,
+            )
+            produto_req = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque",
+                params={
+                    "select": (
+                        "sku,titulo,descricao,categoria,marca,modelo,ano,lado,"
+                        "compatibilidade,preco,qtd,fotos,loc"
+                    ),
+                    "sku": f"eq.{sku}",
+                    "limit": "1",
+                },
+                headers=_wrx_headers(),
+                timeout=15,
+            )
+            pedidos = pedido_req.json() if pedido_req.status_code == 200 else []
+            produtos = produto_req.json() if produto_req.status_code == 200 else []
+        except Exception as e:
+            return jsonify({"ok": False, "erro": f"falha na conferencia: {e}"}), 502
+        if not isinstance(pedidos, list) or not pedidos:
+            return jsonify({"ok": False, "erro": "pedido nao encontrado"}), 404
+        if not isinstance(produtos, list) or not produtos:
+            return jsonify({"ok": False, "erro": "sku nao encontrado"}), 404
+        produto = produtos[0]
+        if float(produto.get("qtd") or 0) <= 0:
+            return jsonify({"ok": False, "erro": "produto sem estoque"}), 409
+
+        with _pedido_itens_lock:
+            itens_file, todos, itens = _carregar_itens_pedido(pedidos[0])
+            item = next((linha for linha in itens if linha.get("id") == item_id), None)
+            if not item:
+                return jsonify({"ok": False, "erro": "item nao encontrado"}), 404
+            pontos = _pontuar_produto_pedido(
+                produto,
+                item.get("peca"),
+                item.get("veiculo"),
+                item.get("ano"),
+                item.get("lado"),
+            )
+            if pontos < 55:
+                return jsonify({
+                    "ok": False,
+                    "erro": "sku nao corresponde ao item solicitado",
+                    "pontuacao": pontos,
+                }), 409
+            item["sku"] = sku
+            item["status"] = "estoque_confirmado"
+            item["responsavel"] = funcionario["nome"]
+            item["fotos"] = produto.get("fotos") or []
+            item["preco"] = produto.get("preco")
+            item["estoque_confirmado_em"] = _datetime.now().astimezone().isoformat()
+            todos[pedido_id] = itens
+            try:
+                atualizacao = requests.patch(
+                    f"{_WRX_SB_URL}/rest/v1/pecas_estoque",
+                    params={"sku": f"eq.{sku}"},
+                    headers={**_wrx_headers(), "Prefer": "return=minimal"},
+                    json={"atualizado": _datetime.now().astimezone().isoformat()},
+                    timeout=15,
+                )
+                if atualizacao.status_code not in (200, 204):
+                    return jsonify({"ok": False, "erro": "falha ao atualizar confirmacao"}), 502
+                _pedidos_estado_save(itens_file, todos)
+            except Exception as e:
+                return jsonify({"ok": False, "erro": f"falha ao salvar confirmacao: {e}"}), 502
+
+        return jsonify({
+            "ok": True,
+            "item": item,
+            "produto": produto,
+            "envio_cliente": False,
+        })
+
+    @app.route("/integracoes/marcelo/pedido-item-foto", methods=["POST", "OPTIONS"])
+    def marcelo_vincular_foto_item():
+        """Vincula foto ao item somente depois de uma resposta Tenho."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+
+        dados = request.get_json(silent=True) or {}
+        item_id = str(dados.get("item_id") or "").strip()
+        foto = str(dados.get("foto") or dados.get("media_url") or "").strip()
+        funcionario = _identificar_funcionario_pedido(
+            dados.get("phone") or dados.get("telefone")
+        )
+        if not funcionario:
+            return jsonify({"ok": False, "erro": "funcionario nao identificado"}), 403
+        if not re.fullmatch(r"\d+-\d+", item_id) or not foto:
+            return jsonify({"ok": False, "erro": "item_id e foto sao obrigatorios"}), 400
+        if not foto.startswith(("http://", "https://", "data:image/")):
+            return jsonify({"ok": False, "erro": "formato de foto invalido"}), 400
+
+        pedido_id = item_id.split("-", 1)[0]
+        if not _evento_tenho_item(item_id, funcionario["whatsapp"]):
+            return jsonify({
+                "ok": False,
+                "erro": "o funcionario precisa responder Tenho antes de enviar a foto",
+            }), 409
+
+        try:
+            consulta = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pedidos",
+                params={
+                    "select": "id,peca,veiculo,ano,lado,status,criado_em",
+                    "id": f"eq.{pedido_id}",
+                    "limit": "1",
+                },
+                headers=_wrx_headers(),
+                timeout=15,
+            )
+            pedidos = consulta.json() if consulta.status_code == 200 else []
+        except Exception as e:
+            return jsonify({"ok": False, "erro": f"falha ao consultar pedido: {e}"}), 502
+        if not isinstance(pedidos, list) or not pedidos:
+            return jsonify({"ok": False, "erro": "pedido nao encontrado"}), 404
+
+        with _pedido_itens_lock:
+            itens_file, todos, itens = _carregar_itens_pedido(pedidos[0])
+            item = next((linha for linha in itens if linha.get("id") == item_id), None)
+            if not item:
+                return jsonify({"ok": False, "erro": "item nao encontrado"}), 404
+            fotos = item.get("fotos") if isinstance(item.get("fotos"), list) else []
+            duplicado = foto in fotos
+            if not duplicado:
+                fotos.append(foto)
+                item["fotos"] = fotos[:8]
+                item["status"] = "foto_recebida"
+                item["responsavel"] = funcionario["nome"]
+                item["foto_recebida_em"] = _datetime.now().astimezone().isoformat()
+                todos[pedido_id] = itens
+                try:
+                    _pedidos_estado_save(itens_file, todos)
+                except Exception as e:
+                    return jsonify({"ok": False, "erro": f"falha ao salvar foto: {e}"}), 500
+
+        return jsonify({
+            "ok": True,
+            "duplicado": duplicado,
+            "pedido_id": pedido_id,
+            "item": item,
+            "envio_cliente": False,
+        })
+
+    @app.route("/integracoes/marcelo/cadastrar-produto-encontrado", methods=["POST", "OPTIONS"])
+    def marcelo_cadastrar_produto_encontrado():
+        """Cadastra no estoque uma peca encontrada, sem publicar anuncios."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+
+        dados = request.get_json(silent=True) or {}
+        item_id = str(dados.get("item_id") or "").strip()
+        funcionario = _identificar_funcionario_pedido(
+            dados.get("phone") or dados.get("telefone")
+        )
+        if not funcionario:
+            return jsonify({"ok": False, "erro": "funcionario nao identificado"}), 403
+        if not re.fullmatch(r"\d+-\d+", item_id):
+            return jsonify({"ok": False, "erro": "item_id invalido"}), 400
+        pedido_id = item_id.split("-", 1)[0]
+        if not _evento_tenho_item(item_id, funcionario["whatsapp"]):
+            return jsonify({"ok": False, "erro": "resposta Tenho nao encontrada"}), 409
+
+        try:
+            consulta = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pedidos",
+                params={
+                    "select": "id,peca,veiculo,ano,lado,status,criado_em",
+                    "id": f"eq.{pedido_id}",
+                    "limit": "1",
+                },
+                headers=_wrx_headers(),
+                timeout=15,
+            )
+            pedidos = consulta.json() if consulta.status_code == 200 else []
+        except Exception as e:
+            return jsonify({"ok": False, "erro": f"falha ao consultar pedido: {e}"}), 502
+        if not isinstance(pedidos, list) or not pedidos:
+            return jsonify({"ok": False, "erro": "pedido nao encontrado"}), 404
+
+        with _pedido_itens_lock:
+            itens_file, todos, itens = _carregar_itens_pedido(pedidos[0])
+            item = next((linha for linha in itens if linha.get("id") == item_id), None)
+            if not item:
+                return jsonify({"ok": False, "erro": "item nao encontrado"}), 404
+            if item.get("sku"):
+                return jsonify({
+                    "ok": True,
+                    "criado": False,
+                    "duplicado": True,
+                    "sku": item["sku"],
+                    "item": item,
+                })
+            fotos = item.get("fotos") if isinstance(item.get("fotos"), list) else []
+            if not fotos:
+                return jsonify({"ok": False, "erro": "envie pelo menos uma foto"}), 409
+
+            sku = str(_max_sku_numerico() + 1)
+            titulo = " ".join(filter(None, [
+                item.get("peca"),
+                item.get("veiculo"),
+                item.get("ano"),
+                item.get("lado"),
+            ])).strip()
+            try:
+                preco = float(str(dados.get("preco") or 0).replace(",", "."))
+            except (TypeError, ValueError):
+                preco = 0
+            produto = {
+                "sku": sku,
+                "titulo": titulo,
+                "modelo": item.get("veiculo") or "",
+                "ano": str(item.get("ano") or ""),
+                "lado": item.get("lado") or "",
+                "preco": preco,
+                "qtd": 1,
+                "cond": str(dados.get("cond") or "Usada"),
+                "loc": str(dados.get("loc") or "").strip(),
+                "fotos": fotos[:8],
+                "origem": f"pedido #{pedido_id}",
+                "cadastrado_por": funcionario["nome"],
+                "atualizado": _datetime.now().astimezone().isoformat(),
+            }
+            try:
+                criacao = requests.post(
+                    f"{_WRX_SB_URL}/rest/v1/pecas_estoque",
+                    headers={**_wrx_headers(), "Prefer": "return=representation"},
+                    json=produto,
+                    timeout=20,
+                )
+                if criacao.status_code not in (200, 201):
+                    return jsonify({
+                        "ok": False,
+                        "erro": "falha ao cadastrar produto no estoque",
+                        "http": criacao.status_code,
+                        "detalhe": criacao.text[:300],
+                    }), 502
+            except Exception as e:
+                return jsonify({"ok": False, "erro": f"falha ao cadastrar produto: {e}"}), 502
+
+            item["sku"] = sku
+            item["status"] = "produto_cadastrado_automaticamente"
+            item["responsavel"] = funcionario["nome"]
+            item["produto_cadastrado_em"] = _datetime.now().astimezone().isoformat()
+            todos[pedido_id] = itens
+            try:
+                _pedidos_estado_save(itens_file, todos)
+            except Exception as e:
+                return jsonify({
+                    "ok": False,
+                    "erro": f"produto criado, mas item nao foi atualizado: {e}",
+                    "sku": sku,
+                }), 500
+
+        return jsonify({
+            "ok": True,
+            "criado": True,
+            "sku": sku,
+            "produto": produto,
+            "item": item,
+            "publicado": False,
+            "envio_cliente": False,
+        }), 201
+
+    def _waha_enviar_imagem(numero, url, legenda=""):
+        num = "".join(ch for ch in str(numero) if ch.isdigit())
+        if not num or not str(url).startswith(("http://", "https://")):
+            return False, "numero ou imagem invalida"
+        try:
+            resposta = requests.post(
+                f"{WAHA_BASE}/api/sendImage",
+                headers=_waha_h({"Content-Type": "application/json"}),
+                json={
+                    "session": WAHA_SESSION,
+                    "chatId": f"{num}@c.us",
+                    "file": {"url": url},
+                    "caption": legenda,
+                },
+                timeout=30,
+            )
+            return resposta.status_code in (200, 201), resposta.text[:300]
+        except Exception as e:
+            return False, str(e)
+
+    def _conferencia_item_cliente(pedido, item, produto):
+        fotos = produto.get("fotos") or item.get("fotos") or []
+        if isinstance(fotos, str):
+            try:
+                fotos = json.loads(fotos)
+            except Exception:
+                fotos = [fotos] if fotos else []
+        try:
+            preco = float(produto.get("preco") or item.get("preco") or 0)
+        except (TypeError, ValueError):
+            preco = 0
+        checks = {
+            "produto_localizado": bool(item.get("sku")),
+            "estoque_confirmado": item.get("status") in (
+                "estoque_confirmado",
+                "produto_cadastrado_automaticamente",
+            ),
+            "fotos_recebidas": bool(fotos),
+            "preco_informado": preco > 0,
+            "telefone_cliente": bool(_normalizar_fone_pedido(pedido.get("phone"))),
+            "quantidade_positiva": float(produto.get("qtd") or 0) > 0,
+        }
+        return checks, fotos, preco
+
+    @app.route("/integracoes/marcelo/conferencia-final", methods=["POST", "OPTIONS"])
+    def marcelo_conferencia_final():
+        """Somente confere; nao envia mensagem."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        dados = request.get_json(silent=True) or {}
+        item_id = str(dados.get("item_id") or "").strip()
+        if not re.fullmatch(r"\d+-\d+", item_id):
+            return jsonify({"ok": False, "erro": "item_id invalido"}), 400
+        pedido_id = item_id.split("-", 1)[0]
+        try:
+            pedido_req = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pedidos",
+                params={
+                    "select": "id,phone,nome,peca,veiculo,ano,lado,status",
+                    "id": f"eq.{pedido_id}",
+                    "limit": "1",
+                },
+                headers=_wrx_headers(),
+                timeout=15,
+            )
+            pedidos = pedido_req.json() if pedido_req.status_code == 200 else []
+        except Exception as e:
+            return jsonify({"ok": False, "erro": f"falha ao consultar pedido: {e}"}), 502
+        if not isinstance(pedidos, list) or not pedidos:
+            return jsonify({"ok": False, "erro": "pedido nao encontrado"}), 404
+        pedido = pedidos[0]
+        with _pedido_itens_lock:
+            _, _, itens = _carregar_itens_pedido(pedido)
+        item = next((linha for linha in itens if linha.get("id") == item_id), None)
+        if not item or not item.get("sku"):
+            return jsonify({"ok": False, "erro": "item sem produto vinculado"}), 409
+        try:
+            produto_req = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque",
+                params={"select": "sku,titulo,preco,qtd,fotos", "sku": f"eq.{item['sku']}", "limit": "1"},
+                headers=_wrx_headers(),
+                timeout=15,
+            )
+            produtos = produto_req.json() if produto_req.status_code == 200 else []
+        except Exception as e:
+            return jsonify({"ok": False, "erro": f"falha ao consultar produto: {e}"}), 502
+        if not isinstance(produtos, list) or not produtos:
+            return jsonify({"ok": False, "erro": "produto nao encontrado"}), 404
+        checks, fotos, preco = _conferencia_item_cliente(pedido, item, produtos[0])
+        return jsonify({
+            "ok": True,
+            "pronto": all(checks.values()),
+            "checks": checks,
+            "pedido": pedido,
+            "item": item,
+            "produto": produtos[0],
+            "fotos": fotos,
+            "preco": preco,
+            "envio_cliente": False,
+        })
+
+    @app.route("/integracoes/marcelo/enviar-oferta-cliente", methods=["POST", "OPTIONS"])
+    def marcelo_enviar_oferta_cliente():
+        """Envia uma unica oferta depois da confirmacao final explicita."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        dados = request.get_json(silent=True) or {}
+        item_id = str(dados.get("item_id") or "").strip()
+        if dados.get("confirmar") is not True:
+            return jsonify({"ok": False, "erro": "confirmacao explicita obrigatoria"}), 400
+        enviados_file = os.path.join(_INTEG_DIR, "ofertas_cliente_enviadas.json")
+        try:
+            with open(enviados_file, encoding="utf-8") as arquivo:
+                enviados = json.load(arquivo)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            enviados = {}
+        if item_id in enviados:
+            return jsonify({
+                "ok": True,
+                "duplicado": True,
+                "envio": enviados[item_id],
+            })
+
+        with app.test_request_context(
+            "/integracoes/marcelo/conferencia-final",
+            method="POST",
+            json={"item_id": item_id},
+        ):
+            conferencia_resp = marcelo_conferencia_final()
+        if isinstance(conferencia_resp, tuple):
+            return conferencia_resp
+        conferencia = conferencia_resp.get_json()
+        if not conferencia.get("pronto"):
+            return jsonify({
+                "ok": False,
+                "erro": "conferencia final incompleta",
+                "checks": conferencia.get("checks"),
+            }), 409
+
+        pedido = conferencia["pedido"]
+        item = conferencia["item"]
+        fotos = conferencia["fotos"]
+        preco = conferencia["preco"]
+
+        nome = str(pedido.get("nome") or "").split(" ")[0] or "cliente"
+        formas = str(dados.get("formas_pagamento") or "PIX, dinheiro e cartao")
+        mensagem = (
+            f"Ola, {nome}! Encontramos sua peca.\n\n"
+            f"Pedido #{pedido.get('id')}\n"
+            f"Peca: {item.get('peca')}\n"
+            f"Veiculo: {item.get('veiculo')} {item.get('ano')}\n"
+            f"Valor: R$ {preco:.2f}".replace(".", ",")
+            + f"\nPagamento: {formas}\n\nDeseja confirmar?"
+        )
+        telefone = _normalizar_fone_pedido(pedido.get("phone"))
+        ok_texto, erro_texto = _waha_enviar(telefone, mensagem)
+        if not ok_texto:
+            return jsonify({"ok": False, "erro": f"falha ao enviar texto: {erro_texto}"}), 502
+        fotos_enviadas = 0
+        for foto in fotos[:5]:
+            ok_foto, _ = _waha_enviar_imagem(telefone, foto)
+            if ok_foto:
+                fotos_enviadas += 1
+        if fotos and fotos_enviadas == 0:
+            return jsonify({
+                "ok": False,
+                "erro": "texto enviado, mas as fotos falharam",
+            }), 502
+
+        try:
+            alteracao = requests.patch(
+                f"{_WRX_SB_URL}/rest/v1/pedidos",
+                params={"id": f"eq.{pedido.get('id')}"},
+                headers={**_wrx_headers(), "Prefer": "return=minimal"},
+                json={"status": "confirmado", "preco": preco},
+                timeout=15,
+            )
+            if alteracao.status_code not in (200, 204):
+                return jsonify({"ok": False, "erro": "oferta enviada, mas status nao foi atualizado"}), 502
+        except Exception as e:
+            return jsonify({"ok": False, "erro": f"oferta enviada, mas status falhou: {e}"}), 502
+
+        envio = {
+            "item_id": item_id,
+            "pedido_id": str(pedido.get("id")),
+            "telefone": telefone,
+            "preco": preco,
+            "fotos_enviadas": fotos_enviadas,
+            "enviado_em": _datetime.now().astimezone().isoformat(),
+        }
+        enviados[item_id] = envio
+        _pedidos_estado_save(enviados_file, enviados)
+        return jsonify({"ok": True, "duplicado": False, "envio": envio})
+
+    def _pontuar_produto_pedido(produto, peca, veiculo="", ano="", lado=""):
+        titulo = _texto_busca_estoque(" ".join([
+            str(produto.get("titulo") or ""),
+            str(produto.get("descricao") or ""),
+            str(produto.get("categoria") or ""),
+        ]))
+        carro = _texto_busca_estoque(" ".join([
+            str(produto.get("marca") or ""),
+            str(produto.get("modelo") or ""),
+            str(produto.get("ano") or ""),
+            str(produto.get("compatibilidade") or ""),
+        ]))
+        termos_peca = _termos_busca_estoque(peca)
+        termos_veiculo = _termos_busca_estoque(veiculo)
+        termos_lado = _termos_busca_estoque(lado)
+        termos_principais = [
+            termo for termo in termos_peca
+            if termo not in {
+                "direita", "direito", "esquerda", "esquerdo",
+                "dianteira", "dianteiro", "traseira", "traseiro",
+            }
+        ]
+
+        encontrados_peca = sum(1 for termo in termos_peca if termo in titulo)
+        encontrados_principais = sum(
+            1 for termo in termos_principais if termo in titulo
+        )
+        encontrados_veiculo = sum(
+            1 for termo in termos_veiculo if termo in carro or termo in titulo
+        )
+        encontrados_lado = sum(1 for termo in termos_lado if termo in titulo)
+        ano_num = re.search(r"\b(19|20)\d{2}\b", str(ano or ""))
+        anos_produto = [
+            int(valor)
+            for valor in re.findall(r"\b(?:19|20)\d{2}\b", carro + " " + titulo)
+        ]
+        ano_ok = True
+        if ano_num and anos_produto:
+            ano_pedido = int(ano_num.group(0))
+            ano_ok = min(anos_produto) <= ano_pedido <= max(anos_produto)
+
+        if not termos_peca or encontrados_peca == 0:
+            return 0
+        if termos_principais and encontrados_principais / len(termos_principais) < 0.6:
+            return 0
+        if termos_veiculo and encontrados_veiculo == 0:
+            return 0
+        if not ano_ok:
+            return 0
+        cobertura_peca = encontrados_peca / len(termos_peca)
+        cobertura_veiculo = (
+            encontrados_veiculo / len(termos_veiculo) if termos_veiculo else 1
+        )
+        cobertura_lado = encontrados_lado / len(termos_lado) if termos_lado else 1
+        return round(
+            cobertura_peca * 65
+            + cobertura_veiculo * 20
+            + cobertura_lado * 10
+            + (5 if ano_ok else 0)
+        )
+
+    @app.route("/integracoes/marcelo/buscar-estoque", methods=["POST", "OPTIONS"])
+    def marcelo_buscar_estoque():
+        """Busca isolada: nao altera pedido, estoque nem envia mensagens."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+
+        dados = request.get_json(silent=True) or {}
+        peca = str(dados.get("peca") or "").strip()
+        veiculo = str(dados.get("veiculo") or "").strip()
+        ano = str(dados.get("ano") or "").strip()
+        lado = str(dados.get("lado") or "").strip()
+        termos = _termos_busca_estoque(peca)
+        if not termos:
+            return jsonify({"ok": False, "erro": "peca obrigatoria"}), 400
+
+        # Consulta ampla pelos termos da peca; a classificacao detalhada e feita
+        # localmente para considerar modelo, ano e lado sem depender de SQL novo.
+        filtros = ",".join(f"titulo.ilike.*{termo}*" for termo in termos[:4])
+        try:
+            consulta = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque",
+                params={
+                    "select": (
+                        "sku,titulo,descricao,categoria,marca,modelo,ano,lado,"
+                        "compatibilidade,preco,qtd,fotos,loc,atualizado,cadastrado_em"
+                    ),
+                    "qtd": "gt.0",
+                    "or": f"({filtros})",
+                    "limit": "200",
+                },
+                headers=_wrx_headers(),
+                timeout=20,
+            )
+            if consulta.status_code != 200:
+                return jsonify({
+                    "ok": False,
+                    "erro": "falha ao consultar estoque",
+                    "http": consulta.status_code,
+                }), 502
+            produtos = consulta.json()
+        except Exception as e:
+            return jsonify({"ok": False, "erro": f"falha ao consultar estoque: {e}"}), 502
+
+        agora = _datetime.now().astimezone()
+        candidatos = []
+        for produto in produtos if isinstance(produtos, list) else []:
+            pontos = _pontuar_produto_pedido(produto, peca, veiculo, ano, lado)
+            if pontos < 55:
+                continue
+            ultima_confirmacao = produto.get("atualizado") or produto.get("cadastrado_em")
+            dias_sem_confirmar = None
+            if ultima_confirmacao:
+                try:
+                    data = _datetime.fromisoformat(str(ultima_confirmacao).replace("Z", "+00:00"))
+                    if data.tzinfo is None:
+                        data = data.replace(tzinfo=agora.tzinfo)
+                    dias_sem_confirmar = max(0, (agora - data.astimezone(agora.tzinfo)).days)
+                except (TypeError, ValueError):
+                    pass
+            item = {
+                "sku": produto.get("sku"),
+                "titulo": produto.get("titulo"),
+                "marca": produto.get("marca"),
+                "modelo": produto.get("modelo"),
+                "ano": produto.get("ano"),
+                "lado": produto.get("lado"),
+                "preco": produto.get("preco"),
+                "qtd": produto.get("qtd"),
+                "fotos": produto.get("fotos") or [],
+                "loc": produto.get("loc"),
+                "compatibilidade": produto.get("compatibilidade") or [],
+                "pontuacao": pontos,
+                "dias_sem_confirmar": dias_sem_confirmar,
+                "confirmacao_vencida": (
+                    dias_sem_confirmar is None or dias_sem_confirmar >= 90
+                ),
+            }
+            candidatos.append(item)
+
+        candidatos.sort(
+            key=lambda item: (
+                item["pontuacao"],
+                float(item.get("qtd") or 0),
+            ),
+            reverse=True,
+        )
+        candidatos = candidatos[:5]
+        return jsonify({
+            "ok": True,
+            "encontrado": bool(candidatos),
+            "status_sugerido": (
+                "aguardando_confirmacao_fisica"
+                if candidatos else "produto_nao_cadastrado"
+            ),
+            "confirmacao_fisica_obrigatoria": bool(candidatos),
+            "candidatos": candidatos,
+        })
+
+    @app.route("/integracoes/marcelo/pedido-unico", methods=["POST", "OPTIONS"])
+    def marcelo_pedido_unico():
+        """Entrada idempotente do Marcelo: no maximo um pedido aberto por telefone."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+
+        dados = request.get_json(silent=True) or {}
+        phone = _normalizar_fone_pedido(dados.get("phone") or dados.get("telefone"))
+        peca = str(dados.get("peca") or "").strip()
+        if len(phone) < 12 or not peca:
+            return jsonify({
+                "ok": False,
+                "erro": "phone e peca sao obrigatorios",
+            }), 400
+
+        campos = {
+            "phone": phone,
+            "nome": str(dados.get("nome") or "").strip() or None,
+            "peca": peca,
+            "veiculo": str(dados.get("veiculo") or "").strip() or None,
+            "ano": str(dados.get("ano") or "").strip() or None,
+            "lado": str(dados.get("lado") or "").strip() or None,
+            "cor": str(dados.get("cor") or "").strip() or None,
+            "status": "aguardando",
+        }
+
+        # O servidor roda com um processo no Railway. O lock cobre mensagens
+        # paralelas do n8n e impede duas consultas/criacoes ao mesmo tempo.
+        with _pedido_entrada_lock:
+            try:
+                consulta = requests.get(
+                    f"{_WRX_SB_URL}/rest/v1/pedidos",
+                    params={
+                        "select": "id,phone,nome,peca,veiculo,ano,lado,cor,status,criado_em",
+                        "phone": f"eq.{phone}",
+                        "status": "in.(aguardando,verificando,atendimento,confirmado)",
+                        "order": "criado_em.asc",
+                        "limit": "1",
+                    },
+                    headers=_wrx_headers(),
+                    timeout=15,
+                )
+                if consulta.status_code != 200:
+                    return jsonify({
+                        "ok": False,
+                        "erro": "falha ao consultar pedido existente",
+                        "http": consulta.status_code,
+                    }), 502
+                existentes = consulta.json()
+            except Exception as e:
+                return jsonify({"ok": False, "erro": f"falha ao consultar pedido: {e}"}), 502
+
+            if isinstance(existentes, list) and existentes:
+                return jsonify({
+                    "ok": True,
+                    "criado": False,
+                    "duplicado": True,
+                    "pedido": existentes[0],
+                })
+
+            try:
+                criacao = requests.post(
+                    f"{_WRX_SB_URL}/rest/v1/pedidos",
+                    headers={**_wrx_headers(), "Prefer": "return=representation"},
+                    json={k: v for k, v in campos.items() if v is not None},
+                    timeout=15,
+                )
+                if criacao.status_code not in (200, 201):
+                    return jsonify({
+                        "ok": False,
+                        "erro": "falha ao criar pedido",
+                        "http": criacao.status_code,
+                        "detalhe": criacao.text[:300],
+                    }), 502
+                criado = criacao.json()
+                pedido = criado[0] if isinstance(criado, list) and criado else criado
+                return jsonify({
+                    "ok": True,
+                    "criado": True,
+                    "duplicado": False,
+                    "pedido": pedido,
+                }), 201
+            except Exception as e:
+                return jsonify({"ok": False, "erro": f"falha ao criar pedido: {e}"}), 502
 
     def _pedidos_estado_save(state_file, estado):
         """Grava o controle de disparos atomicamente no volume do Railway."""
@@ -5424,6 +6500,123 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         if wd == 5 and 9 <= h < 13:               # sabado 9-13: rafael e geisa
             return emp in ("rafael", "geisa")
         return False                              # domingo: ninguem
+
+    @app.route("/integracoes/whatsapp/processar-respostas-funcionarios", methods=["GET", "POST", "OPTIONS"])
+    def whatsapp_processar_respostas_funcionarios():
+        """Le respostas ja salvas pelo n8n, sem alterar o webhook existente."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+
+        estado_file = os.path.join(_INTEG_DIR, "mensagens_func_processadas.json")
+        try:
+            consulta = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/mensagens_whatsapp",
+                params={
+                    "select": "id,numero,chat_id,mensagem,de_mim,criado_em",
+                    "de_mim": "eq.false",
+                    "order": "criado_em.desc",
+                    "limit": "200",
+                },
+                headers=_wrx_headers(),
+                timeout=20,
+            )
+            mensagens = consulta.json() if consulta.status_code == 200 else []
+        except Exception as e:
+            return jsonify({"ok": False, "erro": f"falha ao consultar mensagens: {e}"}), 502
+        if not isinstance(mensagens, list):
+            mensagens = []
+
+        mensagens_func = []
+        for mensagem in mensagens:
+            numero = _normalizar_fone_pedido(
+                mensagem.get("numero") or mensagem.get("chat_id")
+            )
+            if not numero:
+                continue
+            if any(
+                numero == _normalizar_fone_pedido(whatsapp)
+                for whatsapp in FUNCS_PEDIDO.values()
+            ):
+                mensagens_func.append((mensagem, numero))
+                continue
+            # Funcionarios adicionados pelo painel tambem sao aceitos.
+            if _identificar_funcionario_pedido(numero):
+                mensagens_func.append((mensagem, numero))
+
+        try:
+            with open(estado_file, encoding="utf-8") as arquivo:
+                processadas = set(json.load(arquivo))
+            primeira_execucao = False
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            processadas = set()
+            primeira_execucao = True
+
+        ids_atuais = {
+            str(mensagem.get("id"))
+            for mensagem, _ in mensagens_func
+            if mensagem.get("id") is not None
+        }
+        if primeira_execucao:
+            _pedidos_estado_save(estado_file, sorted(ids_atuais))
+            return jsonify({
+                "ok": True,
+                "seed": len(ids_atuais),
+                "processadas": 0,
+                "msg": "historico marcado; somente novas respostas serao processadas",
+            })
+
+        resultados = []
+        novas = sorted(
+            (
+                (mensagem, numero)
+                for mensagem, numero in mensagens_func
+                if str(mensagem.get("id")) not in processadas
+            ),
+            key=lambda par: str(par[0].get("criado_em") or ""),
+        )
+        for mensagem, numero in novas:
+            mid = str(mensagem.get("id"))
+            texto = str(mensagem.get("mensagem") or "")
+            acao, pedido_id, item_id = _interpretar_resposta_funcionario({
+                "mensagem": texto,
+            })
+            if acao and pedido_id:
+                try:
+                    resposta = requests.post(
+                        f"http://127.0.0.1:{PORT}/integracoes/marcelo/resposta-funcionario",
+                        json={
+                            "phone": numero,
+                            "mensagem": texto,
+                            "pedido_id": pedido_id,
+                            "item_id": item_id,
+                        },
+                        timeout=30,
+                    )
+                    resultados.append({
+                        "mensagem_id": mid,
+                        "pedido_id": pedido_id,
+                        "item_id": item_id,
+                        "http": resposta.status_code,
+                        "ok": resposta.status_code in (200, 201),
+                    })
+                except Exception as e:
+                    resultados.append({
+                        "mensagem_id": mid,
+                        "ok": False,
+                        "erro": str(e),
+                    })
+                    continue
+            processadas.add(mid)
+
+        # Mantem somente IDs ainda presentes na janela consultada.
+        processadas = processadas.intersection(ids_atuais)
+        _pedidos_estado_save(estado_file, sorted(processadas))
+        return jsonify({
+            "ok": True,
+            "novas": len(novas),
+            "processadas": sum(1 for item in resultados if item.get("ok")),
+            "resultados": resultados,
+        })
 
     @app.route("/integracoes/whatsapp/pedidos-manha", methods=["GET", "POST", "OPTIONS"])
     def whatsapp_pedidos_manha():
@@ -5555,10 +6748,28 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             veic = (p.get("veiculo") or "").strip()
             ano = (p.get("ano") or "").strip()
             lado = (p.get("lado") or "").strip()
-            msg = ("🔔 *Novo pedido*\nPeça: " + peca
-                   + (("\nVeículo: " + veic + ((" " + ano) if ano else "")) if veic else "")
-                   + (("\nLado: " + lado) if lado else "")
-                   + "\n\nQuem tiver, responde aqui com *foto e valor* que eu encaminho pro cliente.")
+            with _pedido_itens_lock:
+                _, _, itens = _carregar_itens_pedido(p)
+            linhas_itens = []
+            for item in itens:
+                detalhe = " ".join(filter(None, [
+                    item.get("veiculo") or veic,
+                    item.get("ano") or ano,
+                    item.get("lado") or lado,
+                ]))
+                linhas_itens.append(
+                    f"*#{item['id']}* {item.get('peca') or peca}"
+                    + (f" - {detalhe}" if detalhe else "")
+                )
+            msg = (
+                f"*Pedido #{pid}*\n\n"
+                + "\n".join(linhas_itens)
+                + "\n\nResponda usando o codigo da peca:\n"
+                + f"*Tenho #{itens[0]['id']}*\n"
+                + "ou\n"
+                + f"*Nao tenho #{itens[0]['id']}*\n\n"
+                + "Se tiver, envie tambem foto e valor."
+            )
             enviados_pedido = 0
             for e in alvos:
                 # Reserva antes do envio: se o processo cair depois de o WAHA aceitar,
@@ -7305,6 +8516,13 @@ CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
                     requests.post(f"http://127.0.0.1:{PORT}/integracoes/whatsapp/pedidos-manha", timeout=60)
                 except Exception as _e:
                     print(f"[CRON-MANHA] erro: {_e}")
+                try:
+                    requests.post(
+                        f"http://127.0.0.1:{PORT}/integracoes/whatsapp/processar-respostas-funcionarios",
+                        timeout=60,
+                    )
+                except Exception as _e:
+                    print(f"[CRON-RESPOSTAS-FUNC] erro: {_e}")
                 time.sleep(120)  # 2 minutos
         t = threading.Thread(target=_loop, daemon=True)
         t.start()
