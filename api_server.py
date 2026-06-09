@@ -6642,7 +6642,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         try:
             rows = requests.get(
                 f"{_WRX_SB_URL}/rest/v1/pedidos"
-                f"?select=id,phone,peca,veiculo,ano,lado&status=in.(aguardando,verificando)"
+                f"?select=id,phone,peca,veiculo,ano,lado&status=eq.aguardando"
                 f"&criado_em=gte.{_urlparse.quote(desde)}&order=criado_em.asc",
                 headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}"},
                 timeout=20
@@ -6795,6 +6795,19 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     except Exception as save_err:
                         print(f"[PEDIDOS-MANHA] falha ao liberar pedido={pid} alvo={e}: {save_err}")
             if enviados_pedido:
+                try:
+                    requests.patch(
+                        f"{_WRX_SB_URL}/rest/v1/pedidos",
+                        params={
+                            "id": f"eq.{pid}",
+                            "status": "eq.aguardando",
+                        },
+                        headers={**_wrx_headers(), "Prefer": "return=minimal"},
+                        json={"status": "verificando"},
+                        timeout=10,
+                    )
+                except Exception as e:
+                    print(f"[PEDIDOS-MANHA] falha ao marcar pedido={pid} como verificando: {e}")
                 novos += 1
         try:
             _pedidos_estado_save(state_file, estado)
