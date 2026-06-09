@@ -5406,6 +5406,16 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         "rafael": "5521993745355",
         "geisa":  "5521985243301",
     }
+    _pedidos_manha_lock = _threading.Lock()
+
+    def _pedidos_estado_save(state_file, estado):
+        """Grava o controle de disparos atomicamente no volume do Railway."""
+        tmp = state_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(estado, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, state_file)
 
     def _func_em_janela(emp, wd, h):
         # wd: Mon=0 .. Sun=6 ; h: hora 0-23 (America/Sao_Paulo)
@@ -5435,13 +5445,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         now = _dt.datetime.now(SP)
         wd, h = now.weekday(), now.hour
         abertos = [e for e in FUNCS_PEDIDO if _func_em_janela(e, wd, h)]
-        if not abertos:
-            return jsonify({"ok": True, "skip": "ninguem em janela", "wd": wd, "h": h})
         desde = (now - _dt.timedelta(hours=100)).astimezone(_dt.timezone.utc).isoformat()
         try:
             rows = requests.get(
                 f"{_WRX_SB_URL}/rest/v1/pedidos"
-                f"?select=id,peca,veiculo,ano,lado&status=in.(aguardando,verificando)"
+                f"?select=id,phone,peca,veiculo,ano,lado&status=in.(aguardando,verificando)"
                 f"&criado_em=gte.{_urlparse.quote(desde)}&order=criado_em.asc",
                 headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}"},
                 timeout=20
@@ -5451,15 +5459,62 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         if not isinstance(rows, list):
             rows = []
         state_file = os.path.join(_INTEG_DIR, "avisos_func.json")
+        if not _pedidos_manha_lock.acquire(blocking=False):
+            return jsonify({"ok": True, "skip": "disparo ja em andamento"})
+
+        # O Marcelo pode receber a mesma mensagem varias vezes em paralelo.
+        # Mantem somente UM pedido aberto por telefone e cancela os excedentes.
+        def _fone_de(p):
+            f = "".join(ch for ch in str(p.get("phone") or "") if ch.isdigit())
+            return f or ("id:" + str(p.get("id") or ""))
+
+        primeiro_por_fone = {}
+        rows_unicas = []
+        duplicados = []
+        for p in rows:  # consulta ordenada do mais antigo para o mais novo
+            fone = _fone_de(p)
+            if fone not in primeiro_por_fone:
+                primeiro_por_fone[fone] = str(p.get("id") or "")
+                rows_unicas.append(p)
+            else:
+                duplicados.append(p)
+        cancelados = 0
+        for p in duplicados:
+            pid_dup = str(p.get("id") or "")
+            if not pid_dup:
+                continue
+            try:
+                r_dup = requests.patch(
+                    f"{_WRX_SB_URL}/rest/v1/pedidos",
+                    params={"id": f"eq.{pid_dup}"},
+                    headers={**_wrx_headers(), "Prefer": "return=minimal"},
+                    json={"status": "cancelado"},
+                    timeout=10,
+                )
+                if r_dup.status_code in (200, 204):
+                    cancelados += 1
+            except Exception as e:
+                print(f"[PEDIDOS-MANHA] falha ao cancelar duplicado {pid_dup}: {e}")
+        rows = rows_unicas
+
+        if not abertos:
+            _pedidos_manha_lock.release()
+            return jsonify({
+                "ok": True,
+                "skip": "ninguem em janela",
+                "wd": wd,
+                "h": h,
+                "duplicados_cancelados": cancelados,
+            })
         primeira_vez = not os.path.exists(state_file)
         if primeira_vez:
             # 1º deploy: nao dispara o historico (evita blast); marca tudo como avisado.
             seed = {str(p.get("id")): list(FUNCS_PEDIDO.keys()) for p in rows if p.get("id")}
             try:
-                with open(state_file, "w", encoding="utf-8") as f:
-                    _json.dump(seed, f)
+                _pedidos_estado_save(state_file, seed)
             except Exception:
                 pass
+            _pedidos_manha_lock.release()
             return jsonify({"ok": True, "seed": len(seed), "msg": "primeira execucao - historico marcado, novos pedidos a partir de agora"})
         try:
             estado = _json.load(open(state_file, encoding="utf-8")) if os.path.exists(state_file) else {}
@@ -5474,9 +5529,6 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         #   se nenhum começou, o mais antigo aberto. Pedidos extras do mesmo
         #   número ficam de fora até o ativo ser resolvido (sair de
         #   aguardando/verificando), aí o próximo do cliente volta a disparar.
-        def _fone_de(p):
-            f = "".join(ch for ch in str(p.get("phone") or "") if ch.isdigit())
-            return f or ("id:" + str(p.get("id") or ""))
         ativo_por_fone = {}
         for p in rows:                                   # 1ª passada: já em andamento
             pid = str(p.get("id") or "")
@@ -5507,18 +5559,43 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                    + (("\nVeículo: " + veic + ((" " + ano) if ano else "")) if veic else "")
                    + (("\nLado: " + lado) if lado else "")
                    + "\n\nQuem tiver, responde aqui com *foto e valor* que eu encaminho pro cliente.")
+            enviados_pedido = 0
             for e in alvos:
+                # Reserva antes do envio: se o processo cair depois de o WAHA aceitar,
+                # o próximo ciclo não dispara o mesmo pedido novamente.
+                ja.add(e)
+                estado[pid] = list(ja)
+                try:
+                    _pedidos_estado_save(state_file, estado)
+                except Exception as save_err:
+                    ja.discard(e)
+                    estado[pid] = list(ja)
+                    print(f"[PEDIDOS-MANHA] nao enviou sem persistir pedido={pid} alvo={e}: {save_err}")
+                    continue
                 ok, _ = _waha_enviar(FUNCS_PEDIDO[e], msg)
                 if ok:
-                    ja.add(e)
-            estado[pid] = list(ja)
-            novos += 1
+                    enviados_pedido += 1
+                else:
+                    # WAHA recusou antes de aceitar: libera para tentar no próximo ciclo.
+                    ja.discard(e)
+                    estado[pid] = list(ja)
+                    try:
+                        _pedidos_estado_save(state_file, estado)
+                    except Exception as save_err:
+                        print(f"[PEDIDOS-MANHA] falha ao liberar pedido={pid} alvo={e}: {save_err}")
+            if enviados_pedido:
+                novos += 1
         try:
-            with open(state_file, "w", encoding="utf-8") as f:
-                _json.dump(estado, f)
+            _pedidos_estado_save(state_file, estado)
         except Exception:
             pass
-        return jsonify({"ok": True, "abertos": abertos, "pedidos_disparados": novos})
+        _pedidos_manha_lock.release()
+        return jsonify({
+            "ok": True,
+            "abertos": abertos,
+            "pedidos_disparados": novos,
+            "duplicados_cancelados": cancelados,
+        })
 
     def _waha_numero_sessao():
         """Número do WhatsApp logado na sessão WAHA (pra mandar aviso pra si mesmo)."""
