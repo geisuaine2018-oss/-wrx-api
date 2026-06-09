@@ -3081,7 +3081,7 @@ if USE_FLASK:
     # ════════════════════════════════════════════════════════════════════════
     _REVISAO_STATUS = {"rodando": False, "feitos": 0, "total": 0, "msg": "", "erro": ""}
 
-    def _revisao_atualizar_preco_ml(ml_id, conta, preco):
+    def _ml_atualizar_preco_item(ml_id, conta, preco):
         token = _ml_get_user_token(conta or "default")
         if not token:
             return False, f"conta '{conta}' sem token ML"
@@ -3095,6 +3095,9 @@ if USE_FLASK:
             return False, f"ML {r.status_code}: {r.text[:200]}"
         except Exception as e:
             return False, str(e)
+
+    def _revisao_atualizar_preco_ml(ml_id, conta, preco):
+        return _ml_atualizar_preco_item(ml_id, conta, preco)
 
     def _revisao_processar(limite):
         # roda em thread separada — busca concorrência é lenta (scraping ~10-30s/item)
@@ -7540,6 +7543,31 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return True
         return False
 
+    def _shopee_atualizar_preco_item(shop_id, item_id, preco):
+        access_token, shop_id_int = _shopee_get_token(shop_id)
+        if not access_token:
+            return False, "token invalido"
+        ts = int(time.time())
+        path = "/api/v2/product/update_price"
+        sign = _shopee_sign(path, ts, access_token, shop_id_int)
+        r = requests.post(
+            f"{_SHOPEE_BASE}{path}",
+            params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                    "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
+            json={"item_id": int(item_id), "price_list": [{"model_id": 0, "original_price": float(preco)}]},
+            timeout=20
+        )
+        d = r.json()
+        ok = r.status_code == 200 and not d.get("error")
+        if ok:
+            requests.patch(
+                f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?shop_id=eq.{shop_id}&item_id=eq.{item_id}",
+                headers=_wrx_headers(),
+                json={"preco": float(preco), "sync_at": _datetime.utcnow().isoformat() + "Z"},
+                timeout=10
+            )
+        return ok, d.get("message", "") if not ok else ""
+
     @app.route("/integracoes/shopee/verificar-seguranca", methods=["POST", "OPTIONS"])
     def shopee_verificar_seguranca():
         if request.method == "OPTIONS":
@@ -7782,9 +7810,16 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         if somente_novo and condicao_recebida == "used":
             print(f"[SHOPEE] Item de segurança '{titulo}' convertido para NOVO automaticamente.")
 
-        # Publica em todos os shops autorizados
+        # Publica só na loja solicitada. Se vier shop_ids, aceita lista explícita.
+        # Sem shop_id, usa apenas a primeira loja autorizada para evitar duplicação em massa.
         shop_id_param = data.get("shop_id")
-        shop_ids = [str(shop_id_param)] if shop_id_param else list(tokens.keys())
+        shop_ids_param = data.get("shop_ids")
+        if isinstance(shop_ids_param, list):
+            shop_ids = [str(s).strip() for s in shop_ids_param if str(s).strip()]
+        elif shop_id_param:
+            shop_ids = [str(shop_id_param).strip()]
+        else:
+            shop_ids = [next(iter(tokens.keys()))] if tokens else []
         resultados = []
         erros = []
         for sid in shop_ids:
@@ -8350,6 +8385,91 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         return jsonify({"ok": ok, "erro": d.get("message", "") if not ok else ""})
 
     # ── Shopee: pausar/despausar item ─────────────────────────────────────────────
+
+    @app.route("/integracoes/estoque/sincronizar-preco", methods=["POST", "OPTIONS"])
+    def estoque_sincronizar_preco():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        sku = str(data.get("sku") or "").strip()
+        try:
+            preco = float(data.get("preco", 0))
+        except (TypeError, ValueError):
+            preco = 0.0
+        if not sku:
+            return jsonify({"ok": False, "erro": "sku obrigatorio"}), 400
+        if preco < 0:
+            return jsonify({"ok": False, "erro": "preco invalido"}), 400
+
+        avisos = []
+        atualizado = {"produto": False, "ml": [], "shopee": []}
+
+        try:
+            r_prod = requests.patch(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque?sku=eq.{sku}",
+                headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"},
+                json={"preco": preco, "atualizado": _datetime.utcnow().isoformat() + "Z"},
+                timeout=15,
+            )
+            atualizado["produto"] = r_prod.status_code in (200, 204)
+        except Exception as e:
+            avisos.append(f"estoque: {e}")
+
+        try:
+            r_ml = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/ml_anuncios",
+                params={"select": "ml_id,conta,sku", "sku": f"eq.{sku}"},
+                headers=_wrx_headers(),
+                timeout=15,
+            )
+            for row in (r_ml.json() if r_ml.status_code == 200 else []):
+                ml_id = str(row.get("ml_id") or "").strip()
+                conta = str(row.get("conta") or "default").strip()
+                if not ml_id:
+                    continue
+                ok, err = _ml_atualizar_preco_item(ml_id, conta, preco)
+                atualizado["ml"].append({"ml_id": ml_id, "conta": conta, "ok": ok, "erro": err})
+                if not ok:
+                    avisos.append(f"ML {ml_id}: {err}")
+                else:
+                    try:
+                        requests.patch(
+                            f"{_WRX_SB_URL}/rest/v1/ml_anuncios?ml_id=eq.{ml_id}",
+                            headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"},
+                            json={"preco": preco, "sync_at": _datetime.utcnow().isoformat() + "Z"},
+                            timeout=10,
+                        )
+                    except Exception:
+                        pass
+        except Exception as e:
+            avisos.append(f"ml: {e}")
+
+        try:
+            r_sh = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/shopee_anuncios",
+                params={"select": "shop_id,item_id,sku", "sku": f"eq.{sku}"},
+                headers=_wrx_headers(),
+                timeout=15,
+            )
+            for row in (r_sh.json() if r_sh.status_code == 200 else []):
+                sid = str(row.get("shop_id") or "").strip()
+                item_id = str(row.get("item_id") or "").strip()
+                if not sid or not item_id:
+                    continue
+                ok, err = _shopee_atualizar_preco_item(sid, item_id, preco)
+                atualizado["shopee"].append({"shop_id": sid, "item_id": item_id, "ok": ok, "erro": err})
+                if not ok:
+                    avisos.append(f"Shopee {sid}/{item_id}: {err}")
+        except Exception as e:
+            avisos.append(f"shopee: {e}")
+
+        return jsonify({
+            "ok": True,
+            "sku": sku,
+            "preco": preco,
+            "atualizado": atualizado,
+            "avisos": avisos,
+        })
 
     @app.route("/integracoes/shopee/pausar-item", methods=["POST", "OPTIONS"])
     def shopee_pausar_item():
