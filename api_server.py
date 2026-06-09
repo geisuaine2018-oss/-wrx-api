@@ -1990,6 +1990,31 @@ if USE_FLASK:
             return _cors(app.response_class(status=204))
         return jsonify({"ok": True, "porta": PORT})
 
+    @app.route("/estoque/excluir-produto", methods=["POST", "OPTIONS"])
+    def estoque_excluir_produto():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        sku = str(data.get("sku") or "").strip()
+        if not sku:
+            return jsonify({"ok": False, "erro": "sku obrigatorio"}), 400
+        try:
+            r = requests.delete(
+                f"{_WRX_SB_URL}/rest/v1/pecas_estoque",
+                params={"sku": f"eq.{sku}"},
+                headers={**_wrx_headers(), "Prefer": "return=representation"},
+                timeout=15,
+            )
+            if r.status_code not in (200, 204):
+                return jsonify({
+                    "ok": False,
+                    "erro": f"Banco recusou a exclusao ({r.status_code}): {r.text[:200]}",
+                }), 502
+            removidos = r.json() if r.status_code == 200 and r.text.strip() else []
+            return jsonify({"ok": True, "sku": sku, "removidos": len(removidos)})
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 500
+
     @app.route("/debug-ml")
     def debug_ml():
         q = request.args.get("q", "sensor pressao oleo")
@@ -3652,6 +3677,10 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         # Atributos obrigatórios: PART_NUMBER, BRAND, MODEL, dimensões de embalagem
         if "PART_NUMBER" not in attr_ids and sku:
             attrs.append({"id": "PART_NUMBER", "value_name": sku})
+        # SELLER_SKU: é o "Código de identificação (SKU)" que aparece no ML novo.
+        # Sem ele o campo SKU fica VAZIO no anúncio (seller_custom_field sozinho não preenche).
+        if "SELLER_SKU" not in attr_ids and sku:
+            attrs.append({"id": "SELLER_SKU", "value_name": sku})
         # BRAND: usa a marca do formulário; se não vier, tenta deduzir do título
         marca_form = (data.get("marca") or "").strip()
         if "BRAND" not in attr_ids:
@@ -5936,15 +5965,39 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             if not access_token:
                 erros.append(f"shop {sid}: token invalido")
                 continue
-            # EVITA DUPLICAR: se este SKU ja tem anuncio nesta loja, NAO publica de novo.
+            # EVITA DUPLICAR a mesma copia. O item_sku continua sendo o SKU base;
+            # a referencia SH1..SH6 fica separada no Auto-Part Number.
             if not data.get("forcar"):
                 try:
                     _chk = requests.get(
-                        f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?sku=eq.{sku_interno}&shop_id=eq.{sid}&select=item_id&limit=1",
+                        f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?sku=eq.{sku_interno}&shop_id=eq.{sid}&select=item_id,titulo",
                         headers=_auth_sb_headers(), timeout=10)
-                    if _chk.status_code == 200 and _chk.json():
-                        resultados.append({"shop_id": sid, "item_id": _chk.json()[0].get("item_id"), "ja_existia": True})
-                        continue
+                    _existentes = _chk.json() if _chk.status_code == 200 else []
+                    _ids_existentes = [x.get("item_id") for x in _existentes if x.get("item_id")]
+                    if _ids_existentes:
+                        _detalhes = _shopee_get_item_details(access_token, shop_id_int, _ids_existentes)
+                        _por_id = {str(x.get("item_id")): x for x in _detalhes}
+                        _duplicado = None
+                        for _row in _existentes:
+                            _det = _por_id.get(str(_row.get("item_id")), {})
+                            _ref_publicada = _shopee_extract_part_number(_det)
+                            if _ref_publicada and _ref_publicada.strip().upper() == str(sku).strip().upper():
+                                _duplicado = _row
+                                break
+                            # Compatibilidade com o primeiro anuncio criado antes de
+                            # a referencia exclusiva existir. Nao aplica a SH2+ para nao
+                            # bloquear variacoes que eventualmente tenham titulo igual.
+                            if (not _ref_publicada and str(sku).upper().endswith("-SH1")
+                                    and str(_row.get("titulo") or "").strip() == str(titulo).strip()):
+                                _duplicado = _row
+                                break
+                        if _duplicado:
+                            resultados.append({
+                                "shop_id": sid,
+                                "item_id": _duplicado.get("item_id"),
+                                "ja_existia": True,
+                            })
+                            continue
                 except Exception:
                     pass
             # Categoria-folha CORRETA: pergunta à Shopee pelo nome do produto
@@ -5973,6 +6026,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 "timestamp": ts,
                 "access_token": access_token,
                 "item_name": titulo[:120],
+                # Todas as copias pertencem ao mesmo produto no estoque.
+                "item_sku": str(sku_interno)[:50],
                 "description": descricao[:2000],
                 "original_price": float(preco),
                 "seller_stock": [{"stock": 1}],
@@ -5985,7 +6040,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 # Usa o SKU como número da peça (referência real do vendedor).
                 "attribute_list": [
                     {"attribute_id": 102293,
-                     "attribute_value_list": [{"value_id": 0, "original_value_name": str(sku_interno)[:80]}]},
+                     "attribute_value_list": [{"value_id": 0, "original_value_name": str(sku)[:80]}]},
                 ],
                 "weight": float(data.get("peso") or 1.0),
                 "dimension": {
@@ -6169,6 +6224,21 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     return vals[0].get("value", "").strip()
         return ""
 
+    def _shopee_extract_part_number(item):
+        """Referencia exclusiva da copia (SH1..SH6), sem alterar o SKU de estoque."""
+        for attr in item.get("attribute_list", []):
+            if (attr.get("attribute_id") == 102293
+                    or attr.get("attribute_name", "").strip().lower() == "auto-part number"):
+                vals = attr.get("attribute_value_list", [])
+                if vals:
+                    return str(
+                        vals[0].get("original_value_name")
+                        or vals[0].get("value")
+                        or vals[0].get("display_value_name")
+                        or ""
+                    ).strip()
+        return ""
+
     def _shopee_extract_preco(item):
         pi = item.get("price_info", [])
         return float((pi[0].get("current_price") or pi[0].get("original_price") or 0) if pi else 0)
@@ -6331,8 +6401,9 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 if est <= 0:
                     continue
                 sku_raw = _shopee_extract_sku(item)
-                sku_up = sku_raw.upper() if sku_raw else ""
-                sku_vinculado = sku_raw if sku_up in skus_sistema else None
+                sku_base = re.sub(r'-(SH|DML|GML)\d+$', '', sku_raw, flags=re.I)
+                sku_up = sku_base.upper() if sku_base else ""
+                sku_vinculado = sku_base if sku_up in skus_sistema else None
                 if sku_vinculado:
                     total_vinculados += 1
                 fotos = item.get("image", {}).get("image_url_list", [])[:9]
@@ -6681,8 +6752,10 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return
         for order in d.get("response", {}).get("order_list", []):
             for item in order.get("item_list", []):
-                # Normaliza SKU: variacoes vem sufixadas (-SH1..-SH4); o estoque usa o SKU base
-                sku = re.sub(r'-(SH|DML|GML)\d+$', '', (item.get("model_sku") or "").strip(), flags=re.I)
+                # Item sem variacao usa item_sku; anuncios antigos podem ter -SH1..-SH6.
+                sku_venda = (item.get("model_sku") or item.get("item_sku")
+                             or item.get("seller_sku") or "").strip()
+                sku = re.sub(r'-(SH|DML|GML)\d+$', '', sku_venda, flags=re.I)
                 qty = int(item.get("model_quantity_purchased", 1))
                 if not sku:
                     continue
