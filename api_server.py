@@ -6478,7 +6478,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     ),
                     "qtd": "gt.0",
                     "or": f"({filtros})",
-                    "limit": "200",
+                    "limit": "1000",
                 },
                 headers=_wrx_headers(),
                 timeout=20,
