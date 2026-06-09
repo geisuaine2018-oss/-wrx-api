@@ -7589,23 +7589,37 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
     def _shopee_categoria_recomendada(access_token, shop_id_int, nome_produto):
         """Pergunta à Shopee qual a categoria-folha certa pro produto (recommend_category).
         Retorna o category_id (int) ou None."""
+        tentativas = []
+        bruto = str(nome_produto or "").strip()
+        if bruto:
+            tentativas.append(bruto)
+            limpo = _re.sub(r"\([^)]*\)", " ", bruto)
+            limpo = _re.sub(r"\b\d{4}\b", " ", limpo)
+            limpo = _re.sub(r"[/\-–—]", " ", limpo)
+            limpo = _re.sub(r"\b(usad[ao]|novo|original|manual|elétrico|eletrico|lado|direito|esquerdo)\b", " ", limpo, flags=_re.IGNORECASE)
+            limpo = _re.sub(r"\s+", " ", limpo).strip()
+            if limpo and limpo not in tentativas:
+                tentativas.append(limpo)
+            if "retrovisor" in bruto.lower() and "retrovisor" not in limpo.lower():
+                tentativas.append("retrovisor automotivo")
         try:
             ts = int(time.time())
             path = "/api/v2/product/category_recommend"
-            sign = _shopee_sign(path, ts, access_token, shop_id_int)
-            r = requests.get(
-                f"{_SHOPEE_BASE}{path}",
-                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
-                        "access_token": access_token, "shop_id": shop_id_int,
-                        "sign": sign, "item_name": nome_produto[:120]},
-                timeout=15
-            )
-            d = r.json()
-            cats = (d.get("response", {}) or {}).get("category_id", [])
-            # a API devolve uma LISTA RANQUEADA de categorias-folha recomendadas;
-            # a 1ª (mais relevante) é a folha certa pra usar no add_item
-            if cats:
-                return cats[0]
+            for nome in tentativas or [str(nome_produto or "")[:120]]:
+                sign = _shopee_sign(path, ts, access_token, shop_id_int)
+                r = requests.get(
+                    f"{_SHOPEE_BASE}{path}",
+                    params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                            "access_token": access_token, "shop_id": shop_id_int,
+                            "sign": sign, "item_name": nome[:120]},
+                    timeout=15
+                )
+                d = r.json()
+                cats = (d.get("response", {}) or {}).get("category_id", [])
+                # a API devolve uma LISTA RANQUEADA de categorias-folha recomendadas;
+                # a 1ª (mais relevante) é a folha certa pra usar no add_item
+                if cats:
+                    return cats[0]
         except Exception as _e:
             print(f"[SHOPEE-CAT] erro recommend: {_e}")
         return None
@@ -7635,7 +7649,22 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         """Baixa cada foto da URL e sobe pro media space da Shopee.
         Retorna lista de image_id (a Shopee exige image_id, não aceita URL externa de forma confiável)."""
         ids = []
+        ordenadas = []
         for u in urls[:9]:
+            s = str(u or "").strip()
+            if not s:
+                continue
+            score = 0
+            if s.startswith("data:"):
+                score -= 10
+            if "storage.partshub.app" in s:
+                score -= 5
+            if "supabase.co/storage/v1/object/sign" in s:
+                score += 10
+            if "supabase.co" in s and "sign" in s:
+                score += 10
+            ordenadas.append((score, s))
+        for _, u in sorted(ordenadas, key=lambda x: x[0]):
             if not u:
                 continue
             try:
