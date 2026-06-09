@@ -5325,11 +5325,23 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
     def _waha_webhook_body():
         return {
             "name": WAHA_SESSION,
-            "config": {"webhooks": [{
-                "url": WAHA_WEBHOOK_URL,
-                "events": ["message"],
-                "retries": {"policy": "linear", "delaySeconds": 2, "attempts": 3},
-            }]},
+            "config": {
+                "noweb": {
+                    "store": {
+                        "enabled": True,
+                        "full_sync": True,
+                    },
+                },
+                "webhooks": [{
+                    "url": WAHA_WEBHOOK_URL,
+                    "events": ["message"],
+                    "retries": {
+                        "policy": "linear",
+                        "delaySeconds": 2,
+                        "attempts": 3,
+                    },
+                }],
+            },
         }
 
     @app.route("/integracoes/whatsapp/status", methods=["GET", "OPTIONS"])
@@ -6740,71 +6752,76 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
 
     def _mensagens_funcionarios_waha():
         """Contingencia: le o WAHA quando o webhook/n8n nao persistiu a mensagem."""
-        try:
-            resposta = requests.get(
-                f"{WAHA_BASE}/api/messages",
-                params={
-                    "session": WAHA_SESSION,
-                    "chatId": "all",
-                    "limit": "200",
-                    "downloadMedia": "true",
-                    "filter.fromMe": "false",
-                },
-                headers=_waha_h({"Accept": "application/json"}),
-                timeout=25,
-            )
-            dados = resposta.json() if resposta.status_code == 200 else []
-        except Exception as e:
-            print(f"[RESPOSTAS-FUNC] falha ao ler WAHA: {e}")
-            return []
-        if isinstance(dados, dict):
-            dados = dados.get("data") or dados.get("messages") or []
-        if not isinstance(dados, list):
-            return []
-
         mensagens = []
-        for linha in dados:
-            if not isinstance(linha, dict) or linha.get("fromMe") is True:
-                continue
-            origem = linha.get("from") or linha.get("chatId") or ""
-            numero = _normalizar_fone_pedido(origem)
-            if not numero or not _identificar_funcionario_pedido(numero):
-                continue
-            media = linha.get("media") if isinstance(linha.get("media"), dict) else {}
-            media_url = str(
-                linha.get("mediaUrl") or media.get("url") or ""
-            ).strip()
-            if media_url:
-                media_url = re.sub(
-                    r"^https?://(?:localhost|127\.0\.0\.1):3000",
-                    WAHA_BASE.rstrip("/"),
-                    media_url,
-                    flags=re.I,
-                )
-            mimetype = str(media.get("mimetype") or "").lower()
-            tipo = (
-                "audio" if mimetype.startswith("audio/")
-                else "image" if mimetype.startswith("image/")
-                else "media" if media_url
-                else "text"
-            )
-            timestamp = linha.get("timestamp")
+        numeros = {
+            _normalizar_fone_pedido(numero)
+            for numero in FUNCS_PEDIDO.values()
+        }
+        for numero in numeros:
             try:
-                criado_em = _datetime.fromtimestamp(
-                    float(timestamp), tz=_datetime.now().astimezone().tzinfo
-                ).isoformat()
-            except (TypeError, ValueError, OSError):
-                criado_em = ""
-            mensagens.append({
-                "id": f"waha:{linha.get('id')}",
-                "numero": numero,
-                "chat_id": origem,
-                "mensagem": linha.get("body") or "",
-                "de_mim": False,
-                "criado_em": criado_em,
-                "tipo": tipo,
-                "media_url": media_url,
-            })
+                resposta = requests.get(
+                    (
+                        f"{WAHA_BASE}/api/{WAHA_SESSION}/chats/"
+                        f"{numero}@c.us/messages"
+                    ),
+                    params={"limit": "100", "downloadMedia": "true"},
+                    headers=_waha_h({"Accept": "application/json"}),
+                    timeout=25,
+                )
+                dados = resposta.json() if resposta.status_code == 200 else []
+            except Exception as e:
+                print(f"[RESPOSTAS-FUNC] falha ao ler WAHA {numero}: {e}")
+                continue
+            if isinstance(dados, dict):
+                dados = dados.get("data") or dados.get("messages") or []
+            if not isinstance(dados, list):
+                continue
+            for linha in dados:
+                if not isinstance(linha, dict) or linha.get("fromMe") is True:
+                    continue
+                origem = linha.get("from") or linha.get("chatId") or ""
+                media = (
+                    linha.get("media")
+                    if isinstance(linha.get("media"), dict)
+                    else {}
+                )
+                media_url = str(
+                    linha.get("mediaUrl") or media.get("url") or ""
+                ).strip()
+                if media_url:
+                    media_url = re.sub(
+                        r"^https?://(?:localhost|127\.0\.0\.1):3000",
+                        WAHA_BASE.rstrip("/"),
+                        media_url,
+                        flags=re.I,
+                    )
+                mimetype = str(
+                    media.get("mimetype") or linha.get("mimetype") or ""
+                ).lower()
+                tipo = (
+                    "audio" if mimetype.startswith("audio/")
+                    else "image" if mimetype.startswith("image/")
+                    else "media" if media_url or linha.get("hasMedia")
+                    else "text"
+                )
+                timestamp = linha.get("timestamp")
+                try:
+                    criado_em = _datetime.fromtimestamp(
+                        float(timestamp),
+                        tz=_datetime.now().astimezone().tzinfo,
+                    ).isoformat()
+                except (TypeError, ValueError, OSError):
+                    criado_em = ""
+                mensagens.append({
+                    "id": f"waha:{linha.get('id')}",
+                    "numero": numero,
+                    "chat_id": origem,
+                    "mensagem": linha.get("body") or "",
+                    "de_mim": False,
+                    "criado_em": criado_em,
+                    "tipo": tipo,
+                    "media_url": media_url,
+                })
         return mensagens
 
     @app.route("/integracoes/whatsapp/processar-respostas-funcionarios", methods=["GET", "POST", "OPTIONS"])
@@ -6834,16 +6851,6 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": False, "erro": f"falha ao consultar mensagens: {e}"}), 502
         if not isinstance(mensagens, list):
             mensagens = []
-        ids_supabase = {
-            str(mensagem.get("id"))
-            for mensagem in mensagens
-            if isinstance(mensagem, dict) and mensagem.get("id") is not None
-        }
-        mensagens.extend(
-            mensagem
-            for mensagem in _mensagens_funcionarios_waha()
-            if str(mensagem.get("id")) not in ids_supabase
-        )
 
         mensagens_func = []
         for mensagem in mensagens:
@@ -6861,6 +6868,13 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             # Funcionarios adicionados pelo painel tambem sao aceitos.
             if _identificar_funcionario_pedido(numero):
                 mensagens_func.append((mensagem, numero))
+        if not mensagens_func:
+            for mensagem in _mensagens_funcionarios_waha():
+                numero = _normalizar_fone_pedido(
+                    mensagem.get("numero") or mensagem.get("chat_id")
+                )
+                if numero:
+                    mensagens_func.append((mensagem, numero))
 
         try:
             with open(estado_file, encoding="utf-8") as arquivo:
