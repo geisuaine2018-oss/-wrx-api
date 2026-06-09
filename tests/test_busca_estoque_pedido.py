@@ -93,7 +93,7 @@ class BuscaEstoquePedidoTest(unittest.TestCase):
         self.assertEqual(resposta.json["candidatos"], [])
 
     @patch("api_server.requests.get")
-    def test_descarta_outro_tipo_de_peca_e_ano_incompativel(self, get):
+    def test_descarta_outro_tipo_e_sinaliza_ano_incompativel(self, get):
         get.return_value = RespostaFake(200, [
             {
                 "sku": "21",
@@ -117,8 +117,9 @@ class BuscaEstoquePedidoTest(unittest.TestCase):
             "ano": "2023",
         })
 
-        self.assertFalse(resposta.json["encontrado"])
-        self.assertEqual(resposta.json["candidatos"], [])
+        self.assertTrue(resposta.json["encontrado"])
+        self.assertEqual(resposta.json["candidatos"][0]["sku"], "22")
+        self.assertFalse(resposta.json["candidatos"][0]["ano_compativel"])
 
     @patch("api_server.requests.get")
     def test_marca_confirmacao_vencida_depois_de_90_dias(self, get):

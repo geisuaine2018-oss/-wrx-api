@@ -79,6 +79,52 @@ class ProcessarMensagensFuncionarioTest(unittest.TestCase):
         self.assertEqual(resposta.json["processadas"], 1)
         self.assertEqual(post.call_args.kwargs["json"]["item_id"], "8421-2")
 
+    @patch("api_server.requests.post")
+    @patch("api_server.requests.get")
+    def test_vincula_foto_enviada_depois_do_tenho(self, get, post):
+        estado = os.path.join(self.temp.name, "mensagens_func_processadas.json")
+        with open(estado, "w", encoding="utf-8") as arquivo:
+            json.dump([], arquivo)
+        phone = api_server.FUNCS_PEDIDO["robson"]
+        with open(
+            os.path.join(self.temp.name, "respostas_func.json"),
+            "w",
+            encoding="utf-8",
+        ) as arquivo:
+            json.dump({
+                f"271-1:{phone}:tenho": {
+                    "item_id": "271-1",
+                    "acao": "tenho",
+                    "whatsapp": phone,
+                    "recebido_em": "2026-06-09T10:00:00Z",
+                }
+            }, arquivo)
+        get.return_value = RespostaFake(200, [{
+            "id": 12,
+            "numero": phone,
+            "mensagem": "[imagem]",
+            "tipo": "image",
+            "media_url": "https://exemplo.com/painel.jpg",
+            "de_mim": False,
+            "criado_em": "2026-06-09T10:01:00Z",
+        }])
+        post.return_value = RespostaFake(200, {"ok": True})
+
+        resposta = self.client.post(
+            "/integracoes/whatsapp/processar-respostas-funcionarios"
+        )
+
+        self.assertEqual(resposta.status_code, 200)
+        self.assertEqual(resposta.json["fotos_vinculadas"], 1)
+        self.assertEqual(
+            post.call_args.kwargs["json"],
+            {
+                "phone": phone,
+                "item_id": "271-1",
+                "foto": "https://exemplo.com/painel.jpg",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

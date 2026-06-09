@@ -5586,7 +5586,28 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         if not isinstance(pedidos, list) or not pedidos:
             return jsonify({"ok": False, "erro": "pedido nao encontrado"}), 404
         with _pedido_itens_lock:
-            _, _, itens = _carregar_itens_pedido(pedidos[0])
+            itens_file, todos, itens = _carregar_itens_pedido(pedidos[0])
+            alterado = False
+            for item in itens:
+                if item.get("sku") or item.get("status") not in (
+                    "aguardando_busca",
+                    "produto_nao_cadastrado",
+                ):
+                    continue
+                busca = _buscar_estoque_dados(
+                    item.get("peca"),
+                    item.get("veiculo"),
+                    item.get("ano"),
+                    item.get("lado"),
+                )
+                item["candidatos"] = busca.get("candidatos") or []
+                item["status"] = busca.get("status_sugerido") or "produto_nao_cadastrado"
+                if item["candidatos"]:
+                    item["sku_sugerido"] = item["candidatos"][0].get("sku")
+                alterado = True
+            if alterado:
+                todos[str(pedido_id)] = itens
+                _pedidos_estado_save(itens_file, todos)
         return jsonify({
             "ok": True,
             "pedido_id": str(pedido_id),
@@ -5738,11 +5759,44 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 }), 500
 
         pedido["status"] = novo_status
+        busca = None
+        if acao == "tenho":
+            try:
+                busca = _buscar_estoque_dados(
+                    item.get("peca"),
+                    item.get("veiculo"),
+                    item.get("ano"),
+                    item.get("lado"),
+                )
+                with _pedido_itens_lock:
+                    itens_file, todos, itens = _carregar_itens_pedido(pedido)
+                    item_salvo = next(
+                        (linha for linha in itens if linha.get("id") == item_id),
+                        None,
+                    )
+                    if item_salvo:
+                        item_salvo["candidatos"] = busca.get("candidatos") or []
+                        item_salvo["status"] = (
+                            busca.get("status_sugerido")
+                            or "produto_nao_cadastrado"
+                        )
+                        item_salvo["responsavel"] = funcionario["nome"]
+                        if item_salvo["candidatos"]:
+                            item_salvo["sku_sugerido"] = (
+                                item_salvo["candidatos"][0].get("sku")
+                            )
+                        todos[pedido_id] = itens
+                        _pedidos_estado_save(itens_file, todos)
+                        item = item_salvo
+            except Exception as e:
+                print(f"[RESPOSTA-FUNC] falha na busca automatica item={item_id}: {e}")
         return jsonify({
             "ok": True,
             "duplicado": False,
             "evento": evento,
             "pedido": pedido,
+            "item": item,
+            "busca_estoque": busca,
             "envio_cliente": False,
         })
 
@@ -5756,6 +5810,22 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         return respostas.get(
             f"{item_id}:{_normalizar_fone_pedido(whatsapp)}:tenho"
         )
+
+    def _ultimo_evento_tenho_funcionario(whatsapp):
+        respostas_file = os.path.join(_INTEG_DIR, "respostas_func.json")
+        try:
+            with open(respostas_file, encoding="utf-8") as arquivo:
+                respostas = json.load(arquivo)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            respostas = {}
+        numero = _normalizar_fone_pedido(whatsapp)
+        eventos = [
+            evento for evento in respostas.values()
+            if evento.get("acao") == "tenho"
+            and _normalizar_fone_pedido(evento.get("whatsapp")) == numero
+        ]
+        eventos.sort(key=lambda evento: str(evento.get("recebido_em") or ""), reverse=True)
+        return eventos[0] if eventos else None
 
     @app.route("/integracoes/marcelo/confirmar-estoque-item", methods=["POST", "OPTIONS"])
     def marcelo_confirmar_estoque_item():
@@ -5821,6 +5891,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 item.get("veiculo"),
                 item.get("ano"),
                 item.get("lado"),
+                exigir_ano=True,
             )
             if pontos < 55:
                 return jsonify({
@@ -6240,7 +6311,25 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         _pedidos_estado_save(enviados_file, enviados)
         return jsonify({"ok": True, "duplicado": False, "envio": envio})
 
-    def _pontuar_produto_pedido(produto, peca, veiculo="", ano="", lado=""):
+    def _ano_produto_compativel(produto, ano):
+        ano_num = re.search(r"\b(19|20)\d{2}\b", str(ano or ""))
+        texto_produto = _texto_busca_estoque(" ".join([
+            str(produto.get("ano") or ""),
+            str(produto.get("titulo") or ""),
+            str(produto.get("compatibilidade") or ""),
+        ]))
+        anos_produto = [
+            int(valor)
+            for valor in re.findall(r"\b(?:19|20)\d{2}\b", texto_produto)
+        ]
+        if not ano_num or not anos_produto:
+            return True
+        ano_pedido = int(ano_num.group(0))
+        return min(anos_produto) <= ano_pedido <= max(anos_produto)
+
+    def _pontuar_produto_pedido(
+        produto, peca, veiculo="", ano="", lado="", exigir_ano=False
+    ):
         titulo = _texto_busca_estoque(" ".join([
             str(produto.get("titulo") or ""),
             str(produto.get("descricao") or ""),
@@ -6271,15 +6360,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             1 for termo in termos_veiculo if termo in carro or termo in titulo
         )
         encontrados_lado = sum(1 for termo in termos_lado if termo in titulo)
-        ano_num = re.search(r"\b(19|20)\d{2}\b", str(ano or ""))
-        anos_produto = [
-            int(valor)
-            for valor in re.findall(r"\b(?:19|20)\d{2}\b", carro + " " + titulo)
-        ]
-        ano_ok = True
-        if ano_num and anos_produto:
-            ano_pedido = int(ano_num.group(0))
-            ano_ok = min(anos_produto) <= ano_pedido <= max(anos_produto)
+        ano_ok = _ano_produto_compativel(produto, ano)
 
         if not termos_peca or encontrados_peca == 0:
             return 0
@@ -6287,7 +6368,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return 0
         if termos_veiculo and encontrados_veiculo == 0:
             return 0
-        if not ano_ok:
+        if exigir_ano and not ano_ok:
             return 0
         cobertura_peca = encontrados_peca / len(termos_peca)
         cobertura_veiculo = (
@@ -6301,20 +6382,14 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             + (5 if ano_ok else 0)
         )
 
-    @app.route("/integracoes/marcelo/buscar-estoque", methods=["POST", "OPTIONS"])
-    def marcelo_buscar_estoque():
-        """Busca isolada: nao altera pedido, estoque nem envia mensagens."""
-        if request.method == "OPTIONS":
-            return _options_resp()
-
-        dados = request.get_json(silent=True) or {}
-        peca = str(dados.get("peca") or "").strip()
-        veiculo = str(dados.get("veiculo") or "").strip()
-        ano = str(dados.get("ano") or "").strip()
-        lado = str(dados.get("lado") or "").strip()
+    def _buscar_estoque_dados(peca, veiculo="", ano="", lado=""):
+        peca = str(peca or "").strip()
+        veiculo = str(veiculo or "").strip()
+        ano = str(ano or "").strip()
+        lado = str(lado or "").strip()
         termos = _termos_busca_estoque(peca)
         if not termos:
-            return jsonify({"ok": False, "erro": "peca obrigatoria"}), 400
+            return {"ok": False, "erro": "peca obrigatoria", "candidatos": []}
 
         # Consulta ampla pelos termos da peca; a classificacao detalhada e feita
         # localmente para considerar modelo, ano e lado sem depender de SQL novo.
@@ -6335,14 +6410,19 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 timeout=20,
             )
             if consulta.status_code != 200:
-                return jsonify({
+                return {
                     "ok": False,
                     "erro": "falha ao consultar estoque",
                     "http": consulta.status_code,
-                }), 502
+                    "candidatos": [],
+                }
             produtos = consulta.json()
         except Exception as e:
-            return jsonify({"ok": False, "erro": f"falha ao consultar estoque: {e}"}), 502
+            return {
+                "ok": False,
+                "erro": f"falha ao consultar estoque: {e}",
+                "candidatos": [],
+            }
 
         agora = _datetime.now().astimezone()
         candidatos = []
@@ -6373,6 +6453,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 "loc": produto.get("loc"),
                 "compatibilidade": produto.get("compatibilidade") or [],
                 "pontuacao": pontos,
+                "ano_compativel": _ano_produto_compativel(produto, ano),
                 "dias_sem_confirmar": dias_sem_confirmar,
                 "confirmacao_vencida": (
                     dias_sem_confirmar is None or dias_sem_confirmar >= 90
@@ -6388,7 +6469,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             reverse=True,
         )
         candidatos = candidatos[:5]
-        return jsonify({
+        return {
             "ok": True,
             "encontrado": bool(candidatos),
             "status_sugerido": (
@@ -6397,7 +6478,26 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             ),
             "confirmacao_fisica_obrigatoria": bool(candidatos),
             "candidatos": candidatos,
-        })
+        }
+
+    @app.route("/integracoes/marcelo/buscar-estoque", methods=["POST", "OPTIONS"])
+    def marcelo_buscar_estoque():
+        """Busca isolada: nao altera pedido, estoque nem envia mensagens."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+
+        dados = request.get_json(silent=True) or {}
+        resultado = _buscar_estoque_dados(
+            dados.get("peca"),
+            dados.get("veiculo"),
+            dados.get("ano"),
+            dados.get("lado"),
+        )
+        if not resultado.get("ok") and resultado.get("erro") == "peca obrigatoria":
+            return jsonify(resultado), 400
+        if not resultado.get("ok"):
+            return jsonify(resultado), 502
+        return jsonify(resultado)
 
     @app.route("/integracoes/marcelo/pedido-unico", methods=["POST", "OPTIONS"])
     def marcelo_pedido_unico():
@@ -6512,7 +6612,10 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             consulta = requests.get(
                 f"{_WRX_SB_URL}/rest/v1/mensagens_whatsapp",
                 params={
-                    "select": "id,numero,chat_id,mensagem,de_mim,criado_em",
+                    "select": (
+                        "id,numero,chat_id,mensagem,de_mim,criado_em,"
+                        "tipo,media_url"
+                    ),
                     "de_mim": "eq.false",
                     "order": "criado_em.desc",
                     "limit": "200",
@@ -6556,12 +6659,47 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             for mensagem, _ in mensagens_func
             if mensagem.get("id") is not None
         }
+
+        def reconciliar_fotos():
+            vinculadas = 0
+            for mensagem, numero in mensagens_func:
+                foto = str(mensagem.get("media_url") or "").strip()
+                tipo = str(mensagem.get("tipo") or "").lower()
+                if not foto or tipo == "audio":
+                    continue
+                evento = _ultimo_evento_tenho_funcionario(numero)
+                if not evento or not evento.get("item_id"):
+                    continue
+                if str(mensagem.get("criado_em") or "") < str(
+                    evento.get("recebido_em") or ""
+                ):
+                    continue
+                try:
+                    resposta = requests.post(
+                        f"http://127.0.0.1:{PORT}/integracoes/marcelo/pedido-item-foto",
+                        json={
+                            "phone": numero,
+                            "item_id": evento["item_id"],
+                            "foto": foto,
+                        },
+                        timeout=30,
+                    )
+                    if resposta.status_code in (200, 201):
+                        vinculadas += 1
+                except Exception as e:
+                    print(
+                        f"[FOTO-FUNC] falha item={evento.get('item_id')} "
+                        f"mensagem={mensagem.get('id')}: {e}"
+                    )
+            return vinculadas
+
         if primeira_execucao:
             _pedidos_estado_save(estado_file, sorted(ids_atuais))
             return jsonify({
                 "ok": True,
                 "seed": len(ids_atuais),
                 "processadas": 0,
+                "fotos_vinculadas": reconciliar_fotos(),
                 "msg": "historico marcado; somente novas respostas serao processadas",
             })
 
@@ -6615,6 +6753,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             "ok": True,
             "novas": len(novas),
             "processadas": sum(1 for item in resultados if item.get("ok")),
+            "fotos_vinculadas": reconciliar_fotos(),
             "resultados": resultados,
         })
 
@@ -6710,7 +6849,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             _pedidos_manha_lock.release()
             return jsonify({"ok": True, "seed": len(seed), "msg": "primeira execucao - historico marcado, novos pedidos a partir de agora"})
         try:
-            estado = _json.load(open(state_file, encoding="utf-8")) if os.path.exists(state_file) else {}
+            if os.path.exists(state_file):
+                with open(state_file, encoding="utf-8") as arquivo:
+                    estado = _json.load(arquivo)
+            else:
+                estado = {}
         except Exception:
             estado = {}
         ids_atuais = {str(p.get("id")) for p in rows if p.get("id")}

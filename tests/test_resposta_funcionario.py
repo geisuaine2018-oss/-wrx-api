@@ -57,6 +57,45 @@ class RespostaFuncionarioTest(unittest.TestCase):
 
     @patch("api_server.requests.patch")
     @patch("api_server.requests.get")
+    def test_tenho_busca_produto_existente_e_sugere_sku(self, get, patch_req):
+        get.side_effect = [
+            RespostaFake(200, [self.pedido]),
+            RespostaFake(200, [{
+                "sku": "9640",
+                "titulo": "Painel frontal Fiat Toro 2016 2021",
+                "modelo": "Toro",
+                "ano": "2016 a 2021",
+                "qtd": 1,
+                "preco": 590,
+                "fotos": ["https://exemplo.com/painel.jpg"],
+                "loc": "A1",
+            }]),
+        ]
+        patch_req.return_value = RespostaFake(200, [])
+        self.pedido.update({
+            "peca": "Painel frontal diesel",
+            "veiculo": "Fiat Toro",
+            "ano": "2023",
+            "lado": "",
+        })
+
+        resposta = self.client.post(
+            "/integracoes/marcelo/resposta-funcionario",
+            json={
+                "phone": api_server.FUNCS_PEDIDO["robson"],
+                "mensagem": "Tenho #8421-1",
+            },
+        )
+
+        self.assertEqual(resposta.status_code, 200)
+        self.assertEqual(
+            resposta.json["item"]["status"],
+            "aguardando_confirmacao_fisica",
+        )
+        self.assertEqual(resposta.json["item"]["sku_sugerido"], "9640")
+
+    @patch("api_server.requests.patch")
+    @patch("api_server.requests.get")
     def test_nao_tenho_mantem_pedido_em_verificacao(self, get, patch_req):
         get.return_value = RespostaFake(200, [self.pedido])
         patch_req.return_value = RespostaFake(200, [])
