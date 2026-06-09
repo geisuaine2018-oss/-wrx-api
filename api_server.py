@@ -6535,6 +6535,12 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             }
             candidatos.append(item)
 
+        candidatos_ano_exato = [
+            item for item in candidatos if item.get("ano_compativel") is True
+        ]
+        if candidatos_ano_exato:
+            candidatos = candidatos_ano_exato
+
         candidatos.sort(
             key=lambda item: (
                 item["pontuacao"],

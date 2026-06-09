@@ -235,6 +235,20 @@ class BuscaEstoquePedidoTest(unittest.TestCase):
                 "qtd": 1,
                 "preco": 250,
             },
+            {
+                "sku": "8213",
+                "titulo": "Lanterna Corolla Cross lado direito 2021 2023",
+                "modelo": "HB20",
+                "compatibilidade": ["Peugeot 208 2023"],
+                "qtd": 1,
+            },
+            {
+                "sku": "108774",
+                "titulo": "Lanterna Peugeot 208 GT 2024 2026 direito",
+                "modelo": "208",
+                "ano": "2024",
+                "qtd": 1,
+            },
         ])
 
         resposta = self.client.post("/integracoes/marcelo/buscar-estoque", json={
