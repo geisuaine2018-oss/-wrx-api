@@ -1998,21 +1998,11 @@ if USE_FLASK:
         sku = str(data.get("sku") or "").strip()
         if not sku:
             return jsonify({"ok": False, "erro": "sku obrigatorio"}), 400
-        service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
-        if not service_key:
-            return jsonify({
-                "ok": False,
-                "erro": "SUPABASE_SERVICE_KEY nao configurada no Railway",
-            }), 503
-        headers = {
-            "apikey": service_key,
-            "Authorization": f"Bearer {service_key}",
-            "Content-Type": "application/json",
-        }
+        headers = _wrx_headers()
         try:
             antes = requests.get(
                 f"{_WRX_SB_URL}/rest/v1/pecas_estoque",
-                params={"select": "sku", "sku": f"eq.{sku}", "limit": 1},
+                params={"select": "sku,qtd", "sku": f"eq.{sku}", "limit": 1},
                 headers=headers,
                 timeout=15,
             )
@@ -2023,10 +2013,11 @@ if USE_FLASK:
                 }), 502
             if not antes.json():
                 return jsonify({"ok": False, "erro": f"SKU {sku} nao encontrado no estoque"}), 404
-            r = requests.delete(
+            r = requests.patch(
                 f"{_WRX_SB_URL}/rest/v1/pecas_estoque",
                 params={"sku": f"eq.{sku}"},
                 headers={**headers, "Prefer": "return=representation"},
+                json={"qtd": 0, "atualizado": _datetime.utcnow().isoformat() + "Z"},
                 timeout=15,
             )
             if r.status_code not in (200, 204):
@@ -2037,16 +2028,22 @@ if USE_FLASK:
             removidos = r.json() if r.status_code == 200 and r.text.strip() else []
             depois = requests.get(
                 f"{_WRX_SB_URL}/rest/v1/pecas_estoque",
-                params={"select": "sku", "sku": f"eq.{sku}", "limit": 1},
+                params={"select": "sku,qtd", "sku": f"eq.{sku}", "limit": 1},
                 headers=headers,
                 timeout=15,
             )
-            if depois.status_code != 200 or depois.json():
+            linha_depois = depois.json()[0] if depois.status_code == 200 and depois.json() else None
+            if not linha_depois or int(linha_depois.get("qtd") or 0) != 0:
                 return jsonify({
                     "ok": False,
                     "erro": "O banco nao confirmou a exclusao do produto",
                 }), 502
-            return jsonify({"ok": True, "sku": sku, "removidos": len(removidos)})
+            return jsonify({
+                "ok": True,
+                "sku": sku,
+                "removidos": 1,
+                "modo": "desativado",
+            })
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e)}), 500
 
