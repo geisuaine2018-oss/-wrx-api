@@ -6349,6 +6349,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         from difflib import SequenceMatcher
 
         def termo_presente(termo, texto):
+            if termo.isdigit():
+                return termo in texto.split()
             if termo in texto:
                 return True
             return any(
@@ -6361,6 +6363,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             str(produto.get("titulo") or ""),
             str(produto.get("descricao") or ""),
             str(produto.get("categoria") or ""),
+            str(produto.get("lado") or ""),
         ]))
         carro = _texto_busca_estoque(" ".join([
             str(produto.get("marca") or ""),
@@ -6374,6 +6377,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             if not termo.isdigit()
             and not re.fullmatch(r"(?:19|20)\d{2}", termo)
         ]
+        modelos_numericos = re.findall(r"\b\d{3}\b", str(veiculo or ""))
         termos_lado = _termos_busca_estoque(lado)
         termos_principais = [
             termo for termo in termos_peca
@@ -6405,6 +6409,16 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return 0
         if termos_veiculo and encontrados_veiculo / len(termos_veiculo) < 0.6:
             return 0
+        texto_modelo_produto = _texto_busca_estoque(" ".join([
+            str(produto.get("modelo") or ""),
+            str(produto.get("titulo") or ""),
+            str(produto.get("compatibilidade") or ""),
+        ]))
+        if modelos_numericos and any(
+            modelo not in texto_modelo_produto.split()
+            for modelo in modelos_numericos
+        ):
+            return 0
         acessorios_porta = {
             "fechadura", "limitador", "maquina", "mecanismo", "trinco",
             "puxador", "macaneta", "dobradica", "borracha", "vidro",
@@ -6416,6 +6430,16 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         )
         if pedido_porta_completa and any(
             termo in titulo.split() for termo in acessorios_porta
+        ):
+            return 0
+        tokens_pedido = set(termos_peca + termos_lado)
+        tokens_produto = set(titulo.split())
+        pediu_direita = bool(tokens_pedido.intersection({"direita", "direito", "right"}))
+        pediu_esquerda = bool(tokens_pedido.intersection({"esquerda", "esquerdo", "left"}))
+        produto_direita = bool(tokens_produto.intersection({"direita", "direito", "right"}))
+        produto_esquerda = bool(tokens_produto.intersection({"esquerda", "esquerdo", "left"}))
+        if (pediu_direita and produto_esquerda) or (
+            pediu_esquerda and produto_direita
         ):
             return 0
         if exigir_ano and not ano_ok:

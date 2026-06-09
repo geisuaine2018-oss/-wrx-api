@@ -206,6 +206,48 @@ class BuscaEstoquePedidoTest(unittest.TestCase):
             ["200001"],
         )
 
+    @patch("api_server.requests.get")
+    def test_peugeot_208_direita_nao_aceita_2008_nem_esquerda(self, get):
+        get.return_value = RespostaFake(200, [
+            {
+                "sku": "6382",
+                "titulo": "Lanterna traseira direita Peugeot 2008",
+                "marca": "Peugeot",
+                "modelo": "2008",
+                "ano": "2022",
+                "qtd": 1,
+            },
+            {
+                "sku": "10460",
+                "titulo": "Lanterna traseira esquerda Peugeot 208",
+                "marca": "Peugeot",
+                "modelo": "208",
+                "ano": "2015",
+                "lado": "left",
+                "qtd": 1,
+            },
+            {
+                "sku": "8347",
+                "titulo": "Lanterna traseira direita Peugeot 208 2013 a 20",
+                "marca": "Peugeot",
+                "modelo": "208",
+                "ano": "2013",
+                "qtd": 1,
+                "preco": 250,
+            },
+        ])
+
+        resposta = self.client.post("/integracoes/marcelo/buscar-estoque", json={
+            "peca": "Lanterna traseira direita",
+            "veiculo": "Peugeot 208",
+            "ano": "2013 a 2020",
+        })
+
+        self.assertEqual(
+            [item["sku"] for item in resposta.json["candidatos"]],
+            ["8347"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
