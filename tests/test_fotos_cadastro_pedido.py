@@ -171,6 +171,26 @@ class FotosCadastroPedidoTest(unittest.TestCase):
             "produto_cadastrado_automaticamente",
         )
 
+    @patch("api_server.requests.patch")
+    @patch("api_server._buscar_estoque_dados")
+    @patch("api_server.requests.get")
+    def test_baixa_estoque_infere_sku_pelo_produto(self, get, buscar, patch_req):
+        buscar.return_value = {
+            "ok": True,
+            "candidatos": [{"sku": "812", "ano_compativel": True}],
+        }
+        get.return_value = RespostaFake(200, [{"sku": "812", "qtd": 2}])
+        patch_req.return_value = RespostaFake(200, [{"sku": "812", "qtd": 1}])
+
+        resposta = self.client.post(
+            "/integracoes/marcelo/baixar-estoque",
+            json={"produto": "Pára-choque dianteiro", "qty": 1},
+        )
+
+        self.assertEqual(resposta.status_code, 200)
+        self.assertEqual(resposta.json["sku"], "812")
+        self.assertEqual(resposta.json["qtd_nova"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

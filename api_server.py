@@ -7258,14 +7258,43 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
 
         dados = request.get_json(silent=True) or {}
         sku = str(dados.get("sku") or "").strip()
+        produto = str(dados.get("produto") or dados.get("titulo") or dados.get("peca") or "").strip()
+        veiculo = str(dados.get("veiculo") or "").strip()
+        ano = str(dados.get("ano") or "").strip()
+        lado = str(dados.get("lado") or "").strip()
         try:
             qty = int(dados.get("qty") or 1)
         except (TypeError, ValueError):
             qty = 1
-        if not sku:
-            return jsonify({"ok": False, "erro": "sku obrigatorio"}), 400
+        if not sku and not produto:
+            return jsonify({"ok": False, "erro": "sku ou produto obrigatorio"}), 400
         if qty <= 0:
             return jsonify({"ok": False, "erro": "qty invalido"}), 400
+
+        if not sku:
+            busca = _buscar_estoque_dados(produto, veiculo, ano, lado)
+            candidatos = busca.get("candidatos") or []
+            candidato = next(
+                (
+                    item for item in candidatos
+                    if item.get("ano_compativel") is not False
+                ),
+                None,
+            )
+            if not candidato and len(candidatos) == 1:
+                candidato = candidatos[0]
+            if not candidato:
+                return jsonify({
+                    "ok": False,
+                    "erro": "nao consegui inferir o SKU a partir do produto",
+                    "candidatos": candidatos[:5],
+                }), 409
+            sku = str(candidato.get("sku") or "").strip()
+            if not sku:
+                return jsonify({
+                    "ok": False,
+                    "erro": "candidato sem SKU",
+                }), 409
 
         try:
             consulta = requests.get(
