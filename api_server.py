@@ -6312,7 +6312,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         return jsonify({"ok": True, "duplicado": False, "envio": envio})
 
     def _ano_produto_compativel(produto, ano):
-        ano_num = re.search(r"\b(19|20)\d{2}\b", str(ano or ""))
+        ano_num = re.search(r"(19|20)\d{2}", str(ano or ""))
         texto_produto = _texto_busca_estoque(" ".join([
             str(produto.get("ano") or ""),
             str(produto.get("titulo") or ""),
@@ -6330,6 +6330,17 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
     def _pontuar_produto_pedido(
         produto, peca, veiculo="", ano="", lado="", exigir_ano=False
     ):
+        from difflib import SequenceMatcher
+
+        def termo_presente(termo, texto):
+            if termo in texto:
+                return True
+            return any(
+                SequenceMatcher(None, termo, token).ratio() >= 0.82
+                for token in texto.split()
+                if abs(len(token) - len(termo)) <= 2
+            )
+
         titulo = _texto_busca_estoque(" ".join([
             str(produto.get("titulo") or ""),
             str(produto.get("descricao") or ""),
@@ -6352,14 +6363,19 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             }
         ]
 
-        encontrados_peca = sum(1 for termo in termos_peca if termo in titulo)
+        encontrados_peca = sum(
+            1 for termo in termos_peca if termo_presente(termo, titulo)
+        )
         encontrados_principais = sum(
-            1 for termo in termos_principais if termo in titulo
+            1 for termo in termos_principais if termo_presente(termo, titulo)
         )
         encontrados_veiculo = sum(
-            1 for termo in termos_veiculo if termo in carro or termo in titulo
+            1 for termo in termos_veiculo
+            if termo_presente(termo, carro) or termo_presente(termo, titulo)
         )
-        encontrados_lado = sum(1 for termo in termos_lado if termo in titulo)
+        encontrados_lado = sum(
+            1 for termo in termos_lado if termo_presente(termo, titulo)
+        )
         ano_ok = _ano_produto_compativel(produto, ano)
 
         if not termos_peca or encontrados_peca == 0:

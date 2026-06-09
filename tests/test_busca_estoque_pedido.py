@@ -140,6 +140,27 @@ class BuscaEstoquePedidoTest(unittest.TestCase):
 
         self.assertTrue(resposta.json["candidatos"][0]["confirmacao_vencida"])
 
+    @patch("api_server.requests.get")
+    def test_tolera_erro_de_digitacao_paniel(self, get):
+        get.return_value = RespostaFake(200, [{
+            "sku": "9640",
+            "titulo": "Painel frontal Fiat Toro 2016 2021",
+            "modelo": "Toro",
+            "ano": "2016 a 2021",
+            "qtd": 1,
+            "preco": 590,
+        }])
+
+        resposta = self.client.post("/integracoes/marcelo/buscar-estoque", json={
+            "peca": "paniel frontal diesel",
+            "veiculo": "fiat toro 2023fiat",
+            "ano": "2023fiat",
+        })
+
+        self.assertTrue(resposta.json["encontrado"])
+        self.assertEqual(resposta.json["candidatos"][0]["sku"], "9640")
+        self.assertFalse(resposta.json["candidatos"][0]["ano_compativel"])
+
 
 if __name__ == "__main__":
     unittest.main()
