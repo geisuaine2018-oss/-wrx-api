@@ -3585,6 +3585,29 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
             return _options_resp()
         return jsonify({"ok": True, **_REVISAO_STATUS})
 
+    @app.route("/revisao-precos/testar", methods=["GET", "OPTIONS"])
+    def revisao_testar():
+        """Diagnóstico: coleta os preços (já filtrados/usados) de uma consulta e mostra
+        quantos achou e a faixa, p/ conferir profundidade e assertividade da raspagem."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        import statistics as _st
+        q = request.args.get("q", "").strip()
+        eh_oem = request.args.get("oem", "") in ("1", "true", "sim")
+        if not q:
+            return jsonify({"erro": "parametro ?q= obrigatorio"}), 400
+        brutos = _revisao_coletar_precos(q, eh_oem=eh_oem)
+        aparados = _revisao_aparar(brutos)
+        out = {"consulta": q, "eh_oem": eh_oem,
+               "qtd_coletado": len(brutos), "qtd_apos_outliers": len(aparados)}
+        if aparados:
+            out["menor"] = min(aparados)
+            out["maior"] = max(aparados)
+            out["media"] = round(sum(aparados) / len(aparados), 2)
+            out["mediana"] = round(_st.median(aparados), 2)
+            out["amostra"] = sorted(aparados)[:20]
+        return jsonify(out)
+
     @app.route("/revisao-precos/listar", methods=["GET", "OPTIONS"])
     def revisao_listar():
         if request.method == "OPTIONS":
