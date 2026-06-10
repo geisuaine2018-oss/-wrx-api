@@ -7597,6 +7597,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         })
 
     _shopee_cat_folhas_cache = {}  # shop_id_int -> (set(folhas), {parent_id: [child_ids]})
+    _shopee_cat_nomes_cache = {}   # shop_id_int -> {category_id: nome}
 
     def _shopee_categorias_folha(access_token, shop_id_int):
         """(set de category_id FOLHA, mapa parent->filhos) da loja.
@@ -7606,6 +7607,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return cache
         folhas = set()
         filhos = {}
+        nomes = {}
         try:
             ts = int(time.time())
             path = "/api/v2/product/get_category"
@@ -7620,6 +7622,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 cid = c.get("category_id")
                 if not cid:
                     continue
+                nomes[cid] = c.get("display_category_name") or c.get("original_category_name") or ""
                 pid = c.get("parent_category_id")
                 if pid is not None:
                     filhos.setdefault(pid, []).append(cid)
@@ -7633,6 +7636,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             print(f"[SHOPEE-CAT] erro get_category: {_e}")
         if folhas:
             _shopee_cat_folhas_cache[shop_id_int] = (folhas, filhos)
+            _shopee_cat_nomes_cache[shop_id_int] = nomes
         return (folhas, filhos)
 
     def _shopee_descer_ate_folha(cat_id, folhas, filhos, _prof=0):
@@ -7689,9 +7693,17 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     continue
                 # A API devolve uma lista. NEM SEMPRE o 1º é folha. Pega o 1º que SEJA folha.
                 if folhas:
-                    for c in cats:
-                        if c in folhas:
-                            return c
+                    nomes = _shopee_cat_nomes_cache.get(shop_id_int, {})
+                    candidatos = [c for c in cats if c in folhas]
+                    # EVITA categorias "Tuning": são as únicas que EXIGEM compatibilidade de
+                    # veículo (a API de atributos hoje está suspensa e não deixa preencher).
+                    # O integrador de referência (PartHub) usa as categorias específicas/"Outros",
+                    # que ficam QUALIFICADAS sem compatibilidade. Só evita se houver alternativa.
+                    nao_tuning = [c for c in candidatos if "tuning" not in str(nomes.get(c, "")).lower()]
+                    if nao_tuning:
+                        return nao_tuning[0]
+                    if candidatos:
+                        return candidatos[0]
                     # Nenhum recomendado e folha: DESCE a arvore a partir dos recomendados
                     # (do mais especifico p/ o mais generico) ate achar uma folha real.
                     for c in reversed(cats):
