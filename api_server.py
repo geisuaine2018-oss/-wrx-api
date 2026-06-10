@@ -318,8 +318,10 @@ def _revisao_tokens(txt):
     return [w for w in txt.split() if len(w) >= 3 and w not in stop]
 
 def _revisao_coletar_precos(consulta, eh_oem=False):
-    """Coleta preços da concorrência ML (3 primeiras páginas) já FILTRADOS.
-    Retorna lista de preços limpos."""
+    """Coleta preços da concorrência ML já FILTRADOS.
+    PRIORIZA peças USADAS (preço real de desmonte) — evita o preço inflado de peça
+    nova/concessionária. Varre 6 páginas (mais profundo). Se quase não houver usados,
+    cai pra busca geral pra não ficar sem base de preço."""
     token = _get_ml_token()
     headers = {"Accept": "application/json", "Accept-Language": "pt-BR,pt;q=0.9"}
     if token:
@@ -327,44 +329,57 @@ def _revisao_coletar_precos(consulta, eh_oem=False):
     toks = _revisao_tokens(consulta)
     principal = toks[0] if toks else ""
     qlow = (consulta or "").lower()
-    por_vendedor = {}
-    precos = []
-    for offset in (0, 50, 100):  # 3 primeiras páginas
-        try:
-            r = requests.get(
-                "https://api.mercadolibre.com/sites/MLB/search",
-                params={"q": consulta, "limit": 50, "offset": offset},
-                headers=headers, timeout=20)
-            if r.status_code != 200:
-                break
-            results = r.json().get("results", [])
-            if not results:
-                break
-            for it in results:
-                titulo = (it.get("title") or "")
-                tl = titulo.lower()
-                preco = float(it.get("price") or 0)
-                if preco <= 5:
-                    continue
-                seller = str((it.get("seller") or {}).get("id") or it.get("seller_id") or "")
-                # 1) RELEVÂNCIA (busca por nome): título precisa ter a palavra principal
-                #    do produto. Ex: "farol" → descarta "lâmpada do farol".
-                if not eh_oem and principal and principal not in tl:
-                    continue
-                # 2) tira ACESSÓRIO/peça relacionada (só se não faz parte da consulta)
-                if not eh_oem and any(a in tl and a not in qlow for a in _REV_ACESSORIOS):
-                    continue
-                # 3) tira PARALELA / recondicionado / danificado / concessionária
-                if any(b in tl for b in _REV_RUINS):
-                    continue
-                # 4) tira VENDEDOR com mais de 2 anúncios (atacado/revenda em massa)
-                if seller:
-                    por_vendedor[seller] = por_vendedor.get(seller, 0) + 1
-                    if por_vendedor[seller] > 2:
+
+    def _coletar(somente_usados):
+        por_vendedor = {}
+        precos = []
+        for offset in (0, 50, 100, 150, 200, 250):  # 6 páginas (antes eram 3)
+            try:
+                params = {"q": consulta, "limit": 50, "offset": offset}
+                if somente_usados:
+                    params["condition"] = "used"  # filtro server-side: só peça USADA
+                r = requests.get(
+                    "https://api.mercadolibre.com/sites/MLB/search",
+                    params=params, headers=headers, timeout=20)
+                if r.status_code != 200:
+                    break
+                results = r.json().get("results", [])
+                if not results:
+                    break
+                for it in results:
+                    titulo = (it.get("title") or "")
+                    tl = titulo.lower()
+                    preco = float(it.get("price") or 0)
+                    if preco <= 5:
                         continue
-                precos.append(round(preco, 2))
-        except Exception:
-            break
+                    # 0) CONDIÇÃO: descarta NOVO (peça nova/concessionária infla o preço).
+                    if somente_usados and str(it.get("condition") or "").lower() == "new":
+                        continue
+                    seller = str((it.get("seller") or {}).get("id") or it.get("seller_id") or "")
+                    # 1) RELEVÂNCIA (busca por nome): título precisa ter a palavra principal
+                    #    do produto. Ex: "farol" → descarta "lâmpada do farol".
+                    if not eh_oem and principal and principal not in tl:
+                        continue
+                    # 2) tira ACESSÓRIO/peça relacionada (só se não faz parte da consulta)
+                    if not eh_oem and any(a in tl and a not in qlow for a in _REV_ACESSORIOS):
+                        continue
+                    # 3) tira PARALELA / recondicionado / danificado / concessionária
+                    if any(b in tl for b in _REV_RUINS):
+                        continue
+                    # 4) tira VENDEDOR com mais de 2 anúncios (atacado/revenda em massa)
+                    if seller:
+                        por_vendedor[seller] = por_vendedor.get(seller, 0) + 1
+                        if por_vendedor[seller] > 2:
+                            continue
+                    precos.append(round(preco, 2))
+            except Exception:
+                break
+        return precos
+
+    precos = _coletar(somente_usados=True)
+    # Poucos usados encontrados? Complementa com a busca geral (novos+usados) p/ ter base.
+    if len(precos) < 4:
+        precos = _coletar(somente_usados=False)
     return precos
 
 def _revisao_filtrar_pares(pares, consulta, eh_oem=False):
