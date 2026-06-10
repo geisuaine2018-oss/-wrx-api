@@ -7586,12 +7586,51 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             "mensagem": "Item de segurança: será publicado como NOVO mesmo que selecionado USADO." if somente_novo and condicao == "used" else "Condição mantida conforme selecionado.",
         })
 
+    _shopee_cat_folhas_cache = {}  # shop_id_int -> set(category_id que SÃO folha)
+
+    def _shopee_categorias_folha(access_token, shop_id_int):
+        """Conjunto de category_id que sao FOLHA (has_children=False) da loja.
+        A Shopee so aceita add_item em categoria-folha. Cacheia por loja."""
+        cache = _shopee_cat_folhas_cache.get(shop_id_int)
+        if cache is not None:
+            return cache
+        folhas = set()
+        try:
+            ts = int(time.time())
+            path = "/api/v2/product/get_category"
+            sign = _shopee_sign(path, ts, access_token, shop_id_int)
+            r = requests.get(f"{_SHOPEE_BASE}{path}",
+                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                        "access_token": access_token, "shop_id": shop_id_int,
+                        "sign": sign, "language": "pt-br"}, timeout=25)
+            d = r.json()
+            lista = (d.get("response", {}) or {}).get("category_list", []) or []
+            for c in lista:
+                # has_children=False => é folha. Aceita variações de nome do campo.
+                tem_filho = c.get("has_children")
+                if tem_filho is None:
+                    tem_filho = c.get("has_child")
+                if not tem_filho and c.get("category_id"):
+                    folhas.add(c.get("category_id"))
+        except Exception as _e:
+            print(f"[SHOPEE-CAT] erro get_category: {_e}")
+        if folhas:
+            _shopee_cat_folhas_cache[shop_id_int] = folhas
+        return folhas
+
     def _shopee_categoria_recomendada(access_token, shop_id_int, nome_produto):
         """Pergunta à Shopee qual a categoria-folha certa pro produto (recommend_category).
-        Retorna o category_id (int) ou None."""
+        Retorna o category_id (int) ou None. SEMPRE valida que e categoria-FOLHA, senao
+        o add_item rejeita com 'should use leaf category' (causava algumas variacoes
+        falharem enquanto outras passavam, pq o ranking muda com o texto do titulo)."""
         tentativas = []
         bruto = str(nome_produto or "").strip()
         if bruto:
+            # Normaliza p/ TODAS as variacoes do mesmo produto pegarem a MESMA categoria:
+            # remove os sufixos de marketplace (Pronta Entrega/Envio Imediato/Nota Fiscal)
+            # antes de qualquer coisa, senao cada variacao recomenda categoria diferente.
+            bruto = _re.sub(r"\b(pronta entrega|envio imediato|nota fiscal|frete gr[aá]tis)\b", " ", bruto, flags=_re.IGNORECASE)
+            bruto = _re.sub(r"\s+", " ", bruto).strip()
             tentativas.append(bruto)
             limpo = _re.sub(r"\([^)]*\)", " ", bruto)
             limpo = _re.sub(r"\b\d{4}\b", " ", limpo)
@@ -7602,10 +7641,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 tentativas.append(limpo)
             if "retrovisor" in bruto.lower() and "retrovisor" not in limpo.lower():
                 tentativas.append("retrovisor automotivo")
+        folhas = _shopee_categorias_folha(access_token, shop_id_int)
         try:
-            ts = int(time.time())
             path = "/api/v2/product/category_recommend"
             for nome in tentativas or [str(nome_produto or "")[:120]]:
+                ts = int(time.time())
                 sign = _shopee_sign(path, ts, access_token, shop_id_int)
                 r = requests.get(
                     f"{_SHOPEE_BASE}{path}",
@@ -7615,10 +7655,19 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     timeout=15
                 )
                 d = r.json()
-                cats = (d.get("response", {}) or {}).get("category_id", [])
-                # a API devolve uma LISTA RANQUEADA de categorias-folha recomendadas;
-                # a 1ª (mais relevante) é a folha certa pra usar no add_item
-                if cats:
+                cats = (d.get("response", {}) or {}).get("category_id", []) or []
+                if not cats:
+                    continue
+                # A API devolve uma lista. NEM SEMPRE o 1º é folha. Pega o 1º que SEJA folha.
+                if folhas:
+                    for c in cats:
+                        if c in folhas:
+                            return c
+                    # Nenhum recomendado e folha: usa o ULTIMO (geralmente o mais profundo).
+                    if cats[-1] in folhas:
+                        return cats[-1]
+                else:
+                    # Sem arvore de categorias (falhou get_category): mantem o comportamento antigo.
                     return cats[0]
         except Exception as _e:
             print(f"[SHOPEE-CAT] erro recommend: {_e}")
