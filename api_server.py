@@ -2492,7 +2492,7 @@ if USE_FLASK:
     OLX_CLIENT_SECRET = os.environ.get("OLX_CLIENT_SECRET", "")
     OLX_REDIRECT_URI = os.environ.get("OLX_REDIRECT_URI", "https://glowing-pastelito-6e4556.netlify.app/olx-callback.html")
     OLX_TELEFONE = os.environ.get("OLX_TELEFONE", "21964449123")
-    OLX_CEP = os.environ.get("OLX_CEP", "22725001")
+    OLX_CEP = os.environ.get("OLX_CEP", "22795065")
     SHOPEE_PARTNER_ID = int(os.environ.get("SHOPEE_PARTNER_ID", "2035574"))
     SHOPEE_PARTNER_KEY = os.environ.get("SHOPEE_PARTNER_KEY", "shpk4458415353465759486e516147454957414d4c444761414a577570795655")
 
