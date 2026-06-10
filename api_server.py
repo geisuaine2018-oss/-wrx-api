@@ -7586,15 +7586,16 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             "mensagem": "Item de segurança: será publicado como NOVO mesmo que selecionado USADO." if somente_novo and condicao == "used" else "Condição mantida conforme selecionado.",
         })
 
-    _shopee_cat_folhas_cache = {}  # shop_id_int -> set(category_id que SÃO folha)
+    _shopee_cat_folhas_cache = {}  # shop_id_int -> (set(folhas), {parent_id: [child_ids]})
 
     def _shopee_categorias_folha(access_token, shop_id_int):
-        """Conjunto de category_id que sao FOLHA (has_children=False) da loja.
+        """(set de category_id FOLHA, mapa parent->filhos) da loja.
         A Shopee so aceita add_item em categoria-folha. Cacheia por loja."""
         cache = _shopee_cat_folhas_cache.get(shop_id_int)
         if cache is not None:
             return cache
         folhas = set()
+        filhos = {}
         try:
             ts = int(time.time())
             path = "/api/v2/product/get_category"
@@ -7606,17 +7607,35 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             d = r.json()
             lista = (d.get("response", {}) or {}).get("category_list", []) or []
             for c in lista:
+                cid = c.get("category_id")
+                if not cid:
+                    continue
+                pid = c.get("parent_category_id")
+                if pid is not None:
+                    filhos.setdefault(pid, []).append(cid)
                 # has_children=False => é folha. Aceita variações de nome do campo.
                 tem_filho = c.get("has_children")
                 if tem_filho is None:
                     tem_filho = c.get("has_child")
-                if not tem_filho and c.get("category_id"):
-                    folhas.add(c.get("category_id"))
+                if not tem_filho:
+                    folhas.add(cid)
         except Exception as _e:
             print(f"[SHOPEE-CAT] erro get_category: {_e}")
         if folhas:
-            _shopee_cat_folhas_cache[shop_id_int] = folhas
-        return folhas
+            _shopee_cat_folhas_cache[shop_id_int] = (folhas, filhos)
+        return (folhas, filhos)
+
+    def _shopee_descer_ate_folha(cat_id, folhas, filhos, _prof=0):
+        """Se cat_id nao for folha, desce pelo 1o filho ate achar uma folha."""
+        if _prof > 12 or not cat_id:
+            return None
+        if cat_id in folhas:
+            return cat_id
+        for f in filhos.get(cat_id, []):
+            r = _shopee_descer_ate_folha(f, folhas, filhos, _prof + 1)
+            if r:
+                return r
+        return None
 
     def _shopee_categoria_recomendada(access_token, shop_id_int, nome_produto):
         """Pergunta à Shopee qual a categoria-folha certa pro produto (recommend_category).
@@ -7641,7 +7660,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 tentativas.append(limpo)
             if "retrovisor" in bruto.lower() and "retrovisor" not in limpo.lower():
                 tentativas.append("retrovisor automotivo")
-        folhas = _shopee_categorias_folha(access_token, shop_id_int)
+        folhas, filhos = _shopee_categorias_folha(access_token, shop_id_int)
         try:
             path = "/api/v2/product/category_recommend"
             for nome in tentativas or [str(nome_produto or "")[:120]]:
@@ -7663,9 +7682,12 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     for c in cats:
                         if c in folhas:
                             return c
-                    # Nenhum recomendado e folha: usa o ULTIMO (geralmente o mais profundo).
-                    if cats[-1] in folhas:
-                        return cats[-1]
+                    # Nenhum recomendado e folha: DESCE a arvore a partir dos recomendados
+                    # (do mais especifico p/ o mais generico) ate achar uma folha real.
+                    for c in reversed(cats):
+                        leaf = _shopee_descer_ate_folha(c, folhas, filhos)
+                        if leaf:
+                            return leaf
                 else:
                     # Sem arvore de categorias (falhou get_category): mantem o comportamento antigo.
                     return cats[0]
