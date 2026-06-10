@@ -5128,11 +5128,18 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         if preco < 180:
             return jsonify({"ok": False, "erro": f"OLX exige preco minimo de R$ 180. Valor enviado: R$ {preco:.2f}"}), 400
         _sku = data.get("_sku") or data.get("sku", "")
+        # CATEGORIA: peças e acessórios de CARRO no autoupload da OLX = 2101 (número).
+        # O valor antigo {"id":"8020"} estava errado (8020 não existe) e a OLX recusava com
+        # statusCode -6 "Without permission" — o plano do cliente é de PEÇAS, então o anúncio
+        # precisa ir na categoria de peças. 'condition' é OBRIGATÓRIO em params (1=novo, 2=usado).
+        _cond_raw = str(data.get("condicao") or data.get("cond") or data.get("condition") or data.get("estado") or "").strip().lower()
+        _condition = "1" if (("nov" in _cond_raw) or _cond_raw in ("new", "1")) else "2"  # default: usado (desmonte)
         payload = {
             "subject": (data.get("subject") or data.get("titulo") or data.get("nomeInterno", "Peca Automotiva"))[:70],
             "body": (data.get("body") or data.get("descricao") or data.get("titulo", ""))[:6000],
             "price": int(preco),
-            "category": {"id": "8020"},
+            "category": 2101,
+            "params": {"condition": _condition},
             "phone": {"phone": data.get("telefone") or OLX_TELEFONE, "phone_hidden": False},
             "locations": [{"zipcode": (data.get("cep") or OLX_CEP).replace("-", "")}],
             "images": fotos[:10]
