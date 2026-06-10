@@ -7912,7 +7912,23 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             out["category_id"] = it.get("category_id")
             out["attribute_list"] = it.get("attribute_list")
             out["brand"] = it.get("brand")
+            out["condition"] = it.get("condition")
+            out["compatibility_info"] = it.get("compatibility_info")  # como o integrador que funciona montou a compat
             out["raw_keys"] = sorted(list(it.keys()))
+            # nomes das categorias relevantes (a usada + as recomendadas pelo titulo)
+            try:
+                folhas, filhos = _shopee_categorias_folha(access_token, shop_id_int)
+                nomes = {}
+                ts2 = int(time.time())
+                p2 = "/api/v2/product/get_category"
+                s2 = _shopee_sign(p2, ts2, access_token, shop_id_int)
+                rc = requests.get(f"{_SHOPEE_BASE}{p2}", params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts2, "access_token": access_token, "shop_id": shop_id_int, "sign": s2, "language": "pt-br"}, timeout=25)
+                for c in (rc.json().get("response", {}) or {}).get("category_list", []) or []:
+                    nomes[c.get("category_id")] = {"nome": c.get("display_category_name") or c.get("original_category_name"), "folha": not (c.get("has_children") or c.get("has_child"))}
+                alvos = [it.get("category_id"), 102431, 102528, 102242]
+                out["categorias_nomes"] = {str(a): nomes.get(a) for a in alvos}
+            except Exception as _ec:
+                out["categorias_nomes_err"] = str(_ec)
         except Exception as e:
             out["erro_detalhe"] = str(e)
         # Compatibilidade de veículo costuma vir de uma API separada — tenta buscar.
