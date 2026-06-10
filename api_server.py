@@ -7044,7 +7044,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         try:
             rows = requests.get(
                 f"{_WRX_SB_URL}/rest/v1/pedidos"
-                f"?select=id,phone,peca,veiculo,ano,lado&status=eq.aguardando"
+                f"?select=id,phone,peca,veiculo,ano,lado,status,criado_em"
+                f"&status=in.(aguardando,verificando)"
                 f"&criado_em=gte.{_urlparse.quote(desde)}&order=criado_em.asc",
                 headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}"},
                 timeout=20
@@ -7400,13 +7401,15 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             """Marca como avisado e envia (se não for 1ª vez e for recente)."""
             if key in avisados:
                 return
-            avisados.add(key)
             if primeira_vez:
+                avisados.add(key)
                 return  # pós-restart: só registra, não envia
             if data_item is not None and not _recente(data_item):
+                avisados.add(key)
                 return  # antigo demais
             ok, _ = _waha_enviar(numero, texto)
             if ok:
+                avisados.add(key)
                 enviados.append(key)
         for conta in list(tokens.keys()):
             token = _ml_get_user_token(conta)

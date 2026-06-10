@@ -48,6 +48,7 @@ class DisparoPedidosFuncionariosTest(unittest.TestCase):
             "veiculo": "Spin",
             "ano": "2023",
             "lado": "esquerdo",
+            "status": "verificando",
         }
         get.return_value = RespostaFake(200, [pedido])
 
@@ -58,7 +59,7 @@ class DisparoPedidosFuncionariosTest(unittest.TestCase):
         self.assertEqual(primeira.json["pedidos_disparados"], 1)
         self.assertEqual(segunda.json["pedidos_disparados"], 0)
         self.assertEqual(enviar.call_count, len(api_server.FUNCS_PEDIDO))
-        self.assertIn("status=eq.aguardando", get.call_args_list[0].args[0])
+        self.assertIn("status=in.(aguardando,verificando)", get.call_args_list[0].args[0])
         patch_req.assert_called_once()
         self.assertEqual(
             patch_req.call_args.kwargs["params"],
