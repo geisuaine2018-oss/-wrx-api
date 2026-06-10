@@ -7860,8 +7860,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             # a referencia SH1..SH6 fica separada no Auto-Part Number.
             if not data.get("forcar"):
                 try:
+                    # IMPORTANTE: ignora anuncios DELETED. Senao uma variacao (SH3/SH4) que ja
+                    # foi publicada e depois deletada bloqueia a republicacao ("ja_existia"),
+                    # fazendo a Shopee mandar so 2 das 4 variacoes.
                     _chk = requests.get(
-                        f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?sku=eq.{sku_interno}&shop_id=eq.{sid}&select=item_id,titulo",
+                        f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?sku=eq.{sku_interno}&shop_id=eq.{sid}&status=neq.DELETED&select=item_id,titulo",
                         headers=_auth_sb_headers(), timeout=10)
                     _existentes = _chk.json() if _chk.status_code == 200 else []
                     _ids_existentes = [x.get("item_id") for x in _existentes if x.get("item_id")]
@@ -7971,7 +7974,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                                 json=[{
                                     "shop_id": str(sid), "item_id": str(item_id), "sku": _sku_base,
                                     "titulo": str(titulo)[:200], "preco": float(preco or 0),
-                                    "estoque": 1, "status": "NORMAL", "fotos": []
+                                    "estoque": 1, "status": "NORMAL",
+                                    # Guarda as URLs de origem para o painel interno e histórico.
+                                    # A Shopee usa os image_id da publicação, mas o painel precisa
+                                    # mostrar o que foi enviado sem depender do sync posterior.
+                                    "fotos": [str(u).strip() for u in (fotos or []) if str(u).strip()]
                                 }],
                                 timeout=15
                             )
