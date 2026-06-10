@@ -7890,6 +7890,45 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             out["recommend_err"] = str(e)
         return jsonify(out)
 
+    @app.route("/integracoes/shopee/diag-item", methods=["GET"])
+    def shopee_diag_item():
+        """Diagnóstico: detalhes COMPLETOS de um anúncio existente (categoria, atributos,
+        compatibilidade) — usado para descobrir como um integrador que funciona (PartHub)
+        montou o anúncio e replicar a categoria/compatibilidade correta."""
+        item_id = request.args.get("item_id", "")
+        sid = request.args.get("shop_id", "")
+        tokens = _shopee_load_tokens()
+        if not sid:
+            sid = list(tokens.keys())[0] if tokens else ""
+        access_token, shop_id_int = _shopee_get_token(sid)
+        if not access_token:
+            return jsonify({"erro": "sem token", "shop": sid}), 400
+        if not item_id:
+            return jsonify({"erro": "item_id obrigatorio"}), 400
+        out = {"item_id": item_id, "shop_id": sid}
+        try:
+            dets = _shopee_get_item_details(access_token, shop_id_int, [int(item_id)])
+            it = dets[0] if dets else {}
+            out["category_id"] = it.get("category_id")
+            out["attribute_list"] = it.get("attribute_list")
+            out["brand"] = it.get("brand")
+            out["raw_keys"] = sorted(list(it.keys()))
+        except Exception as e:
+            out["erro_detalhe"] = str(e)
+        # Compatibilidade de veículo costuma vir de uma API separada — tenta buscar.
+        for path in ("/api/v2/product/get_item_compatibility", "/api/v2/product/get_compatibility"):
+            try:
+                ts = int(time.time())
+                sign = _shopee_sign(path, ts, access_token, shop_id_int)
+                r = requests.get(f"{_SHOPEE_BASE}{path}",
+                    params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                            "access_token": access_token, "shop_id": shop_id_int,
+                            "sign": sign, "item_id": int(item_id)}, timeout=20)
+                out["compat_" + path.split("/")[-1]] = r.json()
+            except Exception as e:
+                out["compat_err_" + path.split("/")[-1]] = str(e)
+        return jsonify(out)
+
     @app.route("/integracoes/shopee/publicar", methods=["POST", "OPTIONS"])
     def shopee_publicar():
         if request.method == "OPTIONS":
