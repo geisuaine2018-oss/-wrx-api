@@ -123,6 +123,28 @@ def _salvar_canc(s):
     except Exception as e:
         print(f"[B5] nao salvou cancelamentos: {e}")
 
+# Serializa a baixa de estoque do webhook: o ML reenvia a MESMA venda várias vezes
+# (em threads), e a baixa de qtd não é idempotente. O lock + dedup por order_id
+# garantem que cada pedido baixa o estoque uma única vez.
+# Dedup PRÓPRIO da baixa (separado de _PROC_FILE, que controla a PAUSA do B4) —
+# assim a baixa não é "consumida" pelo polling, que marca pedido sem baixar qtd.
+_venda_lock = threading.Lock()
+_BAIXA_FILE = os.path.join(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp"), "wrx_baixas_estoque.json")
+
+def _carregar_baixas():
+    try:
+        with open(_BAIXA_FILE, encoding="utf-8") as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+
+def _salvar_baixas(s):
+    try:
+        with open(_BAIXA_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(s)[-5000:], f)
+    except Exception as e:
+        print(f"[BAIXA] nao salvou baixas: {e}")
+
 def _estoque_atual(sku):
     """qtd atual da peça em `pecas`, ou None se o SKU não está lá (isca/avulso)."""
     try:
@@ -449,6 +471,15 @@ def _processar_venda_ml_webhook(resource, user_id):
             return
         if od.get("status") != "paid":
             return  # só reage a venda PAGA
+        # Idempotência: o ML reenvia a MESMA notificação várias vezes. A BAIXA de
+        # qtd só pode ocorrer 1x por pedido (a cascata de pausa pode repetir, é
+        # idempotente). Lock serializa as threads concorrentes do mesmo pedido.
+        with _venda_lock:
+            baixas = _carregar_baixas()
+            baixar = order_id not in baixas
+            if baixar:
+                baixas.add(order_id)
+                _salvar_baixas(baixas)
         for it in (od.get("order_items") or []):
             item = it.get("item") or {}
             sku_raw = str(item.get("seller_sku") or item.get("seller_custom_field") or "").strip()
@@ -457,11 +488,13 @@ def _processar_venda_ml_webhook(resource, user_id):
             if not sku:
                 continue
             qty = int(it.get("quantity") or 1)
-            # 1) BAIXA a qtd no nosso banco (a venda do ML é a fonte — não o PartHub)
-            _baixar_estoque_local(sku, qty)
-            # 2) Cascata anti-venda-dupla: pausa o mesmo SKU nos outros canais
+            # 1) BAIXA a qtd no nosso banco (a venda do ML é a fonte — não o PartHub).
+            #    Só na 1a vez do pedido (evita decrementar a cada reenvio do ML).
+            if baixar:
+                _baixar_estoque_local(sku, qty)
+            # 2) Cascata anti-venda-dupla: pausa o mesmo SKU nos outros canais (sempre)
             rel = executar_sincronizacao(sku, "ml")
-            print(f"[WEBHOOK] order {order_id} sku {sku} -> pausados {rel.get('pausados')}/{rel.get('total')}")
+            print(f"[WEBHOOK] order {order_id} sku {sku} -> baixou={baixar} pausados {rel.get('pausados')}/{rel.get('total')}")
     except Exception as e:
         print(f"[WEBHOOK] erro: {e}")
 
