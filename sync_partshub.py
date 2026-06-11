@@ -184,21 +184,69 @@ def ph_fetch_all_photos(jwt, parts_raw):
 
 # ── Carregar cache de locais existente ───────────────────────────────────────
 def carregar_locais_existentes():
-    path = os.path.join(NETLIFY, "partshub-locais-cache.js")
-    if not os.path.exists(path):
-        return {}
-    txt = open(path, encoding="utf-8").read()
-    m   = re.search(r"locaisPorSku:\s*(\{[\s\S]+?\})\s*\}", txt)
-    if not m:
-        return {}
-    try:
-        return json.loads(m.group(1))
-    except Exception:
-        return {}
+    # A LOCALIZAÇÃO é do SISTEMA (banco pecas_estoque), não do PartHub.
+    # O sync NUNCA sobrescreve uma loc já definida no banco — o PartHub só
+    # preenche peça NOVA / sem localização. Lê tudo do banco aqui.
+    locs = {}
+    off = 0
+    hdr = {"apikey": SB_KEY, "Authorization": "Bearer " + SB_KEY}
+    while True:
+        try:
+            r = requests.get(
+                f"{SB_URL}/rest/v1/pecas_estoque?select=sku,loc&loc=not.is.null&limit=1000&offset={off}",
+                headers=hdr, timeout=30)
+            rows = r.json() if r.status_code == 200 else []
+        except Exception:
+            rows = []
+        if not rows:
+            break
+        for x in rows:
+            v = (x.get("loc") or "").strip()
+            if v and v.lower() not in ("nao enderecada", "não endereçada", "-", "sem local"):
+                locs[str(x.get("sku"))] = v
+        if len(rows) < 1000:
+            break
+        off += 1000
+    print(f"  {len(locs)} localizações do SISTEMA (preservadas — PartHub não sobrescreve)")
+    return locs
+
+def carregar_quantidades_existentes():
+    # A QUANTIDADE é do SISTEMA (banco pecas_estoque), não do PartHub.
+    # As vendas dos marketplaces (ML/Shopee) é que baixam a qtd; o PartHub NÃO
+    # pode sobrescrever (senão "ressuscita" peça vendida = furo de estoque).
+    # O sync só usa a qtd do PartHub para peça NOVA (que ainda não existe aqui).
+    # Lê TODOS os SKUs (inclusive qtd=0) para não reanimar uma peça já zerada.
+    qtds = {}
+    off = 0
+    hdr = {"apikey": SB_KEY, "Authorization": "Bearer " + SB_KEY}
+    while True:
+        try:
+            r = requests.get(
+                f"{SB_URL}/rest/v1/pecas_estoque?select=sku,qtd&limit=1000&offset={off}",
+                headers=hdr, timeout=30)
+            rows = r.json() if r.status_code == 200 else []
+        except Exception:
+            rows = []
+        if not rows:
+            break
+        for x in rows:
+            sku = str(x.get("sku") or "")
+            if sku:
+                qtds[sku] = int(x.get("qtd") or 0)
+        if len(rows) < 1000:
+            break
+        off += 1000
+    print(f"  {len(qtds)} quantidades do SISTEMA (preservadas — PartHub não sobrescreve)")
+    return qtds
 
 # ── Construir loc string ──────────────────────────────────────────────────────
 def construir_loc(p, locais_existentes, mapas_loc=None):
     mapas_loc = mapas_loc or {}
+    # 0. SISTEMA MANDA: se a peça já tem localização no banco, mantém (não deixa o
+    #    PartHub sobrescrever o que o funcionário endereçou). PartHub só preenche peça nova.
+    sku = str(p.get("sku") or "")
+    if sku and sku in locais_existentes:
+        return locais_existentes[sku]
     partes = []
     # 1. Resolver via IDs nas tabelas de localização (mais preciso)
     yard = ""
@@ -280,7 +328,7 @@ def _cv_brand_model(cv):
     return ("", "", "")
 
 # ── Construir objeto cache ────────────────────────────────────────────────────
-def montar_peca(p, photos_map, locais_existentes, mapas_loc=None):
+def montar_peca(p, photos_map, locais_existentes, mapas_loc=None, quantidades_existentes=None):
     part_id = p.get("id") or ""
     fotos   = photos_map.get(part_id, [])
     # Se não tiver fotos do partphotos, tentar image_urls
@@ -296,6 +344,12 @@ def montar_peca(p, photos_map, locais_existentes, mapas_loc=None):
 
     sku   = str(p.get("sku") or "")
     oem   = (p.get("oem_part_number") or p.get("oem_code") or p.get("part_number") or "").strip()
+    # QUANTIDADE: sistema manda. Se a peça já existe no nosso banco, mantém a NOSSA
+    # qtd (controlada pelas vendas) — PartHub não sobrescreve. Só peça nova usa a do PartHub.
+    if quantidades_existentes is not None and sku in quantidades_existentes:
+        qtd_final = quantidades_existentes[sku]
+    else:
+        qtd_final = int(p.get("quantity") or 0)
     _bm   = _cv_brand_model(p.get("compatible_vehicles"))  # marca/modelo/ano vem da compatibilidade
 
     medidas = {}
@@ -312,7 +366,7 @@ def montar_peca(p, photos_map, locais_existentes, mapas_loc=None):
         "oem":             oem,
         "preco":           float(p.get("price_sale") or 0),
         "custo":           float(p.get("price_cost") or 0),
-        "qtd":             int(p.get("quantity") or 0),
+        "qtd":             qtd_final,
         "cond":            normalizar_cond(p.get("condition")),
         "loc":             construir_loc(p, locais_existentes, mapas_loc),
         "peso":            float(p.get("weight") or 0) if p.get("weight") is not None else None,
@@ -435,6 +489,13 @@ def gerar_cache_locais(pecas):
         f.write("\n".join(linhas) + "\n")
     print(f"[CACHE] partshub-locais-cache.js gerado com {len(locais_por_sku)} SKUs com local")
 
+    # Também gera o .json (formato que o estoque.html consome via fetch: {locaisPorSku:{...}})
+    path_json = os.path.join(NETLIFY, "partshub-locais-cache.json")
+    with open(path_json, "w", encoding="utf-8") as f:
+        json.dump({"totalSkus": len(locais_por_sku), "geradoEm": agora, "locaisPorSku": locais_por_sku},
+                  f, ensure_ascii=False, separators=(",", ":"))
+    print(f"[CACHE] partshub-locais-cache.json gerado com {len(locais_por_sku)} SKUs com local")
+
 # ── Marcar peças que saíram de estoque (qtd=0) ───────────────────────────────
 def marcar_fora_estoque(pecas):
     """Peças do PartsHub que NÃO estão mais no fetch (sem estoque/indisponíveis)
@@ -490,6 +551,7 @@ def main():
     print("\n[2/5] Carregando locais existentes do cache...")
     locais_existentes = carregar_locais_existentes()
     print(f"  {len(locais_existentes)} SKUs com locais existentes")
+    quantidades_existentes = carregar_quantidades_existentes()
 
     # 3. Buscar partes
     print("\n[3/5] Buscando partes do Parts Hub...")
@@ -513,7 +575,7 @@ def main():
         if not sku or sku in skus_vistos:
             continue
         skus_vistos.add(sku)
-        pecas.append(montar_peca(p, photos_map, locais_existentes, mapas_loc))
+        pecas.append(montar_peca(p, photos_map, locais_existentes, mapas_loc, quantidades_existentes))
 
     print(f"  {len(pecas)} peças únicas montadas")
 
