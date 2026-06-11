@@ -5216,18 +5216,25 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         # precisa ir na categoria de peças. 'condition' é OBRIGATÓRIO em params (1=novo, 2=usado).
         _cond_raw = str(data.get("condicao") or data.get("cond") or data.get("condition") or data.get("estado") or "").strip().lower()
         _condition = "1" if (("nov" in _cond_raw) or _cond_raw in ("new", "1")) else "2"  # default: usado (desmonte)
+        # FORMATO do autoupload (doc OLX /anuncio/api/import.html), campos OBRIGATÓRIOS no
+        # nível do anúncio: id, operation, type, category, subject, body, price, phone, zipcode, images.
+        # phone = INTEIRO (DDD+numero, só dígitos); zipcode = string numérica (campo direto, NÃO em locations).
+        _tel = "".join(c for c in str(data.get("telefone") or OLX_TELEFONE) if c.isdigit())[:11]
+        _cep = "".join(c for c in str(data.get("cep") or OLX_CEP) if c.isdigit())
+        _id = "".join(c for c in str(_sku) if (c.isalnum() or c in "_{}-")) or "0"
         payload = {
-            "subject": (data.get("subject") or data.get("titulo") or data.get("nomeInterno", "Peca Automotiva"))[:70],
+            "id": _id[:19],                      # único, regex [A-Za-z0-9_{}-]{1,19}
+            "operation": "insert",               # insert = inserir/editar
+            "type": "s",                         # s = venda
+            "category": 2101,                    # Peças e acessórios > Carros/vans/utilitários
+            "subject": (data.get("subject") or data.get("titulo") or data.get("nomeInterno", "Peca Automotiva"))[:90],
             "body": (data.get("body") or data.get("descricao") or data.get("titulo", ""))[:6000],
-            "price": int(preco),
-            "category": 2101,
-            "params": {"condition": _condition},
-            "phone": {"phone": data.get("telefone") or OLX_TELEFONE, "phone_hidden": False},
-            "locations": [{"zipcode": (data.get("cep") or OLX_CEP).replace("-", "")}],
-            "images": fotos[:10]
+            "price": int(preco),                 # sem centavos
+            "phone": int(_tel) if len(_tel) >= 10 else 0,
+            "phone_hidden": False,
+            "zipcode": _cep,
+            "images": fotos[:20],
         }
-        if _sku:
-            payload["custom_id"] = str(_sku)
         try:
             # A OLX exige o access_token DENTRO do corpo JSON, no mesmo nível do ad_list
             # (não basta o header Authorization). Sem isso a API responde -6 "Without
