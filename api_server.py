@@ -263,6 +263,37 @@ def _parse_html_ml(html):
             novos.append(p)
     return titles, novos, usados
 
+def _parse_itens_ml(html):
+    """Extrai POR ANÚNCIO: {titulo, preco}. Diferente de _parse_html_ml (que separa em
+    listas), aqui mantém título+preço JUNTOS para dar pra filtrar por título
+    (concessionária, paralela, relevância) na raspagem da revisão de preços.
+    NÃO separa por condição — desmonte costuma anunciar usado na categoria 'novo'."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
+    cards = (soup.select("div.poly-card") or
+             soup.select("li.ui-search-layout__item") or
+             soup.select("div.ui-search-result"))
+    itens = []
+    for c in cards:
+        t = (c.select_one(".poly-component__title") or
+             c.select_one(".ui-search-item__title") or
+             c.find(class_=re.compile(r"poly-component__title|item__title")))
+        frac = (c.select_one(".andes-money-amount__fraction") or
+                c.find(class_="price-tag-fraction"))
+        if not (t and frac):
+            continue
+        titulo = t.get_text(strip=True)
+        try:
+            cent = c.select_one(".andes-money-amount__cents")
+            inteiro = float(frac.get_text(strip=True).replace(".", "").replace(",", ""))
+            decimal = float(cent.get_text(strip=True).replace(",", ".")) / 100 if cent else 0
+            preco = round(inteiro + decimal, 2)
+        except Exception:
+            continue
+        if titulo and 5 < preco < 100000:
+            itens.append({"titulo": titulo, "preco": preco})
+    return itens
+
 # ─── Camada 1: API ML ─────────────────────────────────────────────────────────
 def _buscar_api_ml(codigo):
     titles, novos, usados = [], [], []
@@ -318,68 +349,57 @@ def _revisao_tokens(txt):
     return [w for w in txt.split() if len(w) >= 3 and w not in stop]
 
 def _revisao_coletar_precos(consulta, eh_oem=False):
-    """Coleta preços da concorrência ML já FILTRADOS.
-    PRIORIZA peças USADAS (preço real de desmonte) — evita o preço inflado de peça
-    nova/concessionária. Varre 6 páginas (mais profundo). Se quase não houver usados,
-    cai pra busca geral pra não ficar sem base de preço."""
-    token = _get_ml_token()
-    headers = {"Accept": "application/json", "Accept-Language": "pt-BR,pt;q=0.9"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    """Coleta preços da concorrência no Mercado Livre.
+    A API do ML está BLOQUEADA (403), então RASPA pelo navegador local (scraper.js) —
+    funciona no PC. Varre VÁRIAS páginas (mais quantidade = mais assertivo) e aplica os
+    filtros: relevância, acessório, PARALELA/CONCESSIONÁRIA (via _REV_RUINS) e VENDEDOR
+    com +2 anúncios (atacado — detectado por anúncio repetido, já que a lista não traz o
+    vendedor). NÃO filtra por condição (novo/usado): desmonte anuncia usado como 'novo'."""
+    import re as _re
+    slug = _re.sub(r"\s+", "-", (consulta or "").strip().lower())
+    slug = _re.sub(r"[^a-z0-9\-]", "", slug).strip("-")
+    if not slug:
+        return []
+    # ML pagina de ~48 em 48 (_Desde_49, _Desde_97...). Mais páginas = mais base de preço.
+    urls = [f"https://lista.mercadolivre.com.br/{slug}" +
+            ("" if d == 1 else f"_Desde_{d}") for d in (1, 49, 97, 145, 193)]
+    try:
+        htmls = _buscar_navegador(urls)        # navegador local (Edge) — funciona no PC
+    except Exception:
+        htmls = []
+    if not htmls:
+        try:
+            htmls = _buscar_requests_html(urls)
+        except Exception:
+            htmls = []
     toks = _revisao_tokens(consulta)
     principal = toks[0] if toks else ""
     qlow = (consulta or "").lower()
-
-    def _coletar(somente_usados):
-        por_vendedor = {}
-        precos = []
-        for offset in (0, 50, 100, 150, 200, 250):  # 6 páginas (antes eram 3)
-            try:
-                params = {"q": consulta, "limit": 50, "offset": offset}
-                if somente_usados:
-                    params["condition"] = "used"  # filtro server-side: só peça USADA
-                r = requests.get(
-                    "https://api.mercadolibre.com/sites/MLB/search",
-                    params=params, headers=headers, timeout=20)
-                if r.status_code != 200:
-                    break
-                results = r.json().get("results", [])
-                if not results:
-                    break
-                for it in results:
-                    titulo = (it.get("title") or "")
-                    tl = titulo.lower()
-                    preco = float(it.get("price") or 0)
-                    if preco <= 5:
-                        continue
-                    # 0) CONDIÇÃO: descarta NOVO (peça nova/concessionária infla o preço).
-                    if somente_usados and str(it.get("condition") or "").lower() == "new":
-                        continue
-                    seller = str((it.get("seller") or {}).get("id") or it.get("seller_id") or "")
-                    # 1) RELEVÂNCIA (busca por nome): título precisa ter a palavra principal
-                    #    do produto. Ex: "farol" → descarta "lâmpada do farol".
-                    if not eh_oem and principal and principal not in tl:
-                        continue
-                    # 2) tira ACESSÓRIO/peça relacionada (só se não faz parte da consulta)
-                    if not eh_oem and any(a in tl and a not in qlow for a in _REV_ACESSORIOS):
-                        continue
-                    # 3) tira PARALELA / recondicionado / danificado / concessionária
-                    if any(b in tl for b in _REV_RUINS):
-                        continue
-                    # 4) tira VENDEDOR com mais de 2 anúncios (atacado/revenda em massa)
-                    if seller:
-                        por_vendedor[seller] = por_vendedor.get(seller, 0) + 1
-                        if por_vendedor[seller] > 2:
-                            continue
-                    precos.append(round(preco, 2))
-            except Exception:
-                break
-        return precos
-
-    precos = _coletar(somente_usados=True)
-    # Poucos usados encontrados? Complementa com a busca geral (novos+usados) p/ ter base.
-    if len(precos) < 4:
-        precos = _coletar(somente_usados=False)
+    repetidos = {}   # mesmo título+preço repetido = vendedor de atacado → limita a 2
+    precos = []
+    for h in (htmls or []):
+        for it in _parse_itens_ml(h):
+            titulo = it.get("titulo") or ""
+            tl = titulo.lower()
+            preco = float(it.get("preco") or 0)
+            if preco <= 5:
+                continue
+            # 1) RELEVÂNCIA: título precisa ter a palavra principal do produto.
+            if not eh_oem and principal and principal not in tl:
+                continue
+            # 2) tira ACESSÓRIO/peça relacionada (só se não faz parte da consulta)
+            if not eh_oem and any(a in tl and a not in qlow for a in _REV_ACESSORIOS):
+                continue
+            # 3) tira PARALELA / recondicionado / danificado / CONCESSIONÁRIA
+            if any(b in tl for b in _REV_RUINS):
+                continue
+            # 4) VENDEDOR com +2 anúncios (atacado): a lista não traz o vendedor, então
+            #    usamos o anúncio repetido (mesmo título+preço) como proxy — limita a 2.
+            chave = (tl[:45], round(preco))
+            repetidos[chave] = repetidos.get(chave, 0) + 1
+            if repetidos[chave] > 2:
+                continue
+            precos.append(round(preco, 2))
     return precos
 
 def _revisao_filtrar_pares(pares, consulta, eh_oem=False):
