@@ -3828,6 +3828,29 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         for pid, pval in _pkg_defaults:
             if pid not in attr_ids:
                 attrs.append({"id": pid, "value_name": pval})
+        # ── BLOCO ISOLADO: atributos OBRIGATÓRIOS da categoria que ainda faltam ──
+        # Aditivo: só PREENCHE o que falta (não altera o resto). Evita "Validation error"
+        # por atributo obrigatório ausente. Ex: Rodas (MLB4860) exigem RIM_DIAMETER (aro).
+        try:
+            _cat_all = _ml_categoria_attrs(ml_payload.get("category_id"))
+            _ja = set(attr_ids) | {a.get("id") for a in attrs}
+            for _aid, _a in (_cat_all or {}).items():
+                _tg = _a.get("tags") or {}
+                if not _tg.get("required") or _aid in _ja or _tg.get("fixed"):
+                    continue
+                # Diâmetro do aro: extrai "Aro 18" / "aro18" do título
+                if "DIAMETER" in _aid or "RIM" in _aid:
+                    _md = _re.search(r'aro\s*0?(\d{2})', _titulo, _re.I)
+                    if _md:
+                        _un = _a.get("default_unit") or '"'
+                        attrs.append({"id": _aid, "value_name": _md.group(1) + _un})
+                        continue
+                # Outros obrigatórios de LISTA: usa o 1º valor permitido (melhor que faltar)
+                _vals = _a.get("values") or []
+                if _vals and _vals[0].get("id"):
+                    attrs.append({"id": _aid, "value_id": _vals[0]["id"], "value_name": _vals[0].get("name")})
+        except Exception:
+            pass
         if attrs:
             ml_payload["attributes"] = attrs
         try:
