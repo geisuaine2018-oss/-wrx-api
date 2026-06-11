@@ -5229,9 +5229,12 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         if _sku:
             payload["custom_id"] = str(_sku)
         try:
+            # A OLX exige o access_token DENTRO do corpo JSON, no mesmo nível do ad_list
+            # (não basta o header Authorization). Sem isso a API responde -6 "Without
+            # permission" com errors=[] — confirmado pelo suporte OLX (11/06/2026).
             _r = requests.put("https://apps.olx.com.br/autoupload/import",
                               headers={"Authorization": f"Bearer {_olx_token_mem['access_token']}", "Content-Type": "application/json"},
-                              json={"ad_list": [payload]}, timeout=20)
+                              json={"access_token": _olx_token_mem["access_token"], "ad_list": [payload]}, timeout=20)
             if _r.status_code in (200, 201, 202):
                 _resp = _r.json()
                 # A OLX devolve HTTP 200 MESMO com erro interno (ex.: statusCode -6 "Without
