@@ -7800,22 +7800,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         """Baixa cada foto da URL e sobe pro media space da Shopee.
         Retorna lista de image_id (a Shopee exige image_id, não aceita URL externa de forma confiável)."""
         ids = []
-        ordenadas = []
-        for u in urls[:9]:
-            s = str(u or "").strip()
-            if not s:
-                continue
-            score = 0
-            if s.startswith("data:"):
-                score -= 10
-            if "storage.partshub.app" in s:
-                score -= 5
-            if "supabase.co/storage/v1/object/sign" in s:
-                score += 10
-            if "supabase.co" in s and "sign" in s:
-                score += 10
-            ordenadas.append((score, s))
-        for _, u in sorted(ordenadas, key=lambda x: x[0]):
+        # MANTÉM A ORDEM ORIGINAL das fotos: a 1ª é a CAPA escolhida pelo usuário (a Shopee
+        # usa a 1ª imagem como foto principal). Antes o código REORDENAVA por "tipo"
+        # (data/partshub/supabase) e isso trocava a foto principal por uma secundária.
+        fotos_ordem = [str(u or "").strip() for u in (urls or [])[:9] if str(u or "").strip()]
+        for u in fotos_ordem:
             if not u:
                 continue
             try:
