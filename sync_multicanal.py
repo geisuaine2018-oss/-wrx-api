@@ -23,12 +23,14 @@ Teste local (dry-run, sem mexer em nada):
 """
 
 import os
+import re
 import time
 import json
 import hmac
 import hashlib
 import threading
 import requests
+from datetime import datetime
 
 # ─── Config Supabase (chave publishable = só leitura do mapeamento p/ planejar) ──
 SB_URL = os.environ.get("WRX_SB_URL", "https://uthsiihzpsgarargegcw.supabase.co")
@@ -131,6 +133,32 @@ def _estoque_atual(sku):
     except Exception as e:
         print(f"[estoque] atual erro: {e}")
     return None
+
+
+def _baixar_estoque_local(sku, qty=1):
+    """Baixa a qtd do SKU em pecas_estoque na VENDA do ML — desvincula do PartHub:
+    a baixa vem da venda no marketplace, não de a peça sumir do PartHub.
+    (A Shopee já faz isso no seu webhook.) Retorna a nova qtd, ou None se não achou."""
+    try:
+        r = requests.get(f"{SB_URL}/rest/v1/pecas_estoque",
+                         params={"sku": f"eq.{sku}", "select": "sku,qtd"},
+                         headers=_sb_headers(), timeout=10)
+        if r.status_code != 200 or not r.json():
+            return None
+        atual = int(r.json()[0].get("qtd") or 0)
+        nova = max(0, atual - max(1, int(qty or 1)))
+        if nova == atual:
+            return atual  # já estava 0 — nada a fazer
+        hdr = {**_sb_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"}
+        requests.patch(f"{SB_URL}/rest/v1/pecas_estoque",
+                       params={"sku": f"eq.{sku}"}, headers=hdr,
+                       json={"qtd": nova, "atualizado": datetime.utcnow().isoformat() + "Z"},
+                       timeout=10)
+        print(f"[WEBHOOK-ML] estoque {sku}: {atual} -> {nova}")
+        return nova
+    except Exception as e:
+        print(f"[WEBHOOK-ML] falha baixar estoque {sku}: {e}")
+        return None
 
 
 def _anuncios_paused_do_sku(sku):
@@ -423,9 +451,15 @@ def _processar_venda_ml_webhook(resource, user_id):
             return  # só reage a venda PAGA
         for it in (od.get("order_items") or []):
             item = it.get("item") or {}
-            sku = str(item.get("seller_sku") or item.get("seller_custom_field") or "").strip()
+            sku_raw = str(item.get("seller_sku") or item.get("seller_custom_field") or "").strip()
+            # anúncios multi-variação vêm sufixados (-DML#/-GML#/-SH#); o estoque usa o SKU base
+            sku = re.sub(r'-(SH|DML|GML)\d+$', '', sku_raw, flags=re.I)
             if not sku:
                 continue
+            qty = int(it.get("quantity") or 1)
+            # 1) BAIXA a qtd no nosso banco (a venda do ML é a fonte — não o PartHub)
+            _baixar_estoque_local(sku, qty)
+            # 2) Cascata anti-venda-dupla: pausa o mesmo SKU nos outros canais
             rel = executar_sincronizacao(sku, "ml")
             print(f"[WEBHOOK] order {order_id} sku {sku} -> pausados {rel.get('pausados')}/{rel.get('total')}")
     except Exception as e:
