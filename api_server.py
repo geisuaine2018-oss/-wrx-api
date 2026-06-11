@@ -3832,6 +3832,7 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         # Aditivo: só PREENCHE o que falta (não altera o resto). Evita "Validation error"
         # por atributo obrigatório ausente. Ex: Rodas (MLB4860) exigem RIM_DIAMETER (aro).
         try:
+            import re as _re  # garante _re disponível (acima só importa no ramo sem marca)
             _cat_all = _ml_categoria_attrs(ml_payload.get("category_id"))
             _ja = set(attr_ids) | {a.get("id") for a in attrs}
             for _aid, _a in (_cat_all or {}).items():
