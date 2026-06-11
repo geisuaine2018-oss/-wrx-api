@@ -5234,6 +5234,9 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             "phone_hidden": False,
             "zipcode": _cep,
             "images": fotos[:20],
+            # params da categoria 2101: condition é OBRIGATÓRIO (1=novo, 2=usado).
+            # parts_name_cars=4 (Peças automotivas) e exchange=2 (não aceita troca) são opcionais.
+            "params": {"condition": _condition, "parts_name_cars": "4", "exchange": "2"},
         }
         try:
             # A OLX exige o access_token DENTRO do corpo JSON, no mesmo nível do ad_list
