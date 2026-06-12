@@ -9294,6 +9294,41 @@ CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
         u = rows[0]
         return jsonify({"ok": True, "usuario": u["usuario"], "nome": u.get("nome") or u["usuario"], "funcao": u.get("funcao") or ""})
 
+    # ── Cadastro de usuários da EXTENSÃO (tabela usuarios_ext, login_ext) ─────────
+    # A extensão valida com sha256(senha) SEM salt (diferente do func_auth do site).
+    # Usa a service key (via _auth_sb_headers) pra furar o RLS da usuarios_ext.
+    @app.route("/auth/ext-cadastrar", methods=["POST", "OPTIONS"])
+    def auth_ext_cadastrar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        d = request.get_json(force=True) or {}
+        if str(d.get("admin") or "") != _ADMIN_SENHA:
+            return jsonify({"ok": False, "erro": "Senha de admin incorreta"}), 401
+        usuarios = d.get("usuarios") or []
+        if not usuarios:
+            return jsonify({"ok": False, "erro": "Lista de usuarios vazia"}), 400
+        def _ext_hash(s):
+            return _hashlib_auth.sha256(str(s or "").encode("utf-8")).hexdigest()
+        ok, err = [], []
+        for u in usuarios:
+            email = str(u.get("email") or "").strip().lower()
+            senha = str(u.get("senha") or "")
+            nome = str(u.get("nome") or email)
+            if not email or not senha:
+                err.append({"email": email, "erro": "email/senha faltando"}); continue
+            body = {"email": email, "senha_hash": _ext_hash(senha), "nome": nome}
+            try:
+                r = requests.post(f"{_WRX_SB_URL}/rest/v1/usuarios_ext?on_conflict=email",
+                                  headers={**_auth_sb_headers(), "Prefer": "resolution=merge-duplicates"},
+                                  json=body, timeout=12)
+                if r.status_code in (200, 201, 204):
+                    ok.append(email)
+                else:
+                    err.append({"email": email, "erro": f"{r.status_code} {r.text[:120]}"})
+            except Exception as e:
+                err.append({"email": email, "erro": str(e)[:120]})
+        return jsonify({"ok": not err, "cadastrados": ok, "erros": err})
+
     @app.route("/auth/func-list", methods=["POST", "OPTIONS"])
     def auth_func_list():
         if request.method == "OPTIONS":
