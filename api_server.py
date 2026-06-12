@@ -3776,6 +3776,11 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         }
         if _pics:
             ml_payload["pictures"] = _pics
+        # GARANTIA do vendedor (regra Domínio das Peças): 30 dias. Campo oficial do anúncio no ML.
+        ml_payload["sale_terms"] = [
+            {"id": "WARRANTY_TYPE", "value_name": "Garantia do vendedor"},
+            {"id": "WARRANTY_TIME", "value_name": "30 dias"},
+        ]
         attrs = list(data.get("attributes") or [])
         attr_ids = {a.get("id") for a in attrs}
         # Atributos obrigatórios: PART_NUMBER, BRAND, MODEL, dimensões de embalagem
