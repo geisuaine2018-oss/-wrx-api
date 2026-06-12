@@ -3758,7 +3758,7 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
             _p = _ml_foto_para_pic(token, conta_nome, _f)
             if _p:
                 _pics.append(_p)
-        preco = float(data.get("preco", 0) or 0)
+        preco = round(float(data.get("preco", 0) or 0), 2)  # ML exige no máx. 2 casas decimais (price.invalid)
         if preco <= 0:
             return jsonify({"ok": False, "erro": "preco invalido"}), 400
         _titulo = (data.get("titulo", "") or data.get("nomeInterno", ""))[:60]
