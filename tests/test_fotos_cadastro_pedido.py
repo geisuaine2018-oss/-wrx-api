@@ -171,6 +171,57 @@ class FotosCadastroPedidoTest(unittest.TestCase):
             "produto_cadastrado_automaticamente",
         )
 
+    @patch("api_server._max_sku_numerico", return_value=109999)
+    @patch("api_server._buscar_estoque_dados")
+    @patch("api_server.requests.patch")
+    @patch("api_server.requests.post")
+    @patch("api_server.requests.get")
+    def test_fluxo_tenho_com_codigo_foto_e_cadastro_automatico(
+        self, get, post, patch_req, buscar, _max
+    ):
+        with open(
+            os.path.join(self.temp.name, "respostas_func.json"),
+            "w",
+            encoding="utf-8",
+        ) as arquivo:
+            json.dump({}, arquivo)
+        buscar.return_value = {
+            "ok": True,
+            "candidatos": [],
+            "status_sugerido": "produto_nao_cadastrado",
+        }
+        get.return_value = RespostaFake(200, [self.pedido])
+        patch_req.return_value = RespostaFake(200, [])
+        post.return_value = RespostaFake(201, [{"sku": "110000"}])
+
+        tenho = self.client.post(
+            "/integracoes/marcelo/resposta-funcionario",
+            json={
+                "phone": self.phone,
+                "mensagem": "Tenho codigo 8421-1",
+            },
+        )
+        foto = self.client.post(
+            "/integracoes/marcelo/pedido-item-foto",
+            json={
+                "phone": self.phone,
+                "item_id": "8421-1",
+                "foto": "https://exemplo.com/farol-teste.jpg",
+            },
+        )
+
+        self.assertEqual(tenho.status_code, 200)
+        self.assertEqual(tenho.json["evento"]["acao"], "tenho")
+        self.assertEqual(tenho.json["evento"]["item_id"], "8421-1")
+        self.assertEqual(foto.status_code, 200)
+        self.assertTrue(foto.json["cadastro_automatico"]["criado"])
+        self.assertEqual(foto.json["item"]["sku"], "110000")
+        self.assertEqual(
+            foto.json["item"]["status"],
+            "produto_cadastrado_automaticamente",
+        )
+        self.assertFalse(foto.json["envio_cliente"])
+
     @patch("api_server.requests.patch")
     @patch("api_server._buscar_estoque_dados")
     @patch("api_server.requests.get")
