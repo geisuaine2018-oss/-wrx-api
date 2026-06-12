@@ -5769,7 +5769,18 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         item_id = str(dados.get("item_id") or "").strip()
         if not pedido_id:
             origem = str(dados.get("mensagem") or dados.get("resposta") or "")
-            encontrado = re.search(r"#\s*(\d+)(?:-(\d+))?", origem)
+            encontrado = re.search(
+                r"(?:#\s*|c[oó]d(?:igo)?\.?\s*:?\s*)?(\d+)-(\d+)\b",
+                origem,
+                flags=re.I,
+            )
+            if not encontrado:
+                encontrado = re.search(
+                    r"(?:#\s*|c[oó]d(?:igo)?\.?\s*:?\s*)"
+                    r"(\d+)(?:-(\d+))?\b",
+                    origem,
+                    flags=re.I,
+                )
             pedido_id = encontrado.group(1) if encontrado else ""
             if encontrado and encontrado.group(2):
                 item_id = f"{pedido_id}-{encontrado.group(2)}"

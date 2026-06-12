@@ -81,6 +81,30 @@ class ProcessarMensagensFuncionarioTest(unittest.TestCase):
 
     @patch("api_server.requests.post")
     @patch("api_server.requests.get")
+    def test_processa_tenho_com_palavra_codigo_sem_cerquilha(self, get, post):
+        estado = os.path.join(self.temp.name, "mensagens_func_processadas.json")
+        with open(estado, "w", encoding="utf-8") as arquivo:
+            json.dump([], arquivo)
+        get.return_value = RespostaFake(200, [{
+            "id": 14,
+            "numero": api_server.FUNCS_PEDIDO["rafael"],
+            "mensagem": "Tenho codigo 8421-2",
+            "de_mim": False,
+            "criado_em": "2026-06-09T10:04:00Z",
+        }])
+        post.return_value = RespostaFake(200, {"ok": True})
+
+        resposta = self.client.post(
+            "/integracoes/whatsapp/processar-respostas-funcionarios"
+        )
+
+        self.assertEqual(resposta.status_code, 200)
+        self.assertEqual(resposta.json["processadas"], 1)
+        self.assertEqual(post.call_args.kwargs["json"]["pedido_id"], "8421")
+        self.assertEqual(post.call_args.kwargs["json"]["item_id"], "8421-2")
+
+    @patch("api_server.requests.post")
+    @patch("api_server.requests.get")
     def test_vincula_foto_enviada_depois_do_tenho(self, get, post):
         estado = os.path.join(self.temp.name, "mensagens_func_processadas.json")
         with open(estado, "w", encoding="utf-8") as arquivo:
