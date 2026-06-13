@@ -3496,6 +3496,19 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
                     return jsonify({"ok": True, "pulado": True, "motivo": "sem estoque (vendido)"})
         except Exception:
             pass
+        # NÃO re-raspar peça que você JÁ decidiu (aprovado/ignorado). Senão o upsert
+        # abaixo regravaria status='pendente' e o selo "Preço revisado" sumiria do card.
+        conta_chk = (d.get("conta") or "default").strip()
+        try:
+            ex = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/revisao_precos?select=status&sku=eq.{sku}&conta=eq.{conta_chk}&limit=1",
+                headers=_wrx_headers(), timeout=12)
+            if ex.status_code == 200 and ex.json():
+                st_atual = (ex.json()[0].get("status") or "").lower()
+                if st_atual in ("aprovado", "ignorado"):
+                    return jsonify({"ok": True, "pulado": True, "motivo": "já " + st_atual})
+        except Exception:
+            pass
         oem = (d.get("oem") or "").strip()
         # OEM "real" = parece código (tem dígito e não é palavra tipo 'original')
         eh_oem = bool(re.search(r"\d", oem)) and oem.lower() not in ("original", "000", "0")
@@ -3571,6 +3584,16 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
             if est.get("qtd") is not None and float(est.get("qtd") or 0) <= 0:
                 pulados += 1
                 continue
+            # peça JÁ APROVADA não volta pra fila — senão o selo "Preço revisado" sumiria.
+            try:
+                ax = requests.get(
+                    f"{_WRX_SB_URL}/rest/v1/revisao_precos?select=status&sku=eq.{sku}&status=eq.aprovado&limit=1",
+                    headers=_wrx_headers(), timeout=12)
+                if ax.status_code == 200 and ax.json():
+                    pulados += 1
+                    continue
+            except Exception:
+                pass
             # dados do anúncio ML (ml_id + conta + preço p/ aprovar depois)
             an = {}
             try:
