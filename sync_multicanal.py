@@ -889,9 +889,9 @@ def get_blueprint():
             d = em.json()
         except Exception:
             d = {}
-        status = str(d.get("status") or "").lower()
-        ok = em.status_code in (200, 201) and status in ("authorized", "pending", "processing", "in_process", "")
-        out = {"ok": ok, "http": em.status_code, "status": d.get("status"),
+        # 200/201 com id = a NF-e foi criada/enviada (authorized agora, ou pending_authorization na SEFAZ — autoriza em segundos).
+        ok = em.status_code in (200, 201) and bool(d.get("id"))
+        out = {"ok": ok, "http": em.status_code, "status": d.get("status"), "invoice_id": d.get("id"),
                "transaction_status": d.get("transaction_status"),
                "erro": None if ok else (d.get("message") or d.get("error") or (em.text or "")[:300])}
         r = jsonify(out); r.headers["Access-Control-Allow-Origin"] = "*"; return r
