@@ -748,10 +748,12 @@ def get_blueprint():
             return _cors()
         contas = [request.args.get("conta")] if request.args.get("conta") else CONTAS_ML
         pedidos = []
+        contas_ok = []   # contas com token valido (consultadas) — MESMO com 0 pedidos ready_to_ship
         for conta in contas:
             token = _ml_token_provider(conta) if _ml_token_provider else None
             if not token:
                 continue
+            contas_ok.append(conta)
             H = {"Authorization": f"Bearer {token}"}
             try:
                 rv = requests.get(f"{SELF_BASE}/integracoes/mercadolivre/vendas-recentes",
@@ -779,7 +781,7 @@ def get_blueprint():
                                               for it in (v.get("itens") or [])]})
                 except Exception:
                     continue
-        r = jsonify({"ok": True, "total": len(pedidos), "pedidos": pedidos})
+        r = jsonify({"ok": True, "total": len(pedidos), "pedidos": pedidos, "contas_ok": contas_ok})
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
 
