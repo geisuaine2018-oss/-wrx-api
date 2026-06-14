@@ -860,6 +860,42 @@ def get_blueprint():
             "Access-Control-Allow-Origin": "*",
             "Content-Disposition": f'inline; filename="etiqueta_{order_id}.{ "pdf" if fmt=="pdf" else "zpl" }"'})
 
+    @bp.route("/integracoes/ml-emitir-nota", methods=["POST", "GET", "OPTIONS"])
+    def ml_emitir_nota():
+        """EMITE a NF-e de venda pelo emissor integrado do ML.
+        POST https://api.mercadolibre.com/users/{uid}/invoices/orders  body {"orders":[order_id]}.
+        ?order_id=..&conta=.. -> emite a nota daquela venda. Depois a etiqueta libera."""
+        if request.method == "OPTIONS":
+            return _cors()
+        order_id = request.args.get("order_id", "").strip()
+        conta = request.args.get("conta", "default").strip()
+        if not order_id:
+            r = jsonify({"ok": False, "erro": "order_id obrigatorio"}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+        token = _ml_token_provider(conta) if _ml_token_provider else None
+        if not token:
+            r = jsonify({"ok": False, "erro": "Mercado Livre desconectado - reconecte a conta"}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+        H = {"Authorization": f"Bearer {token}"}
+        me = requests.get("https://api.mercadolibre.com/users/me", headers=H, timeout=15)
+        uid = me.json().get("id") if me.status_code == 200 else None
+        if not uid:
+            r = jsonify({"ok": False, "erro": "nao consegui identificar o vendedor"}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+        try:
+            em = requests.post(f"https://api.mercadolibre.com/users/{uid}/invoices/orders",
+                               headers={**H, "Content-Type": "application/json"},
+                               json={"orders": [int(order_id)]}, timeout=30)
+        except Exception as e:
+            r = jsonify({"ok": False, "erro": str(e)}); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+        try:
+            d = em.json()
+        except Exception:
+            d = {}
+        status = str(d.get("status") or "").lower()
+        ok = em.status_code in (200, 201) and status in ("authorized", "pending", "processing", "in_process", "")
+        out = {"ok": ok, "http": em.status_code, "status": d.get("status"),
+               "transaction_status": d.get("transaction_status"),
+               "erro": None if ok else (d.get("message") or d.get("error") or (em.text or "")[:300])}
+        r = jsonify(out); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+
     @bp.route("/integracoes/ml-nota-info", methods=["GET", "OPTIONS"])
     def ml_nota_info():
         """TESTE: acha a nota fiscal emitida de um pedido (via pack_id → fiscal_documents)."""
