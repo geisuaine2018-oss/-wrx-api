@@ -8201,12 +8201,10 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 "brand": {"brand_id": 0, "original_brand_name": "NoBrand"},  # autopeça usada: sem marca
                 "image": {"image_id_list": image_ids},
                 "logistic_info": logistics,
-                # Atributo obrigatório da categoria de autopeça: "Auto-Part Number" (id 102293).
-                # Usa o SKU como número da peça (referência real do vendedor).
-                "attribute_list": [
-                    {"attribute_id": 102293,
-                     "attribute_value_list": [{"value_id": 0, "original_value_name": str(sku)[:80]}]},
-                ],
+                # "Auto-Part Number" (102293) REMOVIDO (15/06/2026): a Shopee passou a rejeitar este
+                # atributo ("The attribute Auto-Part Number(102293) is not mapped with the category.
+                # Please remove it.") — estava quebrando TODA publicação Shopee. Diagnóstico via teste real.
+                "attribute_list": [],
                 "weight": float(data.get("peso") or 1.0),
                 "dimension": {
                     "package_length": int(data.get("comprimento") or 30),
