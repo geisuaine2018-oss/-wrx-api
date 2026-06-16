@@ -849,11 +849,28 @@ def get_blueprint():
         if not ship_id:
             return Response('{"erro":"pedido sem envio do Mercado Envios (etiqueta indisponivel)"}',
                             status=422, mimetype="application/json", headers={"Access-Control-Allow-Origin": "*"})
-        # baixa a etiqueta
-        lr = requests.get("https://api.mercadolibre.com/shipment_labels",
-                          params={"shipment_ids": ship_id, "response_type": fmt}, headers=H, timeout=25)
-        if lr.status_code != 200:
-            return Response('{"erro":"etiqueta ainda nao disponivel (emita a nota / aguarde pronto p/ envio)","http":%d}' % lr.status_code,
+        # baixa a etiqueta — com RETRY: a NF-e do ML sai automatica na venda, mas o ML leva
+        # alguns segundos pra liberar a etiqueta (o envio vira ready_to_print). Tenta umas vezes.
+        import time as _time
+        lr = None
+        for _tent in range(3):
+            lr = requests.get("https://api.mercadolibre.com/shipment_labels",
+                              params={"shipment_ids": ship_id, "response_type": fmt}, headers=H, timeout=25)
+            if lr.status_code == 200:
+                break
+            if _tent < 2:
+                _time.sleep(3)
+        if not lr or lr.status_code != 200:
+            # consulta o status real do envio pra dar uma mensagem clara
+            sub = ""
+            try:
+                sr = requests.get(f"https://api.mercadolibre.com/shipments/{ship_id}", headers=H, timeout=15)
+                if sr.status_code == 200:
+                    sj = sr.json()
+                    sub = str(sj.get("substatus") or sj.get("status") or "")
+            except Exception:
+                pass
+            return Response('{"erro":"etiqueta ainda nao disponivel (a nota esta sendo emitida no ML, aguarde ~1 min e tente de novo)","http":%d,"substatus":"%s"}' % ((lr.status_code if lr else 0), sub),
                             status=422, mimetype="application/json", headers={"Access-Control-Allow-Origin": "*"})
         ct = "application/pdf" if fmt == "pdf" else "application/octet-stream"
         return Response(lr.content, mimetype=ct, headers={
