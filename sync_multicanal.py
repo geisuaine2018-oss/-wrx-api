@@ -785,6 +785,68 @@ def get_blueprint():
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
 
+    @bp.route("/integracoes/ml-status-pedidos", methods=["POST", "OPTIONS"])
+    def ml_status_pedidos():
+        """Recebe os pedidos que estao na fila de expedicao e devolve o status REAL no ML.
+        Body: {"pedidos":[{"order_id":"...","conta":"default"}, ...]}.
+        Pra cada um classifica: 'enviado' (shipment shipped/delivered), 'cancelado'
+        (order cancelled), 'pronto' (ready_to_ship), 'pendente' (resto).
+        O frontend usa isso pra atualizar a fila (tirar enviado/cancelado)."""
+        if request.method == "OPTIONS":
+            return _cors()
+        body = request.get_json(silent=True) or {}
+        itens = body.get("pedidos") or []
+        tok_cache = {}
+
+        def _tok(conta):
+            conta = (conta or "default")
+            if conta not in tok_cache:
+                tok_cache[conta] = (_ml_token_provider(conta) if _ml_token_provider else None)
+            return tok_cache[conta]
+
+        results = []
+        for it in itens[:150]:
+            oid = str(it.get("order_id") or "").strip()
+            conta = (it.get("conta") or "default").strip() or "default"
+            if not oid:
+                continue
+            token = _tok(conta)
+            if not token:
+                results.append({"order_id": oid, "status": "?", "erro": "sem token (" + conta + ")"})
+                continue
+            H = {"Authorization": f"Bearer {token}"}
+            try:
+                o = requests.get(f"https://api.mercadolibre.com/orders/{oid}", headers=H, timeout=12)
+                if o.status_code != 200:
+                    results.append({"order_id": oid, "status": "?", "http": o.status_code})
+                    continue
+                od = o.json()
+                ostatus = (od.get("status") or "").lower()
+                if ostatus == "cancelled":
+                    results.append({"order_id": oid, "status": "cancelado", "order_status": ostatus})
+                    continue
+                ship_id = (od.get("shipping") or {}).get("id")
+                sstatus = ""
+                if ship_id:
+                    sr = requests.get(f"https://api.mercadolibre.com/shipments/{ship_id}", headers=H, timeout=12)
+                    if sr.status_code == 200:
+                        sstatus = (sr.json().get("status") or "").lower()
+                if sstatus in ("shipped", "delivered"):
+                    novo = "enviado"
+                elif sstatus == "cancelled":
+                    novo = "cancelado"
+                elif sstatus == "ready_to_ship":
+                    novo = "pronto"
+                else:
+                    novo = "pendente"
+                results.append({"order_id": oid, "status": novo,
+                                "order_status": ostatus, "shipment_status": sstatus})
+            except Exception as e:
+                results.append({"order_id": oid, "status": "?", "erro": str(e)[:100]})
+        r = jsonify({"ok": True, "results": results})
+        r.headers["Access-Control-Allow-Origin"] = "*"
+        return r
+
     @bp.route("/integracoes/ml-nota", methods=["GET", "OPTIONS"])
     def ml_nota():
         """SERVE o DANFE (PDF) ou XML da nota fiscal emitida de um pedido ML.
