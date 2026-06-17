@@ -796,6 +796,7 @@ def get_blueprint():
             return _cors()
         body = request.get_json(silent=True) or {}
         itens = body.get("pedidos") or []
+        dbg = request.args.get("debug") in ("1", "true", "sim")
         tok_cache = {}
 
         def _tok(conta):
@@ -826,11 +827,32 @@ def get_blueprint():
                     results.append({"order_id": oid, "status": "cancelado", "order_status": ostatus})
                     continue
                 ship_id = (od.get("shipping") or {}).get("id")
-                sstatus = ""
+                sstatus = ""; ssub = ""; enviar_ate = ""; dbg_raw = None
                 if ship_id:
                     sr = requests.get(f"https://api.mercadolibre.com/shipments/{ship_id}", headers=H, timeout=12)
                     if sr.status_code == 200:
-                        sstatus = (sr.json().get("status") or "").lower()
+                        sj = sr.json()
+                        sstatus = (sj.get("status") or "").lower()
+                        ssub = sj.get("substatus") or ""
+                        # data de despacho que o ML AGENDOU (varia conforme o tipo de envio)
+                        so = sj.get("shipping_option") or {}
+                        ehl = so.get("estimated_handling_limit") or sj.get("estimated_handling_limit") or {}
+                        enviar_ate = (ehl or {}).get("date") or ""
+                        if not enviar_ate:
+                            try:
+                                lt = requests.get(f"https://api.mercadolibre.com/shipments/{ship_id}/lead_time", headers=H, timeout=10)
+                                if lt.status_code == 200:
+                                    lj = lt.json()
+                                    enviar_ate = ((lj.get("estimated_handling_limit") or {}).get("date")
+                                                  or (lj.get("estimated_dispatch_limit_date") or "")
+                                                  or ((lj.get("shipping_option") or {}).get("estimated_handling_limit") or {}).get("date")
+                                                  or "")
+                                    if dbg:
+                                        dbg_raw = {"shipment": {k: sj.get(k) for k in ("status", "substatus", "shipping_option", "estimated_handling_limit")}, "lead_time": lj}
+                            except Exception:
+                                pass
+                        elif dbg:
+                            dbg_raw = {"shipment": {k: sj.get(k) for k in ("status", "substatus", "shipping_option", "estimated_handling_limit")}}
                 if sstatus in ("shipped", "delivered"):
                     novo = "enviado"
                 elif sstatus == "cancelled":
@@ -839,8 +861,11 @@ def get_blueprint():
                     novo = "pronto"
                 else:
                     novo = "pendente"
-                results.append({"order_id": oid, "status": novo,
-                                "order_status": ostatus, "shipment_status": sstatus})
+                _res = {"order_id": oid, "status": novo, "order_status": ostatus,
+                        "shipment_status": sstatus, "substatus": ssub, "enviar_ate": enviar_ate}
+                if dbg and dbg_raw:
+                    _res["_debug"] = dbg_raw
+                results.append(_res)
             except Exception as e:
                 results.append({"order_id": oid, "status": "?", "erro": str(e)[:100]})
         r = jsonify({"ok": True, "results": results})
