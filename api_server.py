@@ -2308,13 +2308,29 @@ if USE_FLASK:
                     lados.append(float(np.linalg.norm(p[i] - p[(i+1) % 4])))
             lado_px = float(np.median(lados))
             cm_por_px = marcador_cm / lado_px
-            # 2) segmenta a peca: remove verde + branco + preto (tapete e marcadores)
-            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-            verde  = cv2.inRange(hsv, (30, 40, 40), (90, 255, 255))
-            branco = cv2.inRange(hsv, (0, 0, 175), (180, 55, 255))
-            preto  = cv2.inRange(hsv, (0, 0, 0), (180, 255, 65))
-            tapete = cv2.bitwise_or(cv2.bitwise_or(verde, branco), preto)
-            peca = cv2.bitwise_not(tapete)
+            # 2) ISOLA a peca — primeiro pelo REMOVEDOR DE FUNDO (Pixian/rembg, mesmo do
+            #    editor e do PartsHub): muito mais preciso que segmentar por cor. Fallback: HSV.
+            peca = None
+            try:
+                _rf = requests.post("http://127.0.0.1:%s/remover-fundo" % PORT,
+                                    json={"imagem": img_b64}, timeout=90)
+                _png = _rf.json().get("png") if _rf.status_code == 200 else None
+                if _png:
+                    _rgba = cv2.imdecode(np.frombuffer(base64.b64decode(_png), np.uint8), cv2.IMREAD_UNCHANGED)
+                    if _rgba is not None and _rgba.ndim == 3 and _rgba.shape[2] == 4:
+                        _a = _rgba[:, :, 3]
+                        if _a.shape[:2] != (H, W):
+                            _a = cv2.resize(_a, (W, H))
+                        peca = (_a > 128).astype(np.uint8) * 255
+            except Exception:
+                peca = None
+            if peca is None or int((peca > 0).sum()) < (W * H * 0.002):
+                hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+                verde  = cv2.inRange(hsv, (30, 40, 40), (90, 255, 255))
+                branco = cv2.inRange(hsv, (0, 0, 175), (180, 55, 255))
+                preto  = cv2.inRange(hsv, (0, 0, 0), (180, 255, 65))
+                tapete = cv2.bitwise_or(cv2.bitwise_or(verde, branco), preto)
+                peca = cv2.bitwise_not(tapete)
             k = np.ones((7, 7), np.uint8)
             peca = cv2.morphologyEx(peca, cv2.MORPH_OPEN, k, iterations=2)
             peca = cv2.morphologyEx(peca, cv2.MORPH_CLOSE, k, iterations=3)
@@ -2332,17 +2348,17 @@ if USE_FLASK:
                     best_score, best_i = score, i
             if best_i < 0:
                 return jsonify({"ok": False, "erro": "Nao consegui isolar a peca do tapete."}), 200
-            # 4) mede: pela HOMOGRAFIA (corrige perspectiva) ou escala simples (fallback)
+            # 4) mede na ORIENTACAO da peca (minAreaRect) — nao infla quando a peca esta girada.
+            mask_p = (lab == best_i).astype(np.uint8)
+            cnts_p, _hc = cv2.findContours(mask_p, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cnt_p = max(cnts_p, key=cv2.contourArea)
             if usou_homografia and Hm is not None:
-                mask = (lab == best_i).astype(np.uint8)
-                cnts, _hc = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                pts = max(cnts, key=cv2.contourArea).reshape(-1, 1, 2).astype(np.float32)
-                cmp = cv2.perspectiveTransform(pts, Hm).reshape(-1, 2)
-                larg = round((float(cmp[:, 0].max() - cmp[:, 0].min())) * fator, 1)
-                alt = round((float(cmp[:, 1].max() - cmp[:, 1].min())) * fator, 1)
+                cmp = cv2.perspectiveTransform(cnt_p.reshape(-1, 1, 2).astype(np.float32), Hm).reshape(-1, 2).astype(np.float32) * fator
+                (_cc, (rw, rh), _ang) = cv2.minAreaRect(cmp)
+                larg = round(float(max(rw, rh)), 1); alt = round(float(min(rw, rh)), 1)
             else:
-                w = int(stats[best_i, cv2.CC_STAT_WIDTH]); h = int(stats[best_i, cv2.CC_STAT_HEIGHT])
-                larg = round(w * cm_por_px, 1); alt = round(h * cm_por_px, 1)
+                (_cc, (rw, rh), _ang) = cv2.minAreaRect(cnt_p.astype(np.float32))
+                larg = round(float(max(rw, rh)) * cm_por_px, 1); alt = round(float(min(rw, rh)) * cm_por_px, 1)
             # largura sempre o maior lado (padrao de cadastro)
             L, A = (larg, alt) if larg >= alt else (alt, larg)
             return jsonify({"ok": True, "largura": L, "altura": A, "marcadores": int(len(ids)),
