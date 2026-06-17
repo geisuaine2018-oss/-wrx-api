@@ -842,9 +842,13 @@ def get_blueprint():
                         entrega_ate = (so.get("estimated_delivery_limit") or {}).get("date") or ""
                         if dbg:
                             dbg_raw = {k: sj.get(k) for k in ("status", "substatus", "shipping_option")}
-                if sstatus in ("shipped", "delivered"):
+                # substatus que indicam que a peca JA SAIU da loja (mesmo com status ready_to_ship):
+                # coletada, no hub do ML, saiu pra entrega, entregue...
+                _saiu_sub = {"picked_up", "in_hub", "soon_deliver", "out_for_delivery",
+                             "out_for_deliver", "delivered", "dropped_off", "in_route", "arrived"}
+                if sstatus in ("shipped", "delivered") or (ssub or "").lower() in _saiu_sub:
                     novo = "enviado"
-                elif sstatus == "cancelled":
+                elif sstatus == "cancelled" or (ssub or "").lower() == "cancelled":
                     novo = "cancelado"
                 elif sstatus == "ready_to_ship":
                     novo = "pronto"
