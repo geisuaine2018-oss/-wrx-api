@@ -2244,6 +2244,74 @@ if USE_FLASK:
 
         return jsonify(results)
 
+    @app.route("/medir-peca", methods=["POST", "OPTIONS"])
+    def rota_medir_peca():
+        # Mede a peca sobre o tapete ChArUco: escala pelos marcadores ArUco 5x5 + segmenta a peca (HSV) + bbox -> cm.
+        if request.method == "OPTIONS":
+            return Response(status=204, headers={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"POST,OPTIONS","Access-Control-Allow-Headers":"Content-Type"})
+        import base64
+        try:
+            import numpy as np, cv2
+            if not hasattr(cv2, "aruco"):
+                return jsonify({"ok": False, "erro": "Servidor sem o modulo ArUco (atualize o opencv-contrib)."}), 200
+            data = request.get_json(force=True)
+            img_b64 = data.get("imagem", "")
+            marcador_cm = float(data.get("marcador_cm", 7.5))
+            if not img_b64:
+                return jsonify({"ok": False, "erro": "Campo 'imagem' obrigatorio"}), 400
+            if img_b64.startswith("data:"):
+                img_b64 = img_b64.split(",", 1)[1]
+            arr = np.frombuffer(base64.b64decode(img_b64), np.uint8)
+            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if img is None:
+                return jsonify({"ok": False, "erro": "imagem invalida"}), 400
+            H, W = img.shape[:2]
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            # 1) escala pelos marcadores ArUco 5x5
+            dic = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_250)
+            det = cv2.aruco.ArucoDetector(dic, cv2.aruco.DetectorParameters())
+            corners, ids, _ = det.detectMarkers(gray)
+            if ids is None or len(ids) == 0:
+                return jsonify({"ok": False, "erro": "Nenhum marcador do tapete detectado. Tire a foto mais reta, de cima, com o tapete bem visivel."}), 200
+            lados = []
+            for c in corners:
+                p = c[0]
+                for i in range(4):
+                    lados.append(float(np.linalg.norm(p[i] - p[(i+1) % 4])))
+            lado_px = sum(lados) / len(lados)
+            cm_por_px = marcador_cm / lado_px
+            # 2) segmenta a peca: remove verde + branco + preto (tapete e marcadores)
+            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            verde  = cv2.inRange(hsv, (30, 40, 40), (90, 255, 255))
+            branco = cv2.inRange(hsv, (0, 0, 175), (180, 55, 255))
+            preto  = cv2.inRange(hsv, (0, 0, 0), (180, 255, 65))
+            tapete = cv2.bitwise_or(cv2.bitwise_or(verde, branco), preto)
+            peca = cv2.bitwise_not(tapete)
+            k = np.ones((7, 7), np.uint8)
+            peca = cv2.morphologyEx(peca, cv2.MORPH_OPEN, k, iterations=2)
+            peca = cv2.morphologyEx(peca, cv2.MORPH_CLOSE, k, iterations=3)
+            n, lab, stats, cent = cv2.connectedComponentsWithStats(peca, 8)
+            best_i, best_score = -1, 0.0
+            cx0, cy0 = W / 2.0, H / 2.0
+            for i in range(1, n):
+                area = stats[i, cv2.CC_STAT_AREA]
+                if area < W * H * 0.005:
+                    continue
+                px, py = cent[i]
+                dist = ((px - cx0) ** 2 + (py - cy0) ** 2) ** 0.5
+                score = area / (1 + dist * 0.5)
+                if score > best_score:
+                    best_score, best_i = score, i
+            if best_i < 0:
+                return jsonify({"ok": False, "erro": "Nao consegui isolar a peca do tapete."}), 200
+            w = int(stats[best_i, cv2.CC_STAT_WIDTH]); h = int(stats[best_i, cv2.CC_STAT_HEIGHT])
+            larg = round(w * cm_por_px, 1); alt = round(h * cm_por_px, 1)
+            # largura sempre o maior lado (padrao de cadastro)
+            L, A = (larg, alt) if larg >= alt else (alt, larg)
+            return jsonify({"ok": True, "largura": L, "altura": A, "marcadores": int(len(ids)), "cm_por_px": round(cm_por_px, 5)})
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)[:200]}), 200
+
     @app.route("/remover-fundo", methods=["POST", "OPTIONS"])
     def rota_remover_fundo():
         if request.method == "OPTIONS":
