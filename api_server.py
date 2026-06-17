@@ -8232,13 +8232,27 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     _ti["cest"] = _cest
                 payload_shopee["tax_info"] = _ti
             try:
-                _r = requests.post(
-                    f"{_SHOPEE_BASE}{path}",
-                    params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts, "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
-                    json=payload_shopee,
-                    timeout=20
-                )
-                _d = _r.json()
+                def _do_add(_pl):
+                    _ts2 = int(time.time())
+                    _sg2 = _shopee_sign(path, _ts2, access_token, shop_id_int)
+                    _rr = requests.post(
+                        f"{_SHOPEE_BASE}{path}",
+                        params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": _ts2, "access_token": access_token, "shop_id": shop_id_int, "sign": _sg2},
+                        json=_pl, timeout=20)
+                    return _rr, _rr.json()
+                _r, _d = _do_add(payload_shopee)
+                # Algumas categorias EXIGEM o "Auto-Part Number" (102293); outras o rejeitam.
+                # Tentamos sem; se a Shopee disser que é obrigatório, mandamos o número da peça e
+                # tentamos de novo. Assim cobre os dois casos sem buscar a API de atributos (bloqueada).
+                _m0 = str(_d.get("message", "")).lower()
+                if _d.get("error") and "auto-part number" in _m0 and ("mandatory" in _m0 or "required" in _m0):
+                    _pn = str(data.get("oem") or sku_interno or sku or "").strip()
+                    if _pn:
+                        payload_shopee["attribute_list"] = [{
+                            "attribute_id": 102293,
+                            "attribute_value_list": [{"value_id": 0, "original_value_name": _pn[:100]}]
+                        }]
+                        _r, _d = _do_add(payload_shopee)
                 if _r.status_code == 200 and not _d.get("error"):
                     item_id = _d.get("response", {}).get("item_id", "")
                     print(f"[SHOPEE] SKU '{sku}' publicado no shop {sid}. item_id={item_id}, condicao={condicao_shopee}")
