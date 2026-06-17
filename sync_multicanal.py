@@ -853,8 +853,12 @@ def get_blueprint():
                 _res = {"order_id": oid, "status": novo, "order_status": ostatus,
                         "shipment_status": sstatus, "substatus": ssub,
                         "enviar_ate": enviar_ate, "entrega_ate": entrega_ate}
-                if dbg and dbg_raw:
-                    _res["_debug"] = dbg_raw
+                if dbg:
+                    _res["_debug"] = {
+                        "order": {k: od.get(k) for k in ("status", "status_detail", "tags",
+                                                          "cancel_detail", "date_closed", "date_created")},
+                        "shipment": dbg_raw,
+                    }
                 results.append(_res)
             except Exception as e:
                 results.append({"order_id": oid, "status": "?", "erro": str(e)[:100]})
