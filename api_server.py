@@ -2267,18 +2267,46 @@ if USE_FLASK:
                 return jsonify({"ok": False, "erro": "imagem invalida"}), 400
             H, W = img.shape[:2]
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            # 1) escala pelos marcadores ArUco 5x5
+            # 1) detecta marcadores ArUco 5x5 do tapete
             dic = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_250)
             det = cv2.aruco.ArucoDetector(dic, cv2.aruco.DetectorParameters())
             corners, ids, _ = det.detectMarkers(gray)
             if ids is None or len(ids) == 0:
-                return jsonify({"ok": False, "erro": "Nenhum marcador do tapete detectado. Tire a foto mais reta, de cima, com o tapete bem visivel."}), 200
+                return jsonify({"ok": False, "erro": "Nenhum marcador do tapete detectado. Tire a foto de cima, reta, com o tapete bem visivel e boa luz."}), 200
+            square_cm = float(data.get("square_cm", 11.0))
+            sq_x = int(data.get("squares_x", 10)); sq_y = int(data.get("squares_y", 20))
+            # 1b) HOMOGRAFIA ChArUco: corrige a perspectiva (foto inclinada) e calibra a escala
+            #     exatamente pelo marcador (7.5cm conhecido). Igual ao tapete do PartsHub.
+            Hm = None; fator = 1.0; usou_homografia = False
+            try:
+                board = cv2.aruco.CharucoBoard((sq_x, sq_y), square_cm, marcador_cm, dic)
+                ids_b = board.getIds().flatten()
+                objpts = board.getObjPoints()
+                obj_por_id = {int(m): objpts[ki][:, :2] for ki, m in enumerate(ids_b)}
+                ip = []; op = []
+                for c, mid in zip(corners, ids.flatten()):
+                    if int(mid) in obj_por_id:
+                        ip.extend(c[0]); op.extend(obj_por_id[int(mid)])
+                if len(ip) >= 8:  # pelo menos 2 marcadores (8 cantos)
+                    Hm, _msk = cv2.findHomography(np.array(ip, np.float32), np.array(op, np.float32), cv2.RANSAC, 3.0)
+                    if Hm is not None:
+                        lc = []
+                        for c in corners:
+                            pc = cv2.perspectiveTransform(c.reshape(-1, 1, 2).astype(np.float32), Hm).reshape(-1, 2)
+                            for j in range(4):
+                                lc.append(float(np.linalg.norm(pc[j] - pc[(j + 1) % 4])))
+                        med = float(np.median(lc)) if lc else marcador_cm
+                        fator = (marcador_cm / med) if med else 1.0
+                        usou_homografia = True
+            except Exception:
+                Hm = None; usou_homografia = False
+            # escala simples (fallback) — mediana e mais robusta que media
             lados = []
             for c in corners:
                 p = c[0]
                 for i in range(4):
                     lados.append(float(np.linalg.norm(p[i] - p[(i+1) % 4])))
-            lado_px = sum(lados) / len(lados)
+            lado_px = float(np.median(lados))
             cm_por_px = marcador_cm / lado_px
             # 2) segmenta a peca: remove verde + branco + preto (tapete e marcadores)
             hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -2304,11 +2332,21 @@ if USE_FLASK:
                     best_score, best_i = score, i
             if best_i < 0:
                 return jsonify({"ok": False, "erro": "Nao consegui isolar a peca do tapete."}), 200
-            w = int(stats[best_i, cv2.CC_STAT_WIDTH]); h = int(stats[best_i, cv2.CC_STAT_HEIGHT])
-            larg = round(w * cm_por_px, 1); alt = round(h * cm_por_px, 1)
+            # 4) mede: pela HOMOGRAFIA (corrige perspectiva) ou escala simples (fallback)
+            if usou_homografia and Hm is not None:
+                mask = (lab == best_i).astype(np.uint8)
+                cnts, _hc = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                pts = max(cnts, key=cv2.contourArea).reshape(-1, 1, 2).astype(np.float32)
+                cmp = cv2.perspectiveTransform(pts, Hm).reshape(-1, 2)
+                larg = round((float(cmp[:, 0].max() - cmp[:, 0].min())) * fator, 1)
+                alt = round((float(cmp[:, 1].max() - cmp[:, 1].min())) * fator, 1)
+            else:
+                w = int(stats[best_i, cv2.CC_STAT_WIDTH]); h = int(stats[best_i, cv2.CC_STAT_HEIGHT])
+                larg = round(w * cm_por_px, 1); alt = round(h * cm_por_px, 1)
             # largura sempre o maior lado (padrao de cadastro)
             L, A = (larg, alt) if larg >= alt else (alt, larg)
-            return jsonify({"ok": True, "largura": L, "altura": A, "marcadores": int(len(ids)), "cm_por_px": round(cm_por_px, 5)})
+            return jsonify({"ok": True, "largura": L, "altura": A, "marcadores": int(len(ids)),
+                            "metodo": ("perspectiva" if usou_homografia else "simples")})
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e)[:200]}), 200
 
