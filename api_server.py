@@ -7496,6 +7496,19 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         ok, msg = _waha_enviar(numero, texto)
         return jsonify({"ok": ok, "detalhe": msg, "numero": numero})
 
+    @app.route("/integracoes/whatsapp/enviar-imagem", methods=["POST", "OPTIONS"])
+    def whatsapp_enviar_imagem():
+        """Envia uma IMAGEM (por URL) + legenda no WhatsApp. Usado pra mandar o
+        comprovante de pagamento pro funcionario. Body: {numero, url, legenda}."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        numero = data.get("numero") or ""
+        url = data.get("url") or ""
+        legenda = (data.get("legenda") or "").strip()
+        ok, msg = _waha_enviar_imagem(numero, url, legenda)
+        return jsonify({"ok": ok, "detalhe": msg, "numero": numero})
+
     # Memória simples (em arquivo) do que já foi avisado, pra não repetir
     _AVISADOS_FILE = os.path.join(_INTEG_DIR, "wrx_whatsapp_avisados.json")
     def _avisados_load():
