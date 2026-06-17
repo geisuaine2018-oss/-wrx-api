@@ -7900,6 +7900,17 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                         print(f"[SHOPEE-IMG] falha baixar {u[:60]} status={img.status_code}")
                         continue
                     content = img.content
+                # A Shopee NAO aceita webp (as fotos vindas do Mercado Livre vem em webp).
+                # Converte qualquer formato (webp/png/etc) para JPEG real antes de subir.
+                try:
+                    from PIL import Image as _PILImg
+                    import io as _ioimg
+                    _im = _PILImg.open(_ioimg.BytesIO(content)).convert("RGB")
+                    _buf = _ioimg.BytesIO()
+                    _im.save(_buf, format="JPEG", quality=90)
+                    content = _buf.getvalue()
+                except Exception as _ec:
+                    print(f"[SHOPEE-IMG] falha conversao p/ jpeg (segue com original): {_ec}")
                 ts = int(time.time())
                 path = "/api/v2/media_space/upload_image"
                 sign = _shopee_sign(path, ts, access_token, shop_id_int)
