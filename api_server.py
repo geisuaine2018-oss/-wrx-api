@@ -9520,6 +9520,22 @@ CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
         t.start()
         print("[STARTUP] cron WhatsApp ativo (checa novidades a cada 2 min)")
 
+    def _cron_expedicao_loop():
+        """Thread: a cada 10 min sincroniza o status REAL do ML com a fila de expedicao
+        (tira da fila o que ja foi enviado/cancelado) — sem precisar abrir a tela."""
+        import threading
+        def _loop():
+            time.sleep(75)  # espera o servidor subir
+            while True:
+                try:
+                    requests.get(f"http://127.0.0.1:{PORT}/integracoes/expedicao-sync-status", timeout=240)
+                except Exception as _e:
+                    print(f"[CRON-EXPEDICAO] erro: {_e}")
+                time.sleep(600)  # 10 minutos
+        t = threading.Thread(target=_loop, daemon=True)
+        t.start()
+        print("[STARTUP] cron Expedicao ativo (sincroniza status ML a cada 10 min)")
+
     def _cron_shopee_etiquetas_loop():
         """Thread: a cada 15 min pré-gera etiquetas Shopee (ship_order + create_shipping_document),
         pra a etiqueta já estar pronta na hora da conferência (a Shopee demora pra liberar)."""
@@ -9545,6 +9561,7 @@ CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
         host = "0.0.0.0" if _IS_RAILWAY else "127.0.0.1"
         _cron_whatsapp_loop()
         _cron_shopee_etiquetas_loop()
+        _cron_expedicao_loop()
         app.run(host=host, port=PORT, debug=False, threaded=True)
 
 else:

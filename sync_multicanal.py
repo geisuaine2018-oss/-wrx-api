@@ -847,6 +847,56 @@ def get_blueprint():
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
 
+    @bp.route("/integracoes/expedicao-sync-status", methods=["GET", "POST", "OPTIONS"])
+    def expedicao_sync_status():
+        """CRON/manual: le a fila de expedicao (ML, status != enviado/cancelado), pergunta ao
+        ML o status REAL de cada pedido e atualiza o banco (enviado/cancelado). Roda no
+        servidor, entao a fila se atualiza sozinha mesmo sem ninguem abrir a tela."""
+        if request.method == "OPTIONS":
+            return _cors()
+        H = _sb_headers()
+        try:
+            rf = requests.get(
+                f"{SB_URL}/rest/v1/expedicao"
+                "?marketplace=eq.ml&status=not.in.(enviado,cancelado)"
+                "&select=id,pedido_mkt,conta&order=criado_em.asc&limit=200",
+                headers=H, timeout=30)
+            fila = rf.json() if rf.status_code == 200 else []
+        except Exception as e:
+            rr = jsonify({"ok": False, "erro": "fila: " + str(e)[:120]})
+            rr.headers["Access-Control-Allow-Origin"] = "*"
+            return rr
+        pedidos = [{"order_id": str(p.get("pedido_mkt")), "conta": p.get("conta") or "default"}
+                   for p in (fila if isinstance(fila, list) else []) if p.get("pedido_mkt")]
+        env = canc = 0
+        if pedidos:
+            try:
+                rs = requests.post(f"{SELF_BASE}/integracoes/ml-status-pedidos",
+                                   json={"pedidos": pedidos}, timeout=180)
+                results = rs.json().get("results", []) if rs.status_code == 200 else []
+            except Exception:
+                results = []
+            by_oid = {str(r.get("order_id")): r for r in results}
+            for p in fila:
+                res = by_oid.get(str(p.get("pedido_mkt")))
+                if not res:
+                    continue
+                pid = p.get("id")
+                if res.get("status") == "enviado":
+                    requests.patch(f"{SB_URL}/rest/v1/expedicao?id=eq.{pid}",
+                                   headers={**H, "Content-Type": "application/json"},
+                                   json={"status": "enviado", "enviado_por": "auto (cron ML)",
+                                         "enviado_em": datetime.utcnow().isoformat()}, timeout=20)
+                    env += 1
+                elif res.get("status") == "cancelado":
+                    requests.patch(f"{SB_URL}/rest/v1/expedicao?id=eq.{pid}",
+                                   headers={**H, "Content-Type": "application/json"},
+                                   json={"status": "cancelado"}, timeout=20)
+                    canc += 1
+        r = jsonify({"ok": True, "verificados": len(pedidos), "enviados": env, "cancelados": canc})
+        r.headers["Access-Control-Allow-Origin"] = "*"
+        return r
+
     @bp.route("/integracoes/ml-nota", methods=["GET", "OPTIONS"])
     def ml_nota():
         """SERVE o DANFE (PDF) ou XML da nota fiscal emitida de um pedido ML.
