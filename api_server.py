@@ -9687,6 +9687,26 @@ CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
         t.start()
         print("[STARTUP] cron Shopee etiquetas ativo (pre-gera a cada 15 min)")
 
+    def _cron_keepalive_loop():
+        """Thread: a cada 4 min faz uma consulta levissima ao Supabase pra o banco (plano free)
+        nao 'dormir'. Sem isso, a 1a tela do dia leva ~15-20s (cold start); com isso, abre rapido."""
+        import threading
+        def _loop():
+            time.sleep(30)  # espera o servidor subir
+            while True:
+                try:
+                    requests.get(
+                        f"{_WRX_SB_URL}/rest/v1/dx_config?select=chave&limit=1",
+                        headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}"},
+                        timeout=30,
+                    )
+                except Exception as _e:
+                    print(f"[CRON-KEEPALIVE] erro: {_e}")
+                time.sleep(240)  # 4 minutos
+        t = threading.Thread(target=_loop, daemon=True)
+        t.start()
+        print("[STARTUP] cron keep-alive Supabase ativo (a cada 4 min, evita cold start)")
+
     def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace") if hasattr(sys.stdout, "reconfigure") else None
         print(f"WRX-Search API Server - porta {PORT}")
@@ -9697,6 +9717,7 @@ CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
         _cron_whatsapp_loop()
         _cron_shopee_etiquetas_loop()
         _cron_expedicao_loop()
+        _cron_keepalive_loop()
         app.run(host=host, port=PORT, debug=False, threaded=True)
 
 else:
