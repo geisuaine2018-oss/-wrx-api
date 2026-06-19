@@ -7422,18 +7422,17 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             if _rdsp.status_code == 200 and _rdsp.json():
                 _vdsp = _rdsp.json()[0].get("valor")
                 if isinstance(_vdsp, dict):
-                    _disp_map = dict(_vdsp)
+                    # valor por (fone|peca) = LISTA de funcionários que JÁ receberam o aviso hoje.
+                    # registro antigo (valor string/pid) → trata como "todos já avisados" (não repete).
+                    for _k, _v in _vdsp.items():
+                        _disp_map[_k] = list(_v) if isinstance(_v, list) else list(FUNCS_PEDIDO.keys())
         except Exception:
             pass
         def _disp_key(pp):
             fone = "".join(ch for ch in str(pp.get("phone") or "") if ch.isdigit())
             peca = " ".join(str(pp.get("peca") or "").lower().split())
             return (fone or ("id:" + str(pp.get("id") or ""))) + "|" + peca
-        def _disp_registrar(pp, pid_dono):
-            k = _disp_key(pp)
-            if _disp_map.get(k) == pid_dono:
-                return
-            _disp_map[k] = pid_dono
+        def _disp_salvar():
             try:
                 requests.post(
                     f"{_WRX_SB_URL}/rest/v1/dx_config",
@@ -7468,11 +7467,12 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 continue
             if pid not in pids_ativos:                   # pedido repetido do mesmo número
                 continue
-            # já existe um pedido com o MESMO número + peça avisado hoje (id diferente)? não repete.
-            _dono = _disp_map.get(_disp_key(p))
-            if _dono and _dono != pid:
-                continue
-            ja = set(estado.get(pid, []))
+            # CONTROLE DURÁVEL (no banco) de quem JÁ recebeu este (número+peça) hoje — sobrevive a
+            # restart do servidor (o estado local some no restart e fazia re-disparar = o bug dos 4x).
+            # Soma com o estado local. Respeita as janelas: quem ainda não recebeu continua recebendo.
+            _k = _disp_key(p)
+            ja_dur = set(_disp_map.get(_k) or [])
+            ja = set(estado.get(pid, [])) | ja_dur
             alvos = [e for e in abertos if e not in ja]
             if not alvos:
                 continue
@@ -7517,6 +7517,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 ok, _ = _waha_enviar(FUNCS_PEDIDO[e], msg)
                 if ok:
                     enviados_pedido += 1
+                    ja_dur.add(e)   # registra no controle DURÁVEL quem recebeu (não repete após restart)
                 else:
                     # WAHA recusou antes de aceitar: libera para tentar no próximo ciclo.
                     ja.discard(e)
@@ -7526,7 +7527,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     except Exception as save_err:
                         print(f"[PEDIDOS-MANHA] falha ao liberar pedido={pid} alvo={e}: {save_err}")
             if enviados_pedido:
-                _disp_registrar(p, pid)   # marca (número+peça) como já avisado hoje → não repete
+                _disp_map[_k] = sorted(ja_dur)   # persiste no banco QUEM já recebeu este (número+peça)
+                _disp_salvar()
                 try:
                     requests.patch(
                         f"{_WRX_SB_URL}/rest/v1/pedidos",
