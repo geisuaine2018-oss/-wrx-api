@@ -2942,6 +2942,81 @@ if USE_FLASK:
             "oauth_url_geisa": "/integracoes/mercadolivre/oauth?conta=geisa",
         })
 
+    # NF-e: baixa em lote os XMLs das notas que o ML emitiu num periodo (fluxo mensal pro contador).
+    # O ML so retorna XML se a conta emite NF-e pelo Faturador do ML.
+    #   GET .../nfe?conta=default&start=AAAAMMDD&end=AAAAMMDD              -> valida/relata (JSON)
+    #   GET .../nfe?conta=default&start=...&end=...&download=1            -> baixa o .zip (XML+PDF)
+    @app.route("/integracoes/mercadolivre/nfe", methods=["GET", "OPTIONS"])
+    def ml_nfe():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        import re as _re_nfe
+        conta = request.args.get("conta", "default")
+        start = request.args.get("start", "")
+        end = request.args.get("end", "")
+        if not _re_nfe.fullmatch(r"\d{8}", start) or not _re_nfe.fullmatch(r"\d{8}", end):
+            return jsonify({"erro": "Informe start e end no formato AAAAMMDD. Ex.: ?start=20260501&end=20260531"}), 400
+        baixar = request.args.get("download") == "1"
+
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"erro": f"conta '{conta}' nao autorizada no ML"}), 401
+
+        # user_id da conta (o OAuth ja guarda; fallback /users/me)
+        tokens = _ml_load_tokens()
+        user_id = str(tokens.get(conta, {}).get("user_id", "") or "")
+        if not user_id:
+            try:
+                me = requests.get("https://api.mercadolibre.com/users/me",
+                                  headers={"Authorization": f"Bearer {token}"}, timeout=10).json()
+                user_id = str(me.get("id", ""))
+            except Exception as e:
+                return jsonify({"erro": f"falha ao obter user_id: {e}"}), 502
+        if not user_id:
+            return jsonify({"erro": "user_id da conta indisponivel"}), 502
+
+        url = (
+            f"https://api.mercadolibre.com/users/{user_id}/invoices/sites/MLB/batch_request/period/stream"
+            f"?start={start}&end={end}&sale=all&return=all&full=all&others=all"
+            f"&file_types=xml,pdf&simple_folder=false"
+        )
+        try:
+            r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=120)
+        except Exception as e:
+            return jsonify({"erro": f"falha na chamada ao ML: {e}"}), 502
+
+        ct = r.headers.get("Content-Type", "")
+        # ML respondeu erro (JSON) em vez do pacote de notas
+        if r.status_code != 200 or "application/json" in ct:
+            try:
+                detalhe = r.json()
+            except Exception:
+                detalhe = r.text[:500]
+            return jsonify({
+                "ok": False,
+                "ml_status": r.status_code,
+                "aviso": "O ML nao retornou o pacote de notas. Causa provavel: a conta nao emite NF-e pelo Faturador do ML nesse periodo, ou nao ha notas no intervalo.",
+                "detalhe": detalhe,
+            })
+
+        conteudo = r.content
+        if baixar:
+            return Response(conteudo, headers={
+                "Content-Type": ct or "application/zip",
+                "Content-Disposition": f'attachment; filename="notas-ml-{conta}-{start}-{end}.zip"',
+                "Access-Control-Allow-Origin": "*",
+            })
+        return jsonify({
+            "ok": True,
+            "conta": conta,
+            "periodo": {"start": start, "end": end},
+            "user_id": user_id,
+            "content_type": ct,
+            "bytes": len(conteudo),
+            "dica": (f"Pacote recebido ({len(conteudo)} bytes). Acrescente &download=1 na URL para baixar o .zip."
+                     if conteudo else "Resposta vazia — provavelmente nao ha notas emitidas pelo ML nesse periodo."),
+        })
+
     @app.route("/integracoes/mercadolivre/debug-token")
     def ml_debug_token():
         conta = request.args.get("conta", "default")
