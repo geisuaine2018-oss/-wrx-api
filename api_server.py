@@ -8263,16 +8263,21 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         def _worker():
             resultados = {}
             for plat, payload in alvos:
-                try:
-                    if simular:
-                        time.sleep(0.4)
-                        resultados[plat] = {"ok": True, "simulado": True}
-                    else:
-                        r = requests.post(f"http://127.0.0.1:{PORT}/integracoes/{plat}/publicar",
-                                          json=payload, timeout=300)
-                        resultados[plat] = {"ok": bool(r.ok), "status": r.status_code, "resp": (r.text or "")[:400]}
-                except Exception as e:
-                    resultados[plat] = {"ok": False, "erro": str(e)}
+                # cada plataforma pode ter VARIOS anuncios (Shopee=8, ML=N planos, OLX=1)
+                itens = payload if isinstance(payload, list) else [payload]
+                res = []
+                for item in itens:
+                    try:
+                        if simular:
+                            time.sleep(0.2)
+                            res.append({"ok": True, "simulado": True})
+                        else:
+                            r = requests.post(f"http://127.0.0.1:{PORT}/integracoes/{plat}/publicar",
+                                              json=item, timeout=300)
+                            res.append({"ok": bool(r.ok), "status": r.status_code, "resp": (r.text or "")[:300]})
+                    except Exception as e:
+                        res.append({"ok": False, "erro": str(e)})
+                resultados[plat] = {"total": len(itens), "ok": sum(1 for x in res if x.get("ok")), "itens": res}
                 _pubjob_set(job_id, {"sku": sku, "quem": quem, "status": "publicando",
                                      "simular": simular, "plataformas": plats, "resultados": resultados})
             _pubjob_set(job_id, {"sku": sku, "quem": quem, "status": "concluido",
