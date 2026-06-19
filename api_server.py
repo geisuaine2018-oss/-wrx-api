@@ -7405,6 +7405,44 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         ids_atuais = {str(p.get("id")) for p in rows if p.get("id")}
         estado = {k: v for k, v in estado.items() if k in ids_atuais}   # prune antigos
 
+        # ── Trava anti-repetição: 1 aviso por (NÚMERO + PEÇA) por DIA ───────────
+        #   Cada (fone|peca) vira "dono" de UM pedido no dia. Pedido DUPLICADO (mesmo
+        #   número e mesma peça, id diferente) NÃO dispara de novo — corrige o bot
+        #   avisando o mesmo pedido 4x. Pedido de PEÇA DIFERENTE do mesmo cliente passa
+        #   normal (não perde venda). Durável em dx_config (sobrevive a reinício do
+        #   Railway). Fail-open: se o Supabase falhar, _disp_map fica vazio e não bloqueia.
+        _disp_dia = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 3 * 3600))  # data BR
+        _disp_chave = "pddisp:" + _disp_dia
+        _disp_map = {}
+        try:
+            _rdsp = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/dx_config",
+                params={"chave": f"eq.{_disp_chave}", "select": "valor"},
+                headers=_wrx_headers(), timeout=12)
+            if _rdsp.status_code == 200 and _rdsp.json():
+                _vdsp = _rdsp.json()[0].get("valor")
+                if isinstance(_vdsp, dict):
+                    _disp_map = dict(_vdsp)
+        except Exception:
+            pass
+        def _disp_key(pp):
+            fone = "".join(ch for ch in str(pp.get("phone") or "") if ch.isdigit())
+            peca = " ".join(str(pp.get("peca") or "").lower().split())
+            return (fone or ("id:" + str(pp.get("id") or ""))) + "|" + peca
+        def _disp_registrar(pp, pid_dono):
+            k = _disp_key(pp)
+            if _disp_map.get(k) == pid_dono:
+                return
+            _disp_map[k] = pid_dono
+            try:
+                requests.post(
+                    f"{_WRX_SB_URL}/rest/v1/dx_config",
+                    headers={**_wrx_headers(), "Content-Type": "application/json",
+                             "Prefer": "resolution=merge-duplicates,return=minimal"},
+                    json={"chave": _disp_chave, "valor": _disp_map}, timeout=12)
+            except Exception as _edsp:
+                print(f"[PEDIDOS-MANHA] falha ao gravar trava disparo: {_edsp}")
+
         # ── 1 disparo por NÚMERO enquanto tiver pedido aberto ──────────────────
         #   rows vem ordenado por criado_em.asc. Para cada telefone só UM pedido
         #   pode disparar: o que já começou a ser avisado (está no estado) ou,
@@ -7429,6 +7467,10 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             if not pid or not peca:
                 continue
             if pid not in pids_ativos:                   # pedido repetido do mesmo número
+                continue
+            # já existe um pedido com o MESMO número + peça avisado hoje (id diferente)? não repete.
+            _dono = _disp_map.get(_disp_key(p))
+            if _dono and _dono != pid:
                 continue
             ja = set(estado.get(pid, []))
             alvos = [e for e in abertos if e not in ja]
@@ -7484,6 +7526,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     except Exception as save_err:
                         print(f"[PEDIDOS-MANHA] falha ao liberar pedido={pid} alvo={e}: {save_err}")
             if enviados_pedido:
+                _disp_registrar(p, pid)   # marca (número+peça) como já avisado hoje → não repete
                 try:
                     requests.patch(
                         f"{_WRX_SB_URL}/rest/v1/pedidos",
