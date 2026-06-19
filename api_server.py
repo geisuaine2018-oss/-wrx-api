@@ -3416,6 +3416,25 @@ if USE_FLASK:
             off += 1000
             if off > 300000:
                 break
+        # ALÉM dos locais já em uso, inclui os locais CADASTRADOS na tela "Gestão de Locais"
+        # (salvos em dx_config chave 'locais_estoque_v1'), pra aparecerem no picker mesmo
+        # sem nenhuma peça ainda — senão vira ovo-e-galinha (não aparece pra poder usar).
+        try:
+            rc = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/dx_config?chave=eq.locais_estoque_v1&select=valor",
+                headers=_wrx_headers(), timeout=15)
+            if rc.status_code == 200 and rc.json():
+                valor = rc.json()[0].get("valor") or {}
+                for l in (valor.get("locais") or []):
+                    if l.get("active") is False:
+                        continue
+                    partes = [str(l.get(k) or "").strip()
+                              for k in ("yard", "corridor", "section", "shelf", "position", "slot", "box")]
+                    partes = [p for p in partes if p]
+                    if partes:
+                        locs.add(" → ".join(partes))
+        except Exception:
+            pass
         return jsonify({"ok": True, "locais": sorted(locs)})
 
     @app.route("/peca-info", methods=["GET", "OPTIONS"])
