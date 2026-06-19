@@ -8226,6 +8226,76 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 out["compat_err_" + path.split("/")[-1]] = str(e)
         return jsonify(out)
 
+    # === #4 ORQUESTRADOR: publica em TODAS as plataformas EM BACKGROUND (no servidor) ===
+    # Recebe os payloads JA MONTADOS pelo front e repassa pros endpoints que ja existem,
+    # em sequencia (ML -> Shopee -> OLX). Roda em thread daemon: NAO para se a aba fechar.
+    # body: { sku, quem, simular:bool, mercadolivre:{...}|None, shopee:{...}|None, olx:{...}|None }
+    # simular=True NAO publica de verdade (so registra os passos) — pra testar com seguranca.
+    def _pubjob_set(job_id, data):
+        try:
+            requests.post(
+                f"{_WRX_SB_URL}/rest/v1/dx_config",
+                headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"},
+                json={"chave": "pubjob:" + str(job_id), "valor": data}, timeout=15,
+            )
+        except Exception as _e:
+            print(f"[PUBLICAR-TUDO] erro ao gravar status: {_e}")
+
+    @app.route("/integracoes/publicar-tudo", methods=["POST", "OPTIONS"])
+    def publicar_tudo():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        body = request.get_json(force=True, silent=True) or {}
+        simular = bool(body.get("simular", False))
+        sku = str(body.get("sku") or "")
+        quem = str(body.get("quem") or "")
+        alvos = []  # ordem fixa: ML, depois Shopee, depois OLX
+        for plat in ("mercadolivre", "shopee", "olx"):
+            if body.get(plat) is not None:
+                alvos.append((plat, body.get(plat)))
+        if not alvos:
+            return jsonify({"ok": False, "erro": "nenhuma plataforma no pacote"}), 400
+        job_id = (sku or "s") + "-" + str(int(time.time() * 1000))
+        plats = [a[0] for a in alvos]
+        _pubjob_set(job_id, {"sku": sku, "quem": quem, "status": "iniciando",
+                             "simular": simular, "plataformas": plats, "resultados": {}})
+
+        def _worker():
+            resultados = {}
+            for plat, payload in alvos:
+                try:
+                    if simular:
+                        time.sleep(0.4)
+                        resultados[plat] = {"ok": True, "simulado": True}
+                    else:
+                        r = requests.post(f"http://127.0.0.1:{PORT}/integracoes/{plat}/publicar",
+                                          json=payload, timeout=300)
+                        resultados[plat] = {"ok": bool(r.ok), "status": r.status_code, "resp": (r.text or "")[:400]}
+                except Exception as e:
+                    resultados[plat] = {"ok": False, "erro": str(e)}
+                _pubjob_set(job_id, {"sku": sku, "quem": quem, "status": "publicando",
+                                     "simular": simular, "plataformas": plats, "resultados": resultados})
+            _pubjob_set(job_id, {"sku": sku, "quem": quem, "status": "concluido",
+                                 "simular": simular, "plataformas": plats, "resultados": resultados})
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return jsonify({"ok": True, "job_id": job_id, "simular": simular, "plataformas": plats})
+
+    @app.route("/integracoes/publicar-tudo/status", methods=["GET", "OPTIONS"])
+    def publicar_tudo_status():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        job_id = request.args.get("job_id", "")
+        try:
+            r = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/dx_config?chave=eq.pubjob:{job_id}&select=valor",
+                headers=_wrx_headers(), timeout=15,
+            )
+            rows = r.json() if r.ok else []
+            return jsonify(rows[0]["valor"] if rows else {"status": "desconhecido"})
+        except Exception as e:
+            return jsonify({"status": "erro", "erro": str(e)})
+
     @app.route("/integracoes/shopee/publicar", methods=["POST", "OPTIONS"])
     def shopee_publicar():
         if request.method == "OPTIONS":
