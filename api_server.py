@@ -2733,6 +2733,38 @@ if USE_FLASK:
             pass
         return {}
 
+    # Config generica no user_metadata do Supabase (merge — nao apaga wrx_ml_tokens)
+    def _ph_save_meta(key, value):
+        jwt = _ph_get_jwt()
+        if not jwt:
+            return False
+        try:
+            r = requests.put(
+                f"https://{_PH_HOST}/auth/v1/user",
+                json={"data": {key: value}},
+                headers={"apikey": _PH_ANON, "Authorization": f"Bearer {jwt}", "Content-Type": "application/json"},
+                timeout=15
+            )
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def _ph_load_meta(key, default=None):
+        jwt = _ph_get_jwt()
+        if not jwt:
+            return default
+        try:
+            _r = requests.get(
+                f"https://{_PH_HOST}/auth/v1/user",
+                headers={"apikey": _PH_ANON, "Authorization": f"Bearer {jwt}"},
+                timeout=10
+            )
+            if _r.status_code == 200:
+                return _r.json().get("user_metadata", {}).get(key, default)
+        except Exception:
+            pass
+        return default
+
     def _ml_load_tokens():
         global _ml_tokens_mem
         if _ml_tokens_mem:
@@ -2942,10 +2974,47 @@ if USE_FLASK:
             "oauth_url_geisa": "/integracoes/mercadolivre/oauth?conta=geisa",
         })
 
-    # NF-e: baixa em lote os XMLs das notas que o ML emitiu num periodo (fluxo mensal pro contador).
-    # O ML so retorna XML se a conta emite NF-e pelo Faturador do ML.
-    #   GET .../nfe?conta=default&start=AAAAMMDD&end=AAAAMMDD              -> valida/relata (JSON)
-    #   GET .../nfe?conta=default&start=...&end=...&download=1            -> baixa o .zip (XML+PDF)
+    # Baixa o pacote (zip XML+PDF) de NF-e do periodo para UMA conta. Retorna dict:
+    #   sucesso -> {"ok": True, "conteudo": <bytes>, "content_type": str, "user_id": str}
+    #   falha   -> {"ok": False, "erro": str, "http": int, "detalhe": ...}
+    def _ml_baixar_nfe_zip(conta, start, end):
+        token = _ml_get_user_token(conta)
+        if not token:
+            return {"ok": False, "conta": conta, "erro": f"conta '{conta}' nao autorizada no ML", "http": 401}
+        tokens = _ml_load_tokens()
+        user_id = str(tokens.get(conta, {}).get("user_id", "") or "")
+        if not user_id:
+            try:
+                me = requests.get("https://api.mercadolibre.com/users/me",
+                                  headers={"Authorization": f"Bearer {token}"}, timeout=10).json()
+                user_id = str(me.get("id", ""))
+            except Exception as e:
+                return {"ok": False, "conta": conta, "erro": f"falha ao obter user_id: {e}", "http": 502}
+        if not user_id:
+            return {"ok": False, "conta": conta, "erro": "user_id da conta indisponivel", "http": 502}
+        url = (
+            f"https://api.mercadolibre.com/users/{user_id}/invoices/sites/MLB/batch_request/period/stream"
+            f"?start={start}&end={end}&sale=all&return=all&full=all&others=all"
+            f"&file_types=xml,pdf&simple_folder=false"
+        )
+        try:
+            r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=120)
+        except Exception as e:
+            return {"ok": False, "conta": conta, "erro": f"falha na chamada ao ML: {e}", "http": 502}
+        ct = r.headers.get("Content-Type", "")
+        if r.status_code != 200 or "application/json" in ct:
+            try:
+                detalhe = r.json()
+            except Exception:
+                detalhe = r.text[:500]
+            return {"ok": False, "conta": conta, "http": r.status_code,
+                    "erro": "ML nao retornou pacote de notas (Faturador inativo ou sem notas no periodo)",
+                    "detalhe": detalhe}
+        return {"ok": True, "conta": conta, "conteudo": r.content, "content_type": ct, "user_id": user_id}
+
+    # NF-e: valida/baixa os XMLs que o ML emitiu num periodo (fluxo mensal pro contador).
+    #   GET .../nfe?conta=default&start=AAAAMMDD&end=AAAAMMDD             -> valida/relata (JSON)
+    #   GET .../nfe?conta=default&start=...&end=...&download=1           -> baixa o .zip (XML+PDF)
     @app.route("/integracoes/mercadolivre/nfe", methods=["GET", "OPTIONS"])
     def ml_nfe():
         if request.method == "OPTIONS":
@@ -2958,51 +3027,17 @@ if USE_FLASK:
             return jsonify({"erro": "Informe start e end no formato AAAAMMDD. Ex.: ?start=20260501&end=20260531"}), 400
         baixar = request.args.get("download") == "1"
 
-        token = _ml_get_user_token(conta)
-        if not token:
-            return jsonify({"erro": f"conta '{conta}' nao autorizada no ML"}), 401
+        res = _ml_baixar_nfe_zip(conta, start, end)
+        if not res["ok"]:
+            if res.get("http") == 401:
+                return jsonify({"erro": res["erro"]}), 401
+            return jsonify({"ok": False, "ml_status": res.get("http"), "aviso": res["erro"],
+                            "detalhe": res.get("detalhe")})
 
-        # user_id da conta (o OAuth ja guarda; fallback /users/me)
-        tokens = _ml_load_tokens()
-        user_id = str(tokens.get(conta, {}).get("user_id", "") or "")
-        if not user_id:
-            try:
-                me = requests.get("https://api.mercadolibre.com/users/me",
-                                  headers={"Authorization": f"Bearer {token}"}, timeout=10).json()
-                user_id = str(me.get("id", ""))
-            except Exception as e:
-                return jsonify({"erro": f"falha ao obter user_id: {e}"}), 502
-        if not user_id:
-            return jsonify({"erro": "user_id da conta indisponivel"}), 502
-
-        url = (
-            f"https://api.mercadolibre.com/users/{user_id}/invoices/sites/MLB/batch_request/period/stream"
-            f"?start={start}&end={end}&sale=all&return=all&full=all&others=all"
-            f"&file_types=xml,pdf&simple_folder=false"
-        )
-        try:
-            r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=120)
-        except Exception as e:
-            return jsonify({"erro": f"falha na chamada ao ML: {e}"}), 502
-
-        ct = r.headers.get("Content-Type", "")
-        # ML respondeu erro (JSON) em vez do pacote de notas
-        if r.status_code != 200 or "application/json" in ct:
-            try:
-                detalhe = r.json()
-            except Exception:
-                detalhe = r.text[:500]
-            return jsonify({
-                "ok": False,
-                "ml_status": r.status_code,
-                "aviso": "O ML nao retornou o pacote de notas. Causa provavel: a conta nao emite NF-e pelo Faturador do ML nesse periodo, ou nao ha notas no intervalo.",
-                "detalhe": detalhe,
-            })
-
-        conteudo = r.content
+        conteudo = res["conteudo"]
         if baixar:
             return Response(conteudo, headers={
-                "Content-Type": ct or "application/zip",
+                "Content-Type": res.get("content_type") or "application/zip",
                 "Content-Disposition": f'attachment; filename="notas-ml-{conta}-{start}-{end}.zip"',
                 "Access-Control-Allow-Origin": "*",
             })
@@ -3010,12 +3045,88 @@ if USE_FLASK:
             "ok": True,
             "conta": conta,
             "periodo": {"start": start, "end": end},
-            "user_id": user_id,
-            "content_type": ct,
+            "user_id": res.get("user_id"),
+            "content_type": res.get("content_type"),
             "bytes": len(conteudo),
             "dica": (f"Pacote recebido ({len(conteudo)} bytes). Acrescente &download=1 na URL para baixar o .zip."
                      if conteudo else "Resposta vazia — provavelmente nao ha notas emitidas pelo ML nesse periodo."),
         })
+
+    # E-mail do contador (cadastro editavel pela tela). GET le, POST salva.
+    @app.route("/integracoes/contador/email", methods=["GET", "POST", "OPTIONS"])
+    def contador_email():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        if request.method == "GET":
+            return jsonify({"email": _ph_load_meta("wrx_contador_email", "") or ""})
+        import re as _re_em
+        body = request.get_json(silent=True) or {}
+        email = (body.get("email") or "").strip()
+        if email and not _re_em.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+            return jsonify({"erro": "e-mail invalido"}), 400
+        ok = _ph_save_meta("wrx_contador_email", email)
+        return jsonify({"ok": ok, "email": email})
+
+    # Envia os XMLs do periodo pro contador por e-mail (Gmail SMTP). Disparo manual.
+    #   POST .../nfe/enviar  body: {start, end, email?, contas?}
+    @app.route("/integracoes/mercadolivre/nfe/enviar", methods=["POST", "OPTIONS"])
+    def ml_nfe_enviar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        import re as _re_env
+        body = request.get_json(silent=True) or {}
+        start = str(body.get("start", ""))
+        end = str(body.get("end", ""))
+        if not _re_env.fullmatch(r"\d{8}", start) or not _re_env.fullmatch(r"\d{8}", end):
+            return jsonify({"erro": "Informe start e end no formato AAAAMMDD"}), 400
+        contas = body.get("contas") or ["default", "geisa"]
+        email = (body.get("email") or _ph_load_meta("wrx_contador_email", "") or "").strip()
+        if not email:
+            return jsonify({"erro": "e-mail do contador nao informado nem cadastrado"}), 400
+
+        gmail_user = os.environ.get("GMAIL_USER", "").strip()
+        gmail_pass = os.environ.get("GMAIL_APP_PASSWORD", "").strip()
+        if not gmail_user or not gmail_pass:
+            return jsonify({"erro": "GMAIL_USER / GMAIL_APP_PASSWORD nao configurados no servidor"}), 500
+
+        anexos, resumo = [], []
+        for conta in contas:
+            res = _ml_baixar_nfe_zip(conta, start, end)
+            if res["ok"] and res.get("conteudo"):
+                anexos.append((f"notas-ml-{conta}-{start}-{end}.zip", res["conteudo"]))
+                resumo.append({"conta": conta, "bytes": len(res["conteudo"]), "anexado": True})
+            else:
+                resumo.append({"conta": conta, "anexado": False, "motivo": res.get("erro", "vazio")})
+        if not anexos:
+            return jsonify({"ok": False, "erro": "nenhuma nota encontrada para anexar no periodo", "resumo": resumo})
+
+        import smtplib
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        from email.mime.application import MIMEApplication
+        _per = f"{start[6:8]}/{start[4:6]}/{start[0:4]} a {end[6:8]}/{end[4:6]}/{end[0:4]}"
+        msg = MIMEMultipart()
+        msg["From"] = gmail_user
+        msg["To"] = email
+        msg["Subject"] = f"Notas fiscais (XML) — periodo {_per}"
+        corpo = ("Ola,\n\nSeguem em anexo os XMLs e DANFEs das notas fiscais emitidas no Mercado Livre no periodo "
+                 f"{_per}.\n\n" + "\n".join(f"- {n} ({len(c)//1024} KB)" for n, c in anexos)
+                 + "\n\nEnviado pelo sistema WRX.")
+        msg.attach(MIMEText(corpo, "plain", "utf-8"))
+        for nome, conteudo in anexos:
+            part = MIMEApplication(conteudo, _subtype="zip")
+            part.add_header("Content-Disposition", "attachment", filename=nome)
+            msg.attach(part)
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=60) as s:
+                s.login(gmail_user, gmail_pass)
+                s.sendmail(gmail_user, [email], msg.as_string())
+        except Exception as e:
+            return jsonify({"ok": False, "erro": f"falha ao enviar e-mail: {e}", "resumo": resumo}), 502
+
+        if body.get("email"):
+            _ph_save_meta("wrx_contador_email", email)
+        return jsonify({"ok": True, "enviado_para": email, "periodo": _per, "resumo": resumo})
 
     @app.route("/integracoes/mercadolivre/debug-token")
     def ml_debug_token():
@@ -5293,6 +5404,133 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 erros.append(f"{conta}: {_e}")
         vendas.sort(key=lambda x: x.get("data", ""), reverse=True)
         return jsonify({"ok": True, "vendas": vendas, "total": len(vendas), "erros": erros})
+
+    # Mapa: sub_status do ML -> causa legível + o que fazer pra reativar
+    _ML_SUBSTATUS_INFO = {
+        "out_of_stock":             ("Sem estoque", "Reponha a quantidade (maior que 0) e reative o anúncio."),
+        "under_review":             ("Em revisão pelo Mercado Livre", "Aguarde a revisão do ML ou ajuste o que foi solicitado."),
+        "waiting_for_patch":        ("Aguardando correção", "O ML pediu correções no anúncio; ajuste os dados e reenvie."),
+        "suspended":                ("Suspenso por infração", "Revise título, descrição, fotos e as políticas do ML, depois recorra/reative."),
+        "deleted":                  ("Excluído", "Anúncio excluído no ML; precisa ser recriado."),
+        "expired":                  ("Expirado", "Anúncio vencido; republique para voltar ao ar."),
+        "freezed":                  ("Congelado pelo ML", "Verifique pendências da conta/reputação no Mercado Livre."),
+        "picture_download_pending": ("Processando imagens", "Aguarde o ML terminar de processar as fotos."),
+        "forbidden":                ("Produto não permitido", "Produto/categoria não permitido; revise a categoria ou o item."),
+        "inactive":                 ("Inativo", "Anúncio inativo; revise os dados e reative."),
+    }
+
+    @app.route("/integracoes/mercadolivre/situacao", methods=["GET", "OPTIONS"])
+    def ml_situacao():
+        """Painel de SITUAÇÃO dos anúncios ML (todas as contas):
+        - Pausados (com a CAUSA = sub_status + o que fazer pra reativar)
+        - Sem estoque (sub_status out_of_stock OU quantidade 0)
+        - Vendidos e Cancelados (orders dos últimos ?dias=)
+        Defensivo: cada conta isolada em try/except, nunca derruba a resposta."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        try:
+            dias = int(request.args.get("dias", "30"))
+        except Exception:
+            dias = 30
+        tokens = _ml_load_tokens()
+        if not tokens:
+            return jsonify({"ok": False, "erro": "Mercado Livre nao autorizado"}), 401
+        from datetime import timedelta
+        date_from = (_datetime.utcnow() - timedelta(days=dias)).strftime("%Y-%m-%dT00:00:00.000-00:00")
+        pausados, sem_estoque, vendidos, cancelados = [], [], [], []
+        contas_info, erros = [], []
+        for conta in list(tokens.keys()):
+            token = _ml_get_user_token(conta)
+            if not token:
+                erros.append(f"{conta}: sem token")
+                continue
+            user_id = _ml_conta_user_id(conta, token)
+            if not user_id:
+                erros.append(f"{conta}: sem user_id")
+                continue
+            contas_info.append(conta)
+            # ── 1) PAUSADOS (paginado; separa sem-estoque) ──
+            try:
+                ids_paused = []
+                _off = 0
+                while _off < 1000:
+                    rs = requests.get(
+                        f"https://api.mercadolibre.com/users/{user_id}/items/search",
+                        params={"status": "paused", "limit": 50, "offset": _off},
+                        headers={"Authorization": f"Bearer {token}"}, timeout=15)
+                    if rs.status_code != 200:
+                        erros.append(f"{conta}: pausados HTTP {rs.status_code}")
+                        break
+                    dd = rs.json()
+                    res = dd.get("results", [])
+                    ids_paused.extend(res)
+                    if len(res) < 50:
+                        break
+                    _off += 50
+                for it in _ml_buscar_detalhes_lote(token, ids_paused):
+                    subs = it.get("sub_status") or []
+                    sub = subs[0] if subs else ""
+                    qty = it.get("available_quantity", 0)
+                    causa, acao = _ML_SUBSTATUS_INFO.get(
+                        sub, ("Pausado manualmente", "Reative quando quiser (pausa feita por você ou sem motivo informado pelo ML)."))
+                    item = {
+                        "conta": conta, "mlId": it.get("id", ""), "titulo": it.get("title", ""),
+                        "preco": it.get("price", 0), "estoque": qty, "sku": _ml_extrair_sku(it),
+                        "thumbnail": it.get("thumbnail", ""), "permalink": it.get("permalink", ""),
+                        "subStatus": sub, "causa": causa, "acao": acao,
+                    }
+                    if sub == "out_of_stock" or qty == 0:
+                        item["causa"], item["acao"] = _ML_SUBSTATUS_INFO["out_of_stock"]
+                        sem_estoque.append(item)
+                    else:
+                        pausados.append(item)
+            except Exception as _e:
+                erros.append(f"{conta}: pausados {_e}")
+            # ── 2) ORDERS (vendidos + cancelados) ──
+            try:
+                _off = 0
+                while _off < 400:
+                    ro = requests.get(
+                        "https://api.mercadolibre.com/orders/search",
+                        params={"seller": user_id, "sort": "date_desc", "limit": 50,
+                                "offset": _off, "order.date_created.from": date_from},
+                        headers={"Authorization": f"Bearer {token}"}, timeout=15)
+                    if ro.status_code != 200:
+                        erros.append(f"{conta}: orders HTTP {ro.status_code}")
+                        break
+                    do = ro.json()
+                    results = do.get("results", [])
+                    for o in results:
+                        itens = [{"titulo": i.get("item", {}).get("title", ""),
+                                   "sku": i.get("item", {}).get("seller_sku", ""),
+                                   "qty": i.get("quantity", 1),
+                                   "preco": i.get("unit_price", 0)} for i in o.get("order_items", [])]
+                        reg = {
+                            "conta": conta, "order_id": o.get("id"),
+                            "status": o.get("status", ""), "data": o.get("date_created", ""),
+                            "total": o.get("total_amount", 0),
+                            "comprador": o.get("buyer", {}).get("nickname", ""),
+                            "itens": itens,
+                        }
+                        if o.get("status") == "cancelled":
+                            cancelados.append(reg)
+                        elif o.get("status") in ("paid", "confirmed", "invoiced", "shipped", "delivered"):
+                            vendidos.append(reg)
+                    if len(results) < 50:
+                        break
+                    _off += 50
+            except Exception as _e:
+                erros.append(f"{conta}: orders {_e}")
+        for lst in (vendidos, cancelados):
+            lst.sort(key=lambda x: x.get("data", ""), reverse=True)
+        return jsonify({
+            "ok": True, "contas": contas_info, "dias": dias,
+            "pausados": pausados, "semEstoque": sem_estoque,
+            "vendidos": vendidos, "cancelados": cancelados,
+            "totais": {"pausados": len(pausados), "semEstoque": len(sem_estoque),
+                       "vendidos": len(vendidos), "cancelados": len(cancelados)},
+            "erros": erros,
+        })
 
     # ─── OLX ─────────────────────────────────────────────────────────────────────
     @app.route("/integracoes/olx/config", methods=["GET", "OPTIONS"])
