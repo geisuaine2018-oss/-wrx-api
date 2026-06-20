@@ -3678,6 +3678,35 @@ if USE_FLASK:
         mx = _max_sku_numerico()
         return jsonify({"ok": True, "ultimo": mx, "proximo": mx + 1})
 
+    def _subir_fotos_storage_cadastro(sku, fotos):
+        """Sobe fotos base64 (data:image) pro Supabase Storage (bucket fotos-pecas) e devolve
+        URLs públicas — igual o Criar Anúncio faz. URL http já pronta é mantida. Falha numa
+        foto não derruba as outras. Sem isso, o base64 era gravado cru na coluna (some no
+        cache do estoque e incha o banco)."""
+        import base64 as _b64, time as _time
+        from urllib.parse import quote as _quote
+        out = []
+        sku_safe = _quote(str(sku), safe="")
+        for i, f in enumerate((fotos or [])[:8]):
+            if not isinstance(f, str) or not f:
+                continue
+            if f.startswith("http"):
+                out.append(f); continue
+            if not f.startswith("data:image"):
+                continue
+            try:
+                raw = _b64.b64decode(f.split(",", 1)[1])
+                path = f"{sku_safe}/{int(_time.time()*1000)}_{i}.jpg"
+                up = requests.post(
+                    f"{_WRX_SB_URL}/storage/v1/object/fotos-pecas/{path}",
+                    headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}", "Content-Type": "image/jpeg"},
+                    data=raw, timeout=25)
+                if up.status_code in (200, 201):
+                    out.append(f"{_WRX_SB_URL}/storage/v1/object/public/fotos-pecas/{path}")
+            except Exception:
+                pass
+        return out
+
     @app.route("/cadastro-rapido", methods=["POST", "OPTIONS"])
     def cadastro_rapido():
         # Cadastro rápido (mobile) -> grava em pecas_estoque com origem='manual'
@@ -3700,12 +3729,16 @@ if USE_FLASK:
         fotos = d.get("fotos") or []
         if isinstance(fotos, str):
             fotos = [fotos]
+        # Sobe as fotos pro Storage e guarda URL (não base64): aparece no card e sobrevive ao cache.
+        fotos = _subir_fotos_storage_cadastro(sku, fotos)
         compat = d.get("compatibilidade") or []
         if isinstance(compat, str):
             compat = [c.strip() for c in compat.split(",") if c.strip()]
         row = {
             "sku": sku,
             "titulo": (d.get("titulo") or nome).strip(),
+            "cadastrado_em": _datetime.utcnow().isoformat() + "Z",  # sem isso a peça não entra nas "recentes" do estoque
+            "cadastrado_por": (d.get("cadastrado_por") or d.get("cadastradoPor") or d.get("usuario") or "").strip(),
             "oem": (d.get("oem") or "").strip(),
             "marca": (d.get("marca") or "").strip(),
             "modelo": (d.get("modelo") or "").strip(),
@@ -3733,7 +3766,7 @@ if USE_FLASK:
             if r.status_code in (200, 201, 204):
                 return jsonify({"ok": True, "sku": sku})
             # se falhou por coluna inexistente (medidas/origem), tenta sem os extras
-            base = {k: row[k] for k in ("sku", "titulo", "oem", "marca", "modelo", "ano", "preco", "qtd", "cond", "loc", "categoria", "fotos", "compatibilidade") if k in row}
+            base = {k: row[k] for k in ("sku", "titulo", "oem", "marca", "modelo", "ano", "preco", "qtd", "cond", "loc", "categoria", "fotos", "compatibilidade", "cadastrado_em", "cadastrado_por") if k in row}
             base["origem"] = "manual"
             r2 = requests.post(
                 f"{_WRX_SB_URL}/rest/v1/pecas_estoque?on_conflict=sku",
