@@ -2525,10 +2525,10 @@ if USE_FLASK:
                 "1. ORDEM: Produto (nome/tipo) + Modelo(s) + Motor + Lado + Ano. Comece SEMPRE pelo tipo da peca.\n"
                 "2. POR CATEGORIA: Mecanica e Eletrica = Produto + Modelos + MOTOR (obrigatorio) + Ano. Lataria, Farol/Lanterna e Acabamento interno = Produto + Modelo + LADO + Ano.\n"
                 "3. Liste TODOS os modelos compativeis (ex: Argo Cronos Pulse Fastback). NAO invente outros.\n"
-                "4. ANO no formato curto (ex 20/25), usando SOMENTE os anos dos veiculos compativeis. NUNCA invente.\n"
+                "4. ANO: quando SOBRAR espaco, escreva os anos por EXTENSO e completos (ex: '2015 2025' ou a faixa '2015 a 2025'). Use o formato curto (ex 20/25) SO quando o titulo ja estiver perto do limite. Use SOMENTE os anos dos veiculos compativeis. NUNCA invente.\n"
                 "5. CODIGO/OEM: inclua APENAS se for um codigo REAL. Se o codigo for '012345678' (e o generico de peca SEM OEM real), NUNCA coloque ele no titulo nem a palavra OEM — use a palavra 'Original' no lugar.\n"
-                "6. Marca so se sobrar espaco. NAO repita informacao. NAO desperdice caracteres com palavras inuteis.\n"
-                "7. Cada titulo com ATE 60 caracteres (limite Mercado Livre). Sem aspas, sem numeracao no inicio.\n"
+                "6. APROVEITE O ESPACO: o titulo deve ser o MAIS COMPLETO possivel dentro do limite. Quando sobrar espaco, INCLUA (nesta ordem de prioridade) a palavra 'Original' (se a peca nao tiver OEM real), a Marca, e os anos por extenso. Prefira SEMPRE um titulo completo a um curto. NAO repita informacao nem invente.\n"
+                "7. Cada titulo com ATE 60 caracteres (limite Mercado Livre) e use o MAXIMO desse limite — titulos completos, nunca curtos a toa. O 1o titulo deve ficar entre 52 e 60 caracteres. Sem aspas, sem numeracao no inicio.\n"
                 'Responda SOMENTE em JSON: {"titulos":["t1","t2","t3","t4","t5"]}'
             )
             data_ia = _gemini(key, prompt)  # funcao testada (usa thinkingBudget=0)
