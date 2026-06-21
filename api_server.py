@@ -2511,10 +2511,8 @@ if USE_FLASK:
                 ctx.append("Motorizacao: " + motor)
             if eixo or lado:
                 ctx.append("Posicao/Lado: " + (eixo + " " + lado).strip())
-            if oem:
-                ctx.append("Codigo/OEM: " + oem)
             if linhas_carros:
-                ctx.append("Veiculos compativeis (priorize estes, NAO invente outros): " + "; ".join(linhas_carros))
+                ctx.append("Veiculos compativeis (USE TODOS estes - marca, modelo e ano; NAO invente outros): " + "; ".join(linhas_carros))
             if descricao:
                 ctx.append("Descricao (use como apoio): " + descricao[:600])
             prompt = (
@@ -2522,13 +2520,13 @@ if USE_FLASK:
                 "Monte 5 titulos para a peca abaixo, do MAIS COMPLETO ao mais curto.\n\n"
                 "DADOS:\n- " + "\n- ".join(ctx) + "\n\n"
                 "REGRAS OBRIGATORIAS:\n"
-                "1. ORDEM: Produto (nome/tipo) + Modelo(s) + Motor + Lado + Ano. Comece SEMPRE pelo tipo da peca.\n"
-                "2. POR CATEGORIA: Mecanica e Eletrica = Produto + Modelos + MOTOR (obrigatorio) + Ano. Lataria, Farol/Lanterna e Acabamento interno = Produto + Modelo + LADO + Ano.\n"
-                "3. Liste TODOS os modelos compativeis (ex: Argo Cronos Pulse Fastback). NAO invente outros.\n"
-                "4. ANO: quando SOBRAR espaco, escreva os anos por EXTENSO e completos (ex: '2015 2025' ou a faixa '2015 a 2025'). Use o formato curto (ex 20/25) SO quando o titulo ja estiver perto do limite. Use SOMENTE os anos dos veiculos compativeis. NUNCA invente.\n"
-                "5. CODIGO/OEM: inclua APENAS se for um codigo REAL. Se o codigo for '012345678' (e o generico de peca SEM OEM real), NUNCA coloque ele no titulo nem a palavra OEM — use a palavra 'Original' no lugar.\n"
-                "6. APROVEITE O ESPACO: o titulo deve ser o MAIS COMPLETO possivel dentro do limite. Quando sobrar espaco, INCLUA (nesta ordem de prioridade) a palavra 'Original' (se a peca nao tiver OEM real), a Marca, e os anos por extenso. Prefira SEMPRE um titulo completo a um curto. NAO repita informacao nem invente.\n"
-                "7. Cada titulo com ATE 60 caracteres (limite Mercado Livre) e use o MAXIMO desse limite — titulos completos, nunca curtos a toa. O 1o titulo deve ficar entre 52 e 60 caracteres. Sem aspas, sem numeracao no inicio.\n"
+                "1. O PRINCIPAL e MARCA + MODELO(S) + ANO (NAO o codigo). O titulo gira em torno disso.\n"
+                "2. ORDEM: Produto (tipo da peca) + Marca + Modelo(s) + [Motor, se mecanica/eletrica | Lado, se lataria/farol/lanterna/acabamento] + ANOS. Comece pelo tipo da peca.\n"
+                "3. Liste TODAS as MARCAS e TODOS os MODELOS compativeis (ex: Fiat Argo Cronos Pulse). Se ha mais de uma marca, inclua todas. NAO invente, NAO omita.\n"
+                "4. SEMPRE inclua os ANOS dos compativeis (faixa, ex '2016 a 2022' ou '2016 2022'). Use SOMENTE anos reais dos veiculos compativeis. NUNCA invente. Se faltam anos e sobra espaco, ADICIONE os anos.\n"
+                "5. NAO coloque codigo, OEM nem SKU no titulo (nem numeros tipo 109053). O codigo NAO e o principal. Se a peca nao tem OEM real, pode usar a palavra 'Original'.\n"
+                "6. APROVEITE O ESPACO: titulo o MAIS COMPLETO possivel dentro do limite. Se sobrar espaco, inclua mais modelos, os anos por extenso, a palavra 'Original'. Prefira SEMPRE completo a curto. NAO repita nem invente.\n"
+                "7. Cada titulo com ATE 60 caracteres (limite Mercado Livre) e use o MAXIMO desse limite. O 1o titulo entre 52 e 60 caracteres. Sem aspas, sem numeracao no inicio.\n"
                 'Responda SOMENTE em JSON: {"titulos":["t1","t2","t3","t4","t5"]}'
             )
             data_ia = _gemini(key, prompt)  # funcao testada (usa thinkingBudget=0)
