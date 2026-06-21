@@ -2522,13 +2522,13 @@ if USE_FLASK:
                 "Monte 5 titulos para a peca abaixo, do MAIS COMPLETO ao mais curto.\n\n"
                 "DADOS:\n- " + "\n- ".join(ctx) + "\n\n"
                 "REGRAS OBRIGATORIAS:\n"
-                "1. Sempre comece pelo TIPO da peca + MARCA + MODELO (modelo e obrigatorio quando existir).\n"
-                "2. Se houver motorizacao (ex: 1.0 Turbo, 1.6 16V), inclua nos titulos mais completos.\n"
-                "3. Inclua o ANO no formato curto tipo 22/26 — use SOMENTE os anos dos veiculos compativeis. NUNCA invente ano.\n"
-                "4. Se houver lado/posicao (Dianteira/Traseira, Direita/Esquerda), inclua.\n"
-                "5. Pode incluir o codigo/OEM da peca, ou a palavra 'Original'.\n"
-                "6. Priorize os veiculos compativeis listados; NAO invente outros carros nem outras compatibilidades.\n"
-                "7. Cada titulo com ATE 90 caracteres. Sem aspas, sem numeracao no inicio.\n"
+                "1. ORDEM: Produto (nome/tipo) + Modelo(s) + Motor + Lado + Ano. Comece SEMPRE pelo tipo da peca.\n"
+                "2. POR CATEGORIA: Mecanica e Eletrica = Produto + Modelos + MOTOR (obrigatorio) + Ano. Lataria, Farol/Lanterna e Acabamento interno = Produto + Modelo + LADO + Ano.\n"
+                "3. Liste TODOS os modelos compativeis (ex: Argo Cronos Pulse Fastback). NAO invente outros.\n"
+                "4. ANO no formato curto (ex 20/25), usando SOMENTE os anos dos veiculos compativeis. NUNCA invente.\n"
+                "5. CODIGO/OEM: inclua APENAS se for um codigo REAL. Se o codigo for '012345678' (e o generico de peca SEM OEM real), NUNCA coloque ele no titulo nem a palavra OEM — use a palavra 'Original' no lugar.\n"
+                "6. Marca so se sobrar espaco. NAO repita informacao. NAO desperdice caracteres com palavras inuteis.\n"
+                "7. Cada titulo com ATE 60 caracteres (limite Mercado Livre). Sem aspas, sem numeracao no inicio.\n"
                 'Responda SOMENTE em JSON: {"titulos":["t1","t2","t3","t4","t5"]}'
             )
             data_ia = _gemini(key, prompt)  # funcao testada (usa thinkingBudget=0)
