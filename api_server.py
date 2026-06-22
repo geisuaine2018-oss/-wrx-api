@@ -7847,6 +7847,31 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             )
             enviados_pedido = 0
             for e in alvos:
+                # ── TRAVA ATÔMICA anti-duplicação entre WORKERS (corrige os "4 disparos") ──
+                # O cron roda em CADA worker do servidor; com vários workers, várias execuções liam
+                # a trava ao MESMO tempo (antes de qualquer uma gravar) e TODAS enviavam. Aqui cada
+                # (pedido+funcionário+dia) só pode ser INSERIDO 1x no banco (dx_config.chave é PK):
+                # o 1º worker cria (201) e envia; os concorrentes recebem 409 e NÃO reenviam.
+                _lock_chave = "pdsent:%s:%s:%s" % (_disp_dia, pid, e)
+                _dup = False
+                try:
+                    _rl = requests.post(
+                        f"{_WRX_SB_URL}/rest/v1/dx_config",
+                        headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"},
+                        json={"chave": _lock_chave, "valor": {"t": int(time.time())}},
+                        timeout=10)
+                    if _rl.status_code == 409:   # chave já existe = outro worker já reservou
+                        _dup = True
+                except Exception:
+                    pass
+                if _dup:
+                    # outro worker já disparou este aviso agora — marca como avisado e NÃO reenvia.
+                    ja.add(e); ja_dur.add(e); estado[pid] = list(ja)
+                    try:
+                        _pedidos_estado_save(state_file, estado)
+                    except Exception:
+                        pass
+                    continue
                 # Reserva antes do envio: se o processo cair depois de o WAHA aceitar,
                 # o próximo ciclo não dispara o mesmo pedido novamente.
                 ja.add(e)
