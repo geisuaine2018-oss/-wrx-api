@@ -5794,11 +5794,25 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             except Exception as _e:
                 print(f"[OLX] erro refresh: {_e}")
         data = request.get_json(force=True) or {}
+        _sku = data.get("_sku") or data.get("sku", "")
         fotos = [f for f in (data.get("fotos") or data.get("images") or []) if f and f.startswith("http")]
+        # A OLX só aceita fotos por URL (http). As fotos editadas no canvas chegam como base64
+        # (data:image/...) e seriam filtradas aqui -> anúncio SEM FOTO (bug confirmado 23/06: o
+        # parachoque 109437 entrou sem foto). Fallback: se sobrou 0 foto http, usa as fotos do
+        # estoque (pecas_estoque.fotos — já subidas como http pelo passo de salvar antes de publicar).
+        if not fotos and _sku:
+            try:
+                _rf = requests.get(f"{_WRX_SB_URL}/rest/v1/pecas_estoque?sku=eq.{_sku}&select=fotos",
+                                   headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}"}, timeout=12)
+                if _rf.ok and _rf.json():
+                    _bf = _rf.json()[0].get("fotos") or []
+                    fotos = [f for f in _bf if isinstance(f, str) and f.startswith("http")][:10]
+                    print(f"[OLX] payload sem foto http; usei {len(fotos)} fotos do estoque (sku {_sku})")
+            except Exception as _ef:
+                print(f"[OLX] fallback fotos estoque falhou: {_ef}")
         preco = float(data.get("preco") or data.get("price") or 0)
         if preco < 180:
             return jsonify({"ok": False, "erro": f"OLX exige preco minimo de R$ 180. Valor enviado: R$ {preco:.2f}"}), 400
-        _sku = data.get("_sku") or data.get("sku", "")
         # CATEGORIA: peças e acessórios de CARRO no autoupload da OLX = 2101 (número).
         # O valor antigo {"id":"8020"} estava errado (8020 não existe) e a OLX recusava com
         # statusCode -6 "Without permission" — o plano do cliente é de PEÇAS, então o anúncio
