@@ -4291,6 +4291,82 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
                             print(f"[ML] nao ativou item {item_id}: {_ra.status_code} {_ra.text[:200]}")
                     except Exception as _ea:
                         print(f"[ML] erro ao ativar item {item_id}: {_ea}")
+                # ── COMPATIBILIDADE veicular: evita o ML PAUSAR o anúncio por falta de ficha ──
+                # Lê a compat rica do banco (pecas_estoque.compatibilidade — migrada do PartsHub com
+                # mlBrandId/mlModelId/mlYearId), resolve os produtos de catálogo de veículo do ML e
+                # associa ao user_product do anúncio. DEFENSIVO: o anúncio já está publicado; se isto
+                # falhar, não derruba a publicação. (Decifrado/testado 23/06/2026 — ver memória.)
+                try:
+                    _up = item.get("user_product_id")
+                    if not _up and item_id:
+                        try:
+                            _di = requests.get(f"https://api.mercadolibre.com/items/{item_id}",
+                                               headers={"Authorization": f"Bearer {token}"}, timeout=12).json()
+                            _up = _di.get("user_product_id")
+                        except Exception:
+                            _up = None
+                    if not _up:
+                        print(f"[ML-COMPAT] item {item_id} sem user_product_id — pulando compatibilidade")
+                    else:
+                        _jatem = False
+                        try:
+                            _gc = requests.get(f"https://api.mercadolibre.com/items/{item_id}/compatibilities",
+                                               headers={"Authorization": f"Bearer {token}"}, timeout=12).json()
+                            _jatem = bool(_gc.get("products"))
+                        except Exception:
+                            pass
+                        if _jatem:
+                            print(f"[ML-COMPAT] item {item_id} já tem compatibilidade — não duplica")
+                        else:
+                            _cv = []
+                            try:
+                                _rc = requests.get(f"{_WRX_SB_URL}/rest/v1/pecas_estoque?sku=eq.{sku}&select=compatibilidade",
+                                                   headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}"}, timeout=15)
+                                if _rc.status_code == 200 and _rc.json():
+                                    _cv = _rc.json()[0].get("compatibilidade") or []
+                                    if isinstance(_cv, str):
+                                        _cv = json.loads(_cv)
+                            except Exception:
+                                _cv = []
+                            _combos = set()
+                            for _c in (_cv or []):
+                                if not isinstance(_c, dict):
+                                    continue
+                                _b = str(_c.get("mlBrandId") or "").strip()
+                                _m = str(_c.get("mlModelId") or "").strip()
+                                _y = str(_c.get("mlYearId") or "").strip()
+                                if _b and _m and _y:
+                                    _combos.add((_b, _m, _y))
+                            _cpids = []
+                            for (_b, _m, _y) in _combos:
+                                try:
+                                    _rs = requests.post("https://api.mercadolibre.com/catalog_compatibilities/products_search/chunks",
+                                                        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                                                        json={"domain_id": "MLB-CARS_AND_VANS", "site_id": "MLB",
+                                                              "known_attributes": [{"id": "BRAND", "value_ids": [_b]},
+                                                                                   {"id": "MODEL", "value_ids": [_m]},
+                                                                                   {"id": "VEHICLE_YEAR", "value_ids": [_y]}]}, timeout=20)
+                                    if _rs.status_code == 200:
+                                        for _p in (_rs.json().get("results") or []):
+                                            _cid = _p.get("id") or _p.get("catalog_product_id")
+                                            if _cid:
+                                                _cpids.append(_cid)
+                                except Exception:
+                                    pass
+                            _cpids = list(dict.fromkeys(_cpids))[:200]
+                            if not _cpids:
+                                print(f"[ML-COMPAT] item {item_id} sku {sku}: sem catalog_products (compat sem ml*Id no banco?)")
+                            else:
+                                try:
+                                    _rcomp = requests.post(f"https://api.mercadolibre.com/user-products/{_up}/compatibilities",
+                                                           headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                                                           json={"domain_id": "MLB-CARS_AND_VANS",
+                                                                 "products": [{"id": _cid, "creation_source": "SELLER"} for _cid in _cpids]}, timeout=25)
+                                    print(f"[ML-COMPAT] item {item_id}: {len(_cpids)} veículos -> {_rcomp.status_code} {_rcomp.text[:160]}")
+                                except Exception as _ecp:
+                                    print(f"[ML-COMPAT] POST compat erro: {_ecp}")
+                except Exception as _ecomp:
+                    print(f"[ML-COMPAT] erro não crítico: {_ecomp}")
                 # Grava no banco (ml_anuncios) com o SKU BASE p/ o card do estoque
                 # refletir NA HORA (sem esperar o sync). Service key prevalece (evita RLS).
                 try:
