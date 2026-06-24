@@ -2630,6 +2630,7 @@ if USE_FLASK:
     _ML_TOKENS_FILE = os.path.join(_INTEG_DIR, "wrx_ml_tokens.json")
     _OLX_TOKENS_FILE = os.path.join(_INTEG_DIR, "wrx_olx_token.json")
     _ML_QUEUE_FILE = os.path.join(_INTEG_DIR, "wrx_ml_queue.json")
+    _MAGALU_TOKENS_FILE = os.path.join(_INTEG_DIR, "wrx_magalu_tokens.json")
     _ml_tokens_mem = {}
     import threading as _threading
     _ml_refresh_lock = _threading.Lock()  # serializa o refresh do token ML (uso único)
@@ -2650,6 +2651,30 @@ if USE_FLASK:
     OLX_CEP = os.environ.get("OLX_CEP", "22795065")
     SHOPEE_PARTNER_ID = int(os.environ.get("SHOPEE_PARTNER_ID", "2035574"))
     SHOPEE_PARTNER_KEY = os.environ.get("SHOPEE_PARTNER_KEY", "shpk4458415353465759486e516147454957414d4c444761414a577570795655")
+
+    # ── Magalu (Magazine Luiza) — OAuth2 ID Magalu + API de marketplace ─────────
+    # ⚠️ Este repo é PÚBLICO no GitHub — NUNCA hardcode o client_secret aqui.
+    # As credenciais ficam SÓ nas env vars do Railway (MAGALU_CLIENT_ID /
+    # MAGALU_CLIENT_SECRET). Audience = https://api.magalu.com (public).
+    MAGALU_CLIENT_ID = os.environ.get("MAGALU_CLIENT_ID", "")
+    MAGALU_CLIENT_SECRET = os.environ.get("MAGALU_CLIENT_SECRET", "")
+    # ⚠️ Usar dominio-das-pecas.pages.dev (Cloudflare Pages — registrado no client E no ar).
+    # O apex dominiodaspecas.com.br também está registrado, mas o DNS do apex está QUEBRADO
+    # (ver memory project_crm_partshub). O redirect_uri precisa bater EXATO com o registrado.
+    MAGALU_REDIRECT_URI = os.environ.get("MAGALU_REDIRECT_URI", "https://dominio-das-pecas.pages.dev/magalu-callback.html")
+    MAGALU_API_BASE = os.environ.get("MAGALU_API_BASE", "https://api.magalu.com")
+    MAGALU_ID_BASE = "https://id.magalu.com"
+    # Escopos pedidos no client (todos saíram AVAILABLE, nenhum PENDING).
+    MAGALU_SCOPES = (
+        "open:portfolio-categories-seller:read "
+        "open:portfolio-skus-seller:read open:portfolio-skus-seller:write "
+        "open:portfolio-prices-seller:read open:portfolio-prices-seller:write "
+        "open:portfolio-stocks-seller:read open:portfolio-stocks-seller:write "
+        "open:portfolio-vehicles-seller:read open:portfolio-vehicles-compatibility-seller:write "
+        "open:order-order-seller:read open:order-invoice-seller:read "
+        "open:order-delivery-seller:read open:order-delivery-seller:write"
+    )
+    _magalu_token_mem = {}
 
     # ── WhatsApp (WAHA) ─────────────────────────────────────────────────────────
     WAHA_BASE        = os.environ.get("WAHA_BASE",        "https://evo.dominiodaspecas.com.br")
@@ -5867,6 +5892,178 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": False, "erro": _r.text[:300]}), _r.status_code
         except Exception as _e:
             return jsonify({"ok": False, "erro": str(_e)}), 500
+
+    # ─── Magalu (Magazine Luiza) ────────────────────────────────────────────────
+    #   OAuth2 Authorization Code via ID Magalu (id.magalu.com). O refresh_token é
+    #   longo e crítico, então o token é guardado de forma DURÁVEL no dx_config
+    #   (chave magalu_token) — diferente do OLX/ML que usam arquivo em /tmp, que o
+    #   Railway apaga a cada deploy/restart. Arquivo local serve só de cache rápido.
+    def _magalu_token_save(tok):
+        global _magalu_token_mem
+        _magalu_token_mem = tok
+        try:
+            with open(_MAGALU_TOKENS_FILE, "w") as _f:
+                json.dump(tok, _f)
+        except Exception:
+            pass
+        try:
+            requests.post(
+                f"{_WRX_SB_URL}/rest/v1/dx_config",
+                headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+                json={"chave": "magalu_token", "valor": tok}, timeout=12)
+        except Exception as _e:
+            print(f"[MAGALU] falha ao gravar token no dx_config: {_e}")
+
+    def _magalu_token_load():
+        global _magalu_token_mem
+        if _magalu_token_mem.get("access_token"):
+            return _magalu_token_mem
+        # tenta arquivo local (cache rápido) e depois dx_config (durável)
+        try:
+            with open(_MAGALU_TOKENS_FILE) as _f:
+                _magalu_token_mem = json.load(_f)
+        except Exception:
+            pass
+        if not _magalu_token_mem.get("access_token"):
+            try:
+                _r = requests.get(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                                  params={"chave": "eq.magalu_token", "select": "valor"},
+                                  headers=_wrx_headers(), timeout=12)
+                if _r.status_code == 200 and _r.json():
+                    _v = _r.json()[0].get("valor")
+                    if isinstance(_v, dict) and _v.get("access_token"):
+                        _magalu_token_mem = _v
+            except Exception:
+                pass
+        return _magalu_token_mem
+
+    def _magalu_trocar_code(code, redir=None):
+        """Troca authorization_code por access/refresh token. Retorna (ok, dict_ou_erro)."""
+        _redir = (redir or MAGALU_REDIRECT_URI).strip()
+        try:
+            _r = requests.post(f"{MAGALU_ID_BASE}/oauth/token",
+                               headers={"Content-Type": "application/json"},
+                               json={
+                                   "grant_type": "authorization_code",
+                                   "client_id": MAGALU_CLIENT_ID,
+                                   "client_secret": MAGALU_CLIENT_SECRET,
+                                   "redirect_uri": _redir,
+                                   "code": code,
+                               }, timeout=15)
+            if _r.status_code != 200:
+                return False, f"Magalu {_r.status_code}: {_r.text[:300]}"
+            _d = _r.json()
+            tok = {
+                "access_token": _d.get("access_token", ""),
+                "refresh_token": _d.get("refresh_token", ""),
+                "expires_at": time.time() + _d.get("expires_in", 3600),
+                "scope": _d.get("scope", ""),
+            }
+            _magalu_token_save(tok)
+            return True, tok
+        except Exception as _e:
+            return False, str(_e)
+
+    def _magalu_access_token():
+        """Retorna um access_token válido, renovando via refresh_token se necessário.
+        Retorna "" se não autorizado."""
+        tok = _magalu_token_load()
+        if not tok.get("access_token"):
+            return ""
+        # renova se faltam < 2 min e há refresh_token
+        if tok.get("expires_at", 0) - time.time() < 120 and tok.get("refresh_token"):
+            try:
+                _r = requests.post(f"{MAGALU_ID_BASE}/oauth/token",
+                                   headers={"Content-Type": "application/x-www-form-urlencoded"},
+                                   data={
+                                       "grant_type": "refresh_token",
+                                       "client_id": MAGALU_CLIENT_ID,
+                                       "client_secret": MAGALU_CLIENT_SECRET,
+                                       "refresh_token": tok.get("refresh_token", ""),
+                                   }, timeout=15)
+                if _r.status_code == 200:
+                    _d = _r.json()
+                    tok = {
+                        "access_token": _d.get("access_token", ""),
+                        "refresh_token": _d.get("refresh_token", tok.get("refresh_token", "")),
+                        "expires_at": time.time() + _d.get("expires_in", 3600),
+                        "scope": _d.get("scope", tok.get("scope", "")),
+                    }
+                    _magalu_token_save(tok)
+                    print("[MAGALU] token renovado via refresh_token")
+                else:
+                    print(f"[MAGALU] refresh falhou: {_r.status_code} {_r.text[:150]}")
+            except Exception as _e:
+                print(f"[MAGALU] erro refresh: {_e}")
+        return tok.get("access_token", "")
+
+    def _magalu_auth_url():
+        return (
+            f"{MAGALU_ID_BASE}/login"
+            f"?client_id={MAGALU_CLIENT_ID}"
+            f"&redirect_uri={_urlparse.quote(MAGALU_REDIRECT_URI, safe='')}"
+            f"&scope={_urlparse.quote(MAGALU_SCOPES, safe='')}"
+            f"&response_type=code&choose_tenants=true"
+        )
+
+    @app.route("/integracoes/magalu/config", methods=["GET", "OPTIONS"])
+    def magalu_config():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        configured = bool(MAGALU_CLIENT_ID and MAGALU_CLIENT_SECRET)
+        tok = _magalu_token_load()
+        token_saved = bool(tok.get("access_token"))
+        forcar = request.args.get("forcar") in ("1", "true", "sim")
+        auth_url = _magalu_auth_url() if (configured and (not token_saved or forcar)) else None
+        return jsonify({
+            "configured": configured,
+            "tokenSaved": token_saved,
+            "authUrl": auth_url,
+            "scope": tok.get("scope", ""),
+            "redirectUri": MAGALU_REDIRECT_URI,
+        })
+
+    @app.route("/integracoes/magalu/oauth/callback")
+    @app.route("/callback/magalu")
+    def magalu_oauth_callback():
+        code = request.args.get("code", "")
+        erro = request.args.get("error", "")
+        if erro:
+            return jsonify({"erro": f"Magalu recusou: {erro}"}), 400
+        if not code or not MAGALU_CLIENT_ID:
+            return jsonify({"erro": "Magalu nao configurada ou codigo ausente"}), 400
+        ok, res = _magalu_trocar_code(code)
+        if not ok:
+            return jsonify({"erro": res}), 400
+        return ("<html><body style='font-family:sans-serif;text-align:center;padding:40px;"
+                "background:#0f172a;color:#fff'><h2 style='color:#22c55e'>&#10003; Magalu conectada!</h2>"
+                "<p style='color:#9ca3af'>Token salvo. Pode fechar esta janela.</p></body></html>")
+
+    @app.route("/integracoes/magalu/oauth/trocar-codigo")
+    def magalu_trocar_codigo():
+        code = request.args.get("code", "")
+        redir = request.args.get("redirect_uri", "").strip() or None
+        if not code or not MAGALU_CLIENT_ID:
+            return jsonify({"erro": "code ausente ou Magalu nao configurada"}), 400
+        ok, res = _magalu_trocar_code(code, redir)
+        if not ok:
+            return jsonify({"ok": False, "erro": res}), 400
+        return jsonify({"ok": True, "msg": "Magalu conectada", "scope": res.get("scope", "")})
+
+    @app.route("/integracoes/magalu/status", methods=["GET", "OPTIONS"])
+    def magalu_status():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        tok = _magalu_token_load()
+        if not tok.get("access_token"):
+            return jsonify({"ok": False, "conectada": False, "erro": "Magalu nao autorizada"}), 200
+        valido = _magalu_access_token()
+        return jsonify({
+            "ok": bool(valido),
+            "conectada": bool(valido),
+            "scope": tok.get("scope", ""),
+            "expiraEm": int(max(0, tok.get("expires_at", 0) - time.time())),
+        })
 
     # ─── Shopee ───────────────────────────────────────────────────────────────────
     import hmac as _hmac
