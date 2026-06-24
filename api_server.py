@@ -6100,6 +6100,127 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         except Exception as _e:
             return jsonify({"ok": False, "erro": str(_e)}), 500
 
+    def _magalu_montar_sku_payload(p):
+        """Monta o corpo do POST /seller/v1/portfolios/skus a partir de uma peça
+        (dict com campos do pecas_estoque OU do JSON enviado pelo front).
+        ⚠️ Nomes de campo baseados na doc Magalu; confirmar/ajustar no 1º teste real
+        (a API valida e devolve os campos que faltam). GTIN vazio = peça de desmonte:
+        manda o motivo da isenção na ficha técnica."""
+        def _num(*ks):
+            for k in ks:
+                v = p.get(k)
+                if v not in (None, "", 0, "0"):
+                    try:
+                        return float(v)
+                    except Exception:
+                        pass
+            return None
+        ean = (p.get("ean") or p.get("gtin") or "").strip()
+        fotos = [f for f in (p.get("imagens") or p.get("fotos") or []) if isinstance(f, str) and f.startswith("http")]
+        # ficha técnica / atributos (datasheet). Sem EAN → motivo de GTIN vazio.
+        datasheet = []
+        if not ean:
+            # peça usada de desmonte não tem código de barras
+            datasheet.append({"name": "gtin_isento", "value": "Produto sem GTIN/EAN"})
+        payload = {
+            "code": str(p.get("sku") or p.get("id") or "").strip(),     # SKU do vendedor
+            "name": (p.get("titulo") or p.get("nome") or "")[:120],
+            "description": (p.get("descricao") or p.get("titulo") or "")[:8000],
+            "brand": (p.get("marca") or "").strip(),                     # precisa casar c/ catálogo Magalu
+            "category": str(p.get("categoria_magalu") or p.get("categoria") or "").strip(),  # ID da categoria
+            "ncm": "".join(c for c in str(p.get("ncm") or "") if c.isdigit()),
+            "dimensions": {
+                "weight": _num("peso", "peso_kg"),        # kg
+                "height": _num("altura"),                 # cm
+                "width": _num("largura"),
+                "length": _num("comprimento"),
+            },
+            "images": [{"url": u} for u in fotos[:20]],
+            "datasheet": datasheet,
+        }
+        if ean:
+            payload["gtin"] = ean
+        return payload
+
+    @app.route("/integracoes/magalu/publicar", methods=["POST", "OPTIONS"])
+    def magalu_publicar():
+        """Estrutura de envio do anúncio: 3 chamadas encadeadas (SKU → preço → estoque).
+        Aceita {sku:"..."} (busca a peça no pecas_estoque) OU o objeto da peça inteiro.
+        ⚠️ Enquanto a API devolver 401 (app não autorizado / audience), nada é criado —
+        mas a estrutura fica pronta. Cada passo retorna o status real da Magalu."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        token = _magalu_access_token()
+        if not token:
+            return jsonify({"ok": False, "erro": "Magalu nao autorizada — clique em Conectar"}), 401
+        data = request.get_json(force=True) or {}
+        peca = data
+        # se veio só o sku, busca a peça no estoque (reusa os dados já cadastrados)
+        if data.get("sku") and not data.get("titulo"):
+            try:
+                _r = requests.get(f"{_WRX_SB_URL}/rest/v1/pecas_estoque",
+                                  params={"sku": f"eq.{data['sku']}", "select": "*"},
+                                  headers=_wrx_headers(), timeout=12)
+                if _r.ok and _r.json():
+                    peca = {**_r.json()[0], **data}  # data sobrescreve o estoque
+            except Exception as _e:
+                print(f"[MAGALU] falha ao buscar peça {data.get('sku')}: {_e}")
+        _hdrs = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "x-tenant-id": data.get("_tenant") or "GENPUB.b114d77c-0181-4571-8949-be95ae5a02e3",
+        }
+        sku_code = str(peca.get("sku") or peca.get("id") or "").strip()
+        resultado = {"sku": sku_code, "passos": {}}
+
+        def _chamar(nome, metodo, path, body):
+            url = f"{MAGALU_API_BASE}/{path}"
+            try:
+                _r = requests.request(metodo, url, headers=_hdrs, json=body, timeout=25)
+                _ct = _r.headers.get("content-type", "")
+                _b = _r.json() if "json" in _ct else _r.text[:600]
+                resultado["passos"][nome] = {"status": _r.status_code, "ok": _r.ok, "resp": _b}
+                return _r.ok
+            except Exception as _e:
+                resultado["passos"][nome] = {"status": 0, "ok": False, "erro": str(_e)}
+                return False
+
+        # 1) cria/atualiza o SKU
+        sku_payload = _magalu_montar_sku_payload(peca)
+        resultado["sku_payload"] = sku_payload
+        ok_sku = _chamar("sku", "POST", "seller/v1/portfolios/skus", sku_payload)
+
+        # 2) preço — serviço separado. ⚠️ path/forma a confirmar no 1º teste.
+        preco = None
+        try:
+            preco = float(peca.get("preco") or peca.get("price") or 0)
+        except Exception:
+            preco = 0
+        if preco and preco > 0:
+            _chamar("preco", "POST", "seller/v1/portfolios/prices", {
+                "sku": sku_code, "price": preco, "list_price": preco,
+            })
+
+        # 3) estoque — serviço separado. ⚠️ path/forma a confirmar.
+        try:
+            qtd = int(float(peca.get("estoque") or peca.get("qtd") or 0))
+        except Exception:
+            qtd = 0
+        _chamar("estoque", "POST", "seller/v1/portfolios/stocks", {
+            "sku": sku_code, "quantity": qtd,
+        })
+
+        # 4) compatibilidade veicular (opcional) — só se a peça tiver e o passo SKU ok.
+        compat = peca.get("compatibilidade") or peca.get("compat") or []
+        if compat and ok_sku:
+            _chamar("compatibilidade", "POST",
+                    f"seller/v1/portfolios/skus/{sku_code}/vehicles-compatibility",
+                    {"vehicles": compat})
+
+        resultado["ok"] = all(v.get("ok") for v in resultado["passos"].values())
+        return jsonify(resultado), (200 if resultado["ok"] else 207)
+
     @app.route("/integracoes/magalu/retoken", methods=["GET", "OPTIONS"])
     def magalu_retoken():
         """DEBUG: refaz o token via refresh_token pedindo uma audience específica
