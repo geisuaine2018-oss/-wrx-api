@@ -6079,19 +6079,40 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         path = (request.args.get("path") or "").strip().lstrip("/")
         if not path:
             return jsonify({"ok": False, "erro": "informe ?path="}), 400
-        # repassa os demais params como querystring para a API
-        extra = {k: v for k, v in request.args.items() if k != "path"}
+        # repassa os demais params como querystring (exceto path e _tenant)
+        extra = {k: v for k, v in request.args.items() if k not in ("path", "_tenant")}
+        _hdrs = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        _tenant = (request.args.get("_tenant") or "").strip()
+        if _tenant:
+            _hdrs["x-tenant-id"] = _tenant
         url = f"{MAGALU_API_BASE}/{path}"
         try:
-            _r = requests.get(url, headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json",
-            }, params=extra, timeout=20)
+            _r = requests.get(url, headers=_hdrs, params=extra, timeout=20)
             _ct = _r.headers.get("content-type", "")
             body = _r.json() if "json" in _ct else _r.text[:2000]
             return jsonify({"ok": _r.ok, "status": _r.status_code, "url": _r.url, "body": body}), (200 if _r.ok else _r.status_code)
         except Exception as _e:
             return jsonify({"ok": False, "erro": str(_e)}), 500
+
+    @app.route("/integracoes/magalu/whoami", methods=["GET", "OPTIONS"])
+    def magalu_whoami():
+        """Decodifica as claims do JWT access_token (parte do meio, sem validar
+        assinatura) pra achar o tenant id / dados do seller. Read-only debug."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        token = _magalu_access_token()
+        if not token:
+            return jsonify({"ok": False, "erro": "Magalu nao autorizada"}), 401
+        claims = {}
+        try:
+            _parts = token.split(".")
+            if len(_parts) >= 2:
+                _pad = _parts[1] + "=" * (-len(_parts[1]) % 4)
+                claims = json.loads(_base64.urlsafe_b64decode(_pad).decode("utf-8", "ignore"))
+        except Exception as _e:
+            return jsonify({"ok": False, "erro": f"falha ao decodificar JWT: {_e}"}), 500
+        # devolve só chaves que possam conter tenant/seller (evita despejar o token todo)
+        return jsonify({"ok": True, "claims": claims})
 
     # ─── Shopee ───────────────────────────────────────────────────────────────────
     import hmac as _hmac
