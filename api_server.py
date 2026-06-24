@@ -6085,6 +6085,12 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         _tenant = (request.args.get("_tenant") or "").strip()
         if _tenant:
             _hdrs["x-tenant-id"] = _tenant
+        # headers arbitrários p/ debug: ?_h=Nome:Valor (pode repetir). Ex: _h=X-Api-Key:abc
+        for _hv in request.args.getlist("_h"):
+            if ":" in _hv:
+                _hn, _, _hval = _hv.partition(":")
+                _hdrs[_hn.strip()] = _hval.strip()
+        extra = {k: v for k, v in extra.items() if k != "_h"}
         url = f"{MAGALU_API_BASE}/{path}"
         try:
             _r = requests.get(url, headers=_hdrs, params=extra, timeout=20)
