@@ -10305,6 +10305,24 @@ CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
         t.start()
         print("[STARTUP] cron keep-alive Supabase ativo (a cada 4 min, evita cold start)")
 
+    def _cron_shopee_sync_loop():
+        """Thread: a cada 30 min sincroniza os anuncios da Shopee (puxa item_id/sku/loja das 2 lojas
+        pra a tabela shopee_anuncios). Sem isso a BOLINHA do Shopee no card ficava cinza mesmo com o
+        anuncio no ar — a lista do servidor nao atualizava sozinha (a dona reclamou: 'nao ta sincronizando')."""
+        import threading
+        def _loop():
+            time.sleep(120)  # espera o servidor subir (e nao colidir com publicacao)
+            while True:
+                try:
+                    requests.post(f"http://127.0.0.1:{PORT}/integracoes/shopee/sincronizar",
+                                  json={}, timeout=300)
+                except Exception as _e:
+                    print(f"[CRON-SHOPEE-SYNC] erro: {_e}")
+                time.sleep(1800)  # 30 minutos
+        t = threading.Thread(target=_loop, daemon=True)
+        t.start()
+        print("[STARTUP] cron Shopee sync ativo (atualiza anuncios/bolinha a cada 30 min)")
+
     def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace") if hasattr(sys.stdout, "reconfigure") else None
         print(f"WRX-Search API Server - porta {PORT}")
@@ -10316,6 +10334,7 @@ CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
         _cron_shopee_etiquetas_loop()
         _cron_expedicao_loop()
         _cron_keepalive_loop()
+        _cron_shopee_sync_loop()
         app.run(host=host, port=PORT, debug=False, threaded=True)
 
 else:
