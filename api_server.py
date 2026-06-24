@@ -5997,14 +5997,17 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 print(f"[MAGALU] erro refresh: {_e}")
         return tok.get("access_token", "")
 
-    def _magalu_auth_url():
-        return (
+    def _magalu_auth_url(audience=None):
+        url = (
             f"{MAGALU_ID_BASE}/login"
             f"?client_id={MAGALU_CLIENT_ID}"
             f"&redirect_uri={_urlparse.quote(MAGALU_REDIRECT_URI, safe='')}"
             f"&scope={_urlparse.quote(MAGALU_SCOPES, safe='')}"
             f"&response_type=code&choose_tenants=true"
         )
+        if audience:
+            url += f"&audience={_urlparse.quote(audience, safe='')}"
+        return url
 
     @app.route("/integracoes/magalu/config", methods=["GET", "OPTIONS"])
     def magalu_config():
@@ -6014,7 +6017,9 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         tok = _magalu_token_load()
         token_saved = bool(tok.get("access_token"))
         forcar = request.args.get("forcar") in ("1", "true", "sim")
-        auth_url = _magalu_auth_url() if (configured and (not token_saved or forcar)) else None
+        # ?audience=... testa emitir o token p/ a audience da API (resolve 401?)
+        audience = (request.args.get("audience") or "").strip() or None
+        auth_url = _magalu_auth_url(audience) if (configured and (not token_saved or forcar or audience)) else None
         return jsonify({
             "configured": configured,
             "tokenSaved": token_saved,
