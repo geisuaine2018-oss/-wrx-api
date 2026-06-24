@@ -6100,6 +6100,52 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         except Exception as _e:
             return jsonify({"ok": False, "erro": str(_e)}), 500
 
+    @app.route("/integracoes/magalu/retoken", methods=["GET", "OPTIONS"])
+    def magalu_retoken():
+        """DEBUG: refaz o token via refresh_token pedindo uma audience específica
+        (?audience=https://api.magalu.com). Salva e retorna o aud do novo token.
+        Testa a hipótese de que a API exige aud != 'public'. ?save=0 não persiste."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        tok = _magalu_token_load()
+        if not tok.get("refresh_token"):
+            return jsonify({"ok": False, "erro": "sem refresh_token"}), 401
+        audience = (request.args.get("audience") or "").strip()
+        data = {
+            "grant_type": "refresh_token",
+            "client_id": MAGALU_CLIENT_ID,
+            "client_secret": MAGALU_CLIENT_SECRET,
+            "refresh_token": tok.get("refresh_token", ""),
+        }
+        if audience:
+            data["audience"] = audience
+        try:
+            _r = requests.post(f"{MAGALU_ID_BASE}/oauth/token",
+                               headers={"Content-Type": "application/x-www-form-urlencoded"},
+                               data=data, timeout=15)
+            if _r.status_code != 200:
+                return jsonify({"ok": False, "status": _r.status_code, "body": _r.text[:400]}), 400
+            _d = _r.json()
+            new_tok = {
+                "access_token": _d.get("access_token", ""),
+                "refresh_token": _d.get("refresh_token", tok.get("refresh_token", "")),
+                "expires_at": time.time() + _d.get("expires_in", 3600),
+                "scope": _d.get("scope", tok.get("scope", "")),
+            }
+            # decodifica aud do novo token
+            aud = None
+            try:
+                _p = new_tok["access_token"].split(".")
+                _pad = _p[1] + "=" * (-len(_p[1]) % 4)
+                aud = json.loads(_base64.urlsafe_b64decode(_pad).decode("utf-8", "ignore")).get("aud")
+            except Exception:
+                pass
+            if request.args.get("save") != "0":
+                _magalu_token_save(new_tok)
+            return jsonify({"ok": True, "audiencePedida": audience, "audNoToken": aud, "salvo": request.args.get("save") != "0"})
+        except Exception as _e:
+            return jsonify({"ok": False, "erro": str(_e)}), 500
+
     @app.route("/integracoes/magalu/whoami", methods=["GET", "OPTIONS"])
     def magalu_whoami():
         """Decodifica as claims do JWT access_token (parte do meio, sem validar
