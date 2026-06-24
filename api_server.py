@@ -6065,6 +6065,34 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             "expiraEm": int(max(0, tok.get("expires_at", 0) - time.time())),
         })
 
+    @app.route("/integracoes/magalu/api", methods=["GET", "OPTIONS"])
+    def magalu_api_proxy():
+        """Explorador read-only: repassa GET pra API da Magalu com o Bearer token.
+        Ex: /integracoes/magalu/api?path=seller/v1/portfolios/categories&_QS=...
+        'path' é o caminho relativo à MAGALU_API_BASE (com ou sem barra inicial).
+        Qualquer outro query param (exceto path) é repassado como querystring."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        token = _magalu_access_token()
+        if not token:
+            return jsonify({"ok": False, "erro": "Magalu nao autorizada"}), 401
+        path = (request.args.get("path") or "").strip().lstrip("/")
+        if not path:
+            return jsonify({"ok": False, "erro": "informe ?path="}), 400
+        # repassa os demais params como querystring para a API
+        extra = {k: v for k, v in request.args.items() if k != "path"}
+        url = f"{MAGALU_API_BASE}/{path}"
+        try:
+            _r = requests.get(url, headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            }, params=extra, timeout=20)
+            _ct = _r.headers.get("content-type", "")
+            body = _r.json() if "json" in _ct else _r.text[:2000]
+            return jsonify({"ok": _r.ok, "status": _r.status_code, "url": _r.url, "body": body}), (200 if _r.ok else _r.status_code)
+        except Exception as _e:
+            return jsonify({"ok": False, "erro": str(_e)}), 500
+
     # ─── Shopee ───────────────────────────────────────────────────────────────────
     import hmac as _hmac
 
