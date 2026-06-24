@@ -10255,9 +10255,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
 
         resultado = {"ml": [], "shopee": []}
         try:
+            # Os anuncios sao gravados com SKU SUFIXADO por conta/variacao (ex 109437-DML1, 109437-GML2).
+            # Buscar por "eq.{sku}" (exato) NAO achava nada -> "nenhum anuncio vinculado". Casa o SKU base
+            # exato OU base + sufixo "-XXXn". URL montada na mao p/ o wildcard '*' chegar literal ao PostgREST.
             r_ml = requests.get(
-                f"{_WRX_SB_URL}/rest/v1/ml_anuncios",
-                params={"select": "ml_id,conta,status", "sku": f"eq.{sku}"},
+                f"{_WRX_SB_URL}/rest/v1/ml_anuncios?select=ml_id,conta,status&or=(sku.eq.{sku},sku.like.{sku}-*)",
                 headers=_wrx_headers(), timeout=15,
             )
             anuncios_ml = r_ml.json() if r_ml.status_code == 200 else []
@@ -10307,8 +10309,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
 
         try:
             r_sh = requests.get(
-                f"{_WRX_SB_URL}/rest/v1/shopee_anuncios",
-                params={"select": "shop_id,item_id,status", "sku": f"eq.{sku}"},
+                f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?select=shop_id,item_id,status&or=(sku.eq.{sku},sku.like.{sku}-*)",
                 headers=_wrx_headers(), timeout=15,
             )
             anuncios_sh = r_sh.json() if r_sh.status_code == 200 else []
