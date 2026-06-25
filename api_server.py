@@ -8959,14 +8959,26 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             for i, gid in enumerate(grupos):
                 cap = R.choice(INTROS) + mensagem
                 ok = False
-                # Só TEXTO: a mensagem já traz o link do Mercado Livre, e o WhatsApp
-                # (engine WEBJS) gera o preview COM A FOTO sozinho. Não manda o link
-                # cru da foto (que "só abre uma imagem") nem imagem separada.
+                # Manda a FOTO inline (engine WEBJS envia imagem) com legenda = mensagem
+                # (nome + preço + contato, SEM link do ML). Se não tiver foto ou falhar,
+                # cai pra texto limpo (sem link cru da foto).
                 try:
-                    rr = requests.post(f"{WAHA_BASE}/api/sendText",
-                                       headers=_waha_h({"Content-Type": "application/json"}),
-                                       json={"session": WAHA_SESSION, "chatId": gid, "text": cap}, timeout=40)
-                    ok = rr.status_code in (200, 201)
+                    if imagem.startswith("http"):
+                        rr = requests.post(f"{WAHA_BASE}/api/sendImage",
+                                           headers=_waha_h({"Content-Type": "application/json"}),
+                                           json={"session": WAHA_SESSION, "chatId": gid,
+                                                 "file": {"url": imagem}, "caption": cap}, timeout=45)
+                        ok = rr.status_code in (200, 201)
+                        if not ok:
+                            rr = requests.post(f"{WAHA_BASE}/api/sendText",
+                                               headers=_waha_h({"Content-Type": "application/json"}),
+                                               json={"session": WAHA_SESSION, "chatId": gid, "text": cap}, timeout=40)
+                            ok = rr.status_code in (200, 201)
+                    else:
+                        rr = requests.post(f"{WAHA_BASE}/api/sendText",
+                                           headers=_waha_h({"Content-Type": "application/json"}),
+                                           json={"session": WAHA_SESSION, "chatId": gid, "text": cap}, timeout=40)
+                        ok = rr.status_code in (200, 201)
                 except Exception:
                     ok = False
                 job["enviados"] += 1
