@@ -8817,6 +8817,45 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         grupos.sort(key=lambda x: (x.get("nome") or "").lower())
         return jsonify({"ok": True, "total": len(grupos), "grupos": grupos})
 
+    @app.route("/integracoes/whatsapp/colaboradores", methods=["GET", "POST", "OPTIONS"])
+    def whatsapp_colaboradores():
+        """Lista/cadastra colaboradores (parceiros) pra divulgação individual.
+        GET = junta funcionarios + colaboradores (com whatsapp). POST {nome, whatsapp} cadastra."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        if request.method == "POST":
+            data = request.get_json(force=True) or {}
+            nome = str(data.get("nome") or "").strip()
+            whats = "".join(ch for ch in str(data.get("whatsapp") or "") if ch.isdigit())
+            if not nome or len(whats) < 10:
+                return jsonify({"ok": False, "erro": "informe nome e WhatsApp com DDD"}), 400
+            try:
+                requests.post(f"{_WRX_SB_URL}/rest/v1/colaboradores",
+                              headers={**_wrx_headers(), "Prefer": "return=minimal"},
+                              json={"nome": nome, "whatsapp": whats, "disponivel": True}, timeout=12)
+            except Exception as e:
+                return jsonify({"ok": False, "erro": str(e)}), 502
+            return jsonify({"ok": True})
+        out, visto = [], set()
+        for tab in ("funcionarios", "colaboradores"):
+            try:
+                rows = requests.get(f"{_WRX_SB_URL}/rest/v1/{tab}",
+                                    params={"select": "nome,whatsapp", "limit": "200"},
+                                    headers=_wrx_headers(), timeout=12).json()
+            except Exception:
+                rows = []
+            for c in (rows if isinstance(rows, list) else []):
+                nome = str(c.get("nome") or "").strip()
+                whats = "".join(ch for ch in str(c.get("whatsapp") or "") if ch.isdigit())
+                if not nome or len(whats) < 10 or whats in visto:
+                    continue
+                if len(whats) in (10, 11):
+                    whats = "55" + whats
+                visto.add(whats)
+                out.append({"nome": nome, "whatsapp": whats})
+        out.sort(key=lambda x: x["nome"].lower())
+        return jsonify({"ok": True, "colaboradores": out, "total": len(out)})
+
     @app.route("/integracoes/whatsapp/grupos-selecao", methods=["GET", "POST", "OPTIONS"])
     def whatsapp_grupos_selecao():
         """Seleção durável de grupos pra divulgação (dx_config:grupos_selecao).
@@ -8854,7 +8893,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         if request.method == "OPTIONS":
             return _options_resp()
         data = request.get_json(force=True) or {}
-        grupos = [str(g) for g in (data.get("grupos") or []) if str(g).endswith("@g.us")]
+        grupos = [str(g) for g in (data.get("grupos") or []) if str(g).endswith(("@g.us", "@c.us"))]
         imagem = str(data.get("imagem") or "").strip()
         mensagem = str(data.get("mensagem") or "").strip()
         if not grupos:
