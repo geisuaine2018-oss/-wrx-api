@@ -6834,6 +6834,88 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             print(f"[FB-PEDIDOS] falha ao gravar cache: {_e}")
         return jsonify({"ok": True, "fones": sorted(fb), "checados": checados, "cache": False})
 
+    @app.route("/integracoes/marcelo/respostas-grupo", methods=["GET", "OPTIONS"])
+    def marcelo_respostas_grupo():
+        # Identifica quem RESPONDEU um pedido nos grupos: lê o WhatsApp procurando
+        # mensagens (de terceiros) que citam o #codigo do pedido (que sai no disparo
+        # "PROCURO ... #512"). Retorna por pedido. Cache em dx_config:respostas_grupo.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        # mapa codigo(numerico) -> {pedido_id, fone_cliente}
+        try:
+            peds = requests.get(f"{_WRX_SB_URL}/rest/v1/pedidos",
+                                params={"select": "id,phone,peca", "order": "criado_em.desc", "limit": "300"},
+                                headers=_wrx_headers(), timeout=15).json()
+        except Exception:
+            peds = []
+        cod_map = {}
+        for p in (peds if isinstance(peds, list) else []):
+            raw = str(p.get("id") or "")[-5:]
+            if raw.isdigit():
+                cod = str(int(raw))   # tira zeros à esquerda
+                cod_map[cod] = {"id": p.get("id"), "cliente": _normalizar_fone_pedido(p.get("phone")), "peca": p.get("peca")}
+        if not cod_map:
+            return jsonify({"ok": True, "respostas": {}, "checados": 0})
+        # chats recentes (grupos + privados)
+        try:
+            chats = requests.get(f"{WAHA_BASE}/api/{WAHA_SESSION}/chats",
+                                 params={"limit": "60"}, headers=_waha_h({"Accept": "application/json"}), timeout=20).json()
+        except Exception:
+            chats = []
+        if isinstance(chats, dict):
+            chats = chats.get("data") or chats.get("chats") or []
+        pat = re.compile(r"#\s*(\d{2,5})")
+        respostas = {}   # pedido_id -> [ {de, nome, texto, hora, grupo} ]
+        checados = 0
+        for ch in (chats if isinstance(chats, list) else [])[:50]:
+            chid = ch.get("id") if isinstance(ch, dict) else ch
+            chid = chid.get("_serialized") if isinstance(chid, dict) else chid
+            if not chid or chid == "status@broadcast":
+                continue
+            checados += 1
+            ehgrupo = str(chid).endswith("@g.us")
+            try:
+                rr = requests.get(f"{WAHA_BASE}/api/{WAHA_SESSION}/chats/{chid}/messages",
+                                  params={"limit": "40"}, headers=_waha_h({"Accept": "application/json"}), timeout=15)
+                msgs = rr.json() if rr.status_code == 200 else []
+            except Exception:
+                continue
+            if isinstance(msgs, dict):
+                msgs = msgs.get("data") or msgs.get("messages") or []
+            for m in (msgs if isinstance(msgs, list) else []):
+                if not isinstance(m, dict) or m.get("fromMe") is True:
+                    continue
+                txt = str(m.get("body") or m.get("text") or m.get("caption") or "")
+                if "#" not in txt:
+                    continue
+                for cod in pat.findall(txt):
+                    cod = str(int(cod)) if cod.isdigit() else cod
+                    alvo = cod_map.get(cod)
+                    if not alvo:
+                        continue
+                    de = str(m.get("from") or m.get("author") or chid).split("@")[0]
+                    # ignora a própria mensagem do cliente do pedido
+                    if alvo.get("cliente") and de.endswith(alvo["cliente"][-8:]):
+                        continue
+                    pid = alvo["id"]
+                    respostas.setdefault(pid, [])
+                    if len(respostas[pid]) < 12 and not any(r["texto"] == txt[:300] for r in respostas[pid]):
+                        respostas[pid].append({
+                            "de": de,
+                            "nome": str(m.get("notifyName") or m.get("pushName") or ""),
+                            "texto": txt[:300],
+                            "hora": m.get("timestamp"),
+                            "grupo": ehgrupo,
+                        })
+        try:
+            requests.post(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                          headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+                          json={"chave": "respostas_grupo", "valor": respostas}, timeout=12)
+        except Exception:
+            pass
+        return jsonify({"ok": True, "respostas": respostas, "checados": checados,
+                        "totalPedidosComResposta": len(respostas)})
+
     @app.route("/integracoes/marcelo/pedido-itens/<pedido_id>", methods=["GET", "OPTIONS"])
     def marcelo_listar_itens_pedido(pedido_id):
         if request.method == "OPTIONS":
