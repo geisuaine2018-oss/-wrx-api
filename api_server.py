@@ -4882,6 +4882,68 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         resumo["ok"] = True
         return jsonify(resumo)
 
+    _estoque_sem_ml_cache = {"ts": 0, "itens": []}
+
+    @app.route("/integracoes/mercadolivre/estoque-sem-anuncio", methods=["GET", "OPTIONS"])
+    def ml_estoque_sem_anuncio():
+        # SOMENTE LEITURA: lista peças do estoque (qtd>=1) que NÃO têm anúncio no ML.
+        # Sinal: SKU base não está em ml_anuncios (qualquer status) E sem ml_url.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        if request.args.get("forcar") not in ("1", "true", "sim") and \
+           (time.time() - _estoque_sem_ml_cache["ts"]) < 300 and _estoque_sem_ml_cache["itens"]:
+            return jsonify({"ok": True, "total": len(_estoque_sem_ml_cache["itens"]),
+                            "itens": _estoque_sem_ml_cache["itens"], "cache": True})
+
+        def _base(s):
+            return str(s or "").strip().upper().split("-")[0]
+
+        # SKUs que JÁ têm anúncio no ML (qualquer status/conta)
+        ml_skus = set()
+        try:
+            for r in _sb_get_all("ml_anuncios?select=sku"):
+                b = _base(r.get("sku"))
+                if b:
+                    ml_skus.add(b)
+        except Exception as _e:
+            return jsonify({"ok": False, "erro": f"ml_anuncios: {_e}"}), 500
+
+        itens = []
+        try:
+            est = _sb_get_all(
+                "pecas_estoque?select=sku,titulo,fotos,preco,marca,modelo,ano,categoria,qtd,ml_url"
+                "&qtd=gte.1&order=cadastrado_em.desc")
+            for p in est:
+                sku = str(p.get("sku") or "").strip()
+                if not sku:
+                    continue
+                if _base(sku) in ml_skus:
+                    continue
+                mlu = str(p.get("ml_url") or "").strip()
+                if mlu.startswith("http"):
+                    continue  # já tem link do ML conhecido
+                fotos = p.get("fotos") or []
+                foto = ""
+                if isinstance(fotos, list) and fotos:
+                    foto = str(fotos[0] or "")
+                itens.append({
+                    "sku": sku,
+                    "titulo": p.get("titulo") or "",
+                    "foto": foto.replace("http://", "https://"),
+                    "preco": p.get("preco"),
+                    "marca": p.get("marca") or "",
+                    "modelo": p.get("modelo") or "",
+                    "ano": p.get("ano") or "",
+                    "categoria": p.get("categoria") or "",
+                    "qtd": p.get("qtd") or 0,
+                })
+        except Exception as _e:
+            return jsonify({"ok": False, "erro": f"pecas_estoque: {_e}"}), 500
+
+        _estoque_sem_ml_cache["ts"] = time.time()
+        _estoque_sem_ml_cache["itens"] = itens
+        return jsonify({"ok": True, "total": len(itens), "itens": itens, "cache": False})
+
     # ── ML: helpers de vínculo/painel ────────────────────────────────────────
     def _sb_count(r):
         try:
