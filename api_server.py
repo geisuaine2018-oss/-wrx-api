@@ -8817,6 +8817,35 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         grupos.sort(key=lambda x: (x.get("nome") or "").lower())
         return jsonify({"ok": True, "total": len(grupos), "grupos": grupos})
 
+    @app.route("/integracoes/whatsapp/grupos-selecao", methods=["GET", "POST", "OPTIONS"])
+    def whatsapp_grupos_selecao():
+        """Seleção durável de grupos pra divulgação (dx_config:grupos_selecao).
+        GET retorna a lista de ids; POST {grupos:[...]} salva."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        if request.method == "POST":
+            data = request.get_json(force=True) or {}
+            ids = [str(g) for g in (data.get("grupos") or []) if str(g).endswith("@g.us")]
+            try:
+                requests.post(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                              headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+                              json={"chave": "grupos_selecao", "valor": ids}, timeout=12)
+            except Exception as e:
+                return jsonify({"ok": False, "erro": str(e)}), 502
+            return jsonify({"ok": True, "total": len(ids)})
+        ids = []
+        try:
+            r = requests.get(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                             params={"chave": "eq.grupos_selecao", "select": "valor"},
+                             headers=_wrx_headers(), timeout=12)
+            if r.status_code == 200 and r.json():
+                v = r.json()[0].get("valor")
+                if isinstance(v, list):
+                    ids = [str(x) for x in v]
+        except Exception:
+            pass
+        return jsonify({"ok": True, "grupos": ids, "total": len(ids)})
+
     @app.route("/integracoes/whatsapp/enviar-grupos", methods=["POST", "OPTIONS"])
     def whatsapp_enviar_grupos():
         """Dispara um produto (imagem + mensagem) pros grupos selecionados, com
