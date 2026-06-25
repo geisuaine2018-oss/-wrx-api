@@ -8958,17 +8958,26 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             import random as R, time as T
             for i, gid in enumerate(grupos):
                 cap = R.choice(INTROS) + mensagem
+                ok = False
                 try:
                     if imagem.startswith("http"):
                         rr = requests.post(f"{WAHA_BASE}/api/sendImage",
                                            headers=_waha_h({"Content-Type": "application/json"}),
                                            json={"session": WAHA_SESSION, "chatId": gid,
                                                  "file": {"url": imagem}, "caption": cap}, timeout=40)
+                        ok = rr.status_code in (200, 201)
+                        if not ok:
+                            # WAHA grátis (NOWEB) não manda imagem → texto com o link (gera preview)
+                            txt2 = cap + ("\n" + imagem if imagem not in cap else "")
+                            rr = requests.post(f"{WAHA_BASE}/api/sendText",
+                                               headers=_waha_h({"Content-Type": "application/json"}),
+                                               json={"session": WAHA_SESSION, "chatId": gid, "text": txt2}, timeout=40)
+                            ok = rr.status_code in (200, 201)
                     else:
                         rr = requests.post(f"{WAHA_BASE}/api/sendText",
                                            headers=_waha_h({"Content-Type": "application/json"}),
                                            json={"session": WAHA_SESSION, "chatId": gid, "text": cap}, timeout=40)
-                    ok = rr.status_code in (200, 201)
+                        ok = rr.status_code in (200, 201)
                 except Exception:
                     ok = False
                 job["enviados"] += 1
