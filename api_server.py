@@ -4884,6 +4884,39 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
 
     _estoque_sem_ml_cache = {"ts": 0, "itens": []}
 
+    @app.route("/integracoes/mercadolivre/permalink", methods=["GET", "OPTIONS"])
+    def ml_permalink():
+        """Retorna o PERMALINK real do anúncio ML pela SKU (pra divulgar no Facebook).
+        O link curto cai em verificação anti-bot; o permalink completo mostra o preview."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        sku = (request.args.get("sku") or "").strip()
+        if not sku:
+            return jsonify({"ok": False, "erro": "sku ausente"}), 400
+        try:
+            r = requests.get(f"{_WRX_SB_URL}/rest/v1/ml_anuncios",
+                             params={"select": "ml_id,conta", "sku": f"eq.{sku}",
+                                     "status": "eq.active", "limit": "1"},
+                             headers=_wrx_headers(), timeout=12)
+            rows = r.json() if r.status_code == 200 else []
+        except Exception:
+            rows = []
+        if not rows:
+            return jsonify({"ok": True, "permalink": ""})
+        ml_id = rows[0].get("ml_id")
+        conta = rows[0].get("conta") or "default"
+        token = _ml_get_user_token(conta)
+        if not token or not ml_id:
+            return jsonify({"ok": True, "permalink": ""})
+        try:
+            ri = requests.get(f"https://api.mercadolibre.com/items/{ml_id}",
+                              params={"attributes": "permalink"},
+                              headers={"Authorization": f"Bearer {token}"}, timeout=12)
+            perma = ri.json().get("permalink", "") if ri.status_code == 200 else ""
+        except Exception:
+            perma = ""
+        return jsonify({"ok": True, "permalink": perma, "mlId": ml_id})
+
     @app.route("/integracoes/mercadolivre/estoque-sem-anuncio", methods=["GET", "OPTIONS"])
     def ml_estoque_sem_anuncio():
         # SOMENTE LEITURA: lista peças do estoque (qtd>=1) que NÃO têm anúncio no ML.
