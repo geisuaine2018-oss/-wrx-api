@@ -4895,8 +4895,9 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": False, "erro": "sku ausente"}), 400
         try:
             r = requests.get(f"{_WRX_SB_URL}/rest/v1/ml_anuncios",
-                             params={"select": "ml_id,conta", "sku": f"eq.{sku}",
-                                     "status": "eq.active", "limit": "1"},
+                             params={"select": "ml_id,conta,sku",
+                                     "or": f"(sku.eq.{sku},sku.like.{sku}-*)",
+                                     "status": "eq.active", "order": "sku.asc", "limit": "1"},
                              headers=_wrx_headers(), timeout=12)
             rows = r.json() if r.status_code == 200 else []
         except Exception:
