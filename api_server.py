@@ -6775,6 +6775,65 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             "itens": itens,
         }), 201
 
+    @app.route("/integracoes/marcelo/pedidos-facebook", methods=["GET", "OPTIONS"])
+    def marcelo_pedidos_facebook():
+        # Detecta quais pedidos vieram do Facebook lendo o WhatsApp (WAHA): a 1ª
+        # mensagem do cliente carrega o marcador [FACEBOOK] (vem do link wa.me da
+        # página de divulgação). NÃO toca no bot n8n. Resultado (telefones) fica em
+        # cache durável no dx_config (chave pedidos_facebook). Read-only no pedido.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        fb = set()
+        try:
+            _rc = requests.get(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                               params={"chave": "eq.pedidos_facebook", "select": "valor"},
+                               headers=_wrx_headers(), timeout=12)
+            if _rc.status_code == 200 and _rc.json():
+                v = _rc.json()[0].get("valor")
+                if isinstance(v, list):
+                    fb = set(str(x) for x in v)
+        except Exception:
+            pass
+        if request.args.get("so_cache") in ("1", "true"):
+            return jsonify({"ok": True, "fones": sorted(fb), "checados": 0, "cache": True})
+        # telefones de pedidos recentes ainda não classificados
+        try:
+            peds = requests.get(f"{_WRX_SB_URL}/rest/v1/pedidos",
+                                params={"select": "phone,criado_em", "order": "criado_em.desc", "limit": "200"},
+                                headers=_wrx_headers(), timeout=15).json()
+        except Exception:
+            peds = []
+        fones = []
+        for p in (peds if isinstance(peds, list) else []):
+            f = _normalizar_fone_pedido(p.get("phone"))
+            if f and f not in fb and f not in fones:
+                fones.append(f)
+        checados = 0
+        for f in fones[:40]:   # limita p/ não travar (cache cobre o resto nas próximas cargas)
+            checados += 1
+            try:
+                rr = requests.get(f"{WAHA_BASE}/api/{WAHA_SESSION}/chats/{f}@c.us/messages",
+                                  params={"limit": "60"}, headers=_waha_h({"Accept": "application/json"}), timeout=15)
+                msgs = rr.json() if rr.status_code == 200 else []
+                if isinstance(msgs, dict):
+                    msgs = msgs.get("data") or msgs.get("messages") or []
+                for m in (msgs if isinstance(msgs, list) else []):
+                    if not isinstance(m, dict) or m.get("fromMe") is True:
+                        continue
+                    txt = str(m.get("body") or m.get("text") or m.get("caption") or "").upper()
+                    if "[FACEBOOK]" in txt or "VIM PELO FACEBOOK" in txt:
+                        fb.add(f)
+                        break
+            except Exception:
+                continue
+        try:
+            requests.post(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                          headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+                          json={"chave": "pedidos_facebook", "valor": sorted(fb)}, timeout=12)
+        except Exception as _e:
+            print(f"[FB-PEDIDOS] falha ao gravar cache: {_e}")
+        return jsonify({"ok": True, "fones": sorted(fb), "checados": checados, "cache": False})
+
     @app.route("/integracoes/marcelo/pedido-itens/<pedido_id>", methods=["GET", "OPTIONS"])
     def marcelo_listar_itens_pedido(pedido_id):
         if request.method == "OPTIONS":
