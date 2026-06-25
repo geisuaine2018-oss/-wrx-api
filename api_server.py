@@ -8817,6 +8817,50 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         grupos.sort(key=lambda x: (x.get("nome") or "").lower())
         return jsonify({"ok": True, "total": len(grupos), "grupos": grupos})
 
+    @app.route("/integracoes/whatsapp/oficinas", methods=["GET", "POST", "OPTIONS"])
+    def whatsapp_oficinas():
+        """Cadastro de OFICINAS (clientes B2B) pra envio de pergunta/divulgação.
+        Guardado em dx_config:oficinas. GET lista; POST {nome,telefone,loja,endereco}
+        cadastra; POST {_remover:id} remove."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        lst = []
+        try:
+            r = requests.get(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                             params={"chave": "eq.oficinas", "select": "valor"},
+                             headers=_wrx_headers(), timeout=12)
+            if r.status_code == 200 and r.json():
+                v = r.json()[0].get("valor")
+                if isinstance(v, list):
+                    lst = v
+        except Exception:
+            pass
+        if request.method == "POST":
+            data = request.get_json(force=True) or {}
+            if data.get("_remover"):
+                lst = [o for o in lst if str(o.get("id")) != str(data["_remover"])]
+            else:
+                nome = str(data.get("nome") or "").strip()
+                tel = "".join(ch for ch in str(data.get("telefone") or "") if ch.isdigit())
+                if not nome or len(tel) < 10:
+                    return jsonify({"ok": False, "erro": "informe nome e telefone com DDD"}), 400
+                if len(tel) in (10, 11):
+                    tel = "55" + tel
+                lst.append({
+                    "id": _secrets.token_hex(4),
+                    "nome": nome, "telefone": tel,
+                    "loja": str(data.get("loja") or "").strip(),
+                    "endereco": str(data.get("endereco") or "").strip(),
+                })
+            try:
+                requests.post(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                              headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+                              json={"chave": "oficinas", "valor": lst}, timeout=12)
+            except Exception as e:
+                return jsonify({"ok": False, "erro": str(e)}), 502
+            return jsonify({"ok": True, "total": len(lst)})
+        return jsonify({"ok": True, "oficinas": lst, "total": len(lst)})
+
     @app.route("/integracoes/whatsapp/colaboradores", methods=["GET", "POST", "OPTIONS"])
     def whatsapp_colaboradores():
         """Lista/cadastra colaboradores (parceiros) pra divulgação individual.
