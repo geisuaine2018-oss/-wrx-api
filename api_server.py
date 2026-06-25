@@ -4538,7 +4538,11 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
             _off = 0
             while True:
                 r = requests.get(
-                    f"{_WRX_SB_URL}/rest/v1/ml_anuncios?select=*&order=sync_at.desc&limit=1000&offset={_off}",
+                    # ORDER por chave UNICA (ml_id,conta) -> paginacao por offset ESTAVEL.
+                    # Antes era order=sync_at.desc: o sync grava milhares de linhas com o MESMO
+                    # sync_at; sem desempate unico, o offset pula/omite linhas entre paginas
+                    # (anuncios recem-publicados sumiam do anuncios-db -> card "Sem anuncio").
+                    f"{_WRX_SB_URL}/rest/v1/ml_anuncios?select=*&order=ml_id.asc,conta.asc&limit=1000&offset={_off}",
                     headers=_wrx_headers(), timeout=15
                 )
                 if r.status_code != 200:
