@@ -8703,6 +8703,105 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         ok, msg = _waha_enviar_imagem(numero, url, legenda)
         return jsonify({"ok": ok, "detalhe": msg, "numero": numero})
 
+    # ── Divulgação em GRUPOS do WhatsApp ────────────────────────────────────────
+    @app.route("/integracoes/whatsapp/grupos", methods=["GET", "OPTIONS"])
+    def whatsapp_grupos():
+        """Lista os grupos do WhatsApp conectado (WAHA)."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        try:
+            r = requests.get(f"{WAHA_BASE}/api/{WAHA_SESSION}/groups",
+                             headers=_waha_h({"Accept": "application/json"}), timeout=25)
+            data = r.json() if r.status_code == 200 else {}
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 502
+        grupos = []
+        def _add(gid, g):
+            gid = gid.get("_serialized") if isinstance(gid, dict) else gid
+            if not gid or not str(gid).endswith("@g.us") or not isinstance(g, dict):
+                return
+            nome = g.get("subject") or (g.get("groupMetadata") or {}).get("subject") or g.get("name") or gid
+            tam = g.get("size") or (g.get("groupMetadata") or {}).get("size")
+            grupos.append({"id": gid, "nome": nome, "tamanho": tam})
+        if isinstance(data, dict) and isinstance(data.get("data"), list):
+            for g in data["data"]:
+                _add(g.get("id"), g)
+        elif isinstance(data, dict):
+            for gid, g in data.items():
+                _add(gid, g)
+        elif isinstance(data, list):
+            for g in data:
+                _add(g.get("id"), g)
+        grupos.sort(key=lambda x: (x.get("nome") or "").lower())
+        return jsonify({"ok": True, "total": len(grupos), "grupos": grupos})
+
+    @app.route("/integracoes/whatsapp/enviar-grupos", methods=["POST", "OPTIONS"])
+    def whatsapp_enviar_grupos():
+        """Dispara um produto (imagem + mensagem) pros grupos selecionados, com
+        ESPAÇAMENTO aleatório entre cada envio e pequena VARIAÇÃO na mensagem
+        (anti-bloqueio). Roda em background; status em dx_config:grupos_envio_status."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        grupos = [str(g) for g in (data.get("grupos") or []) if str(g).endswith("@g.us")]
+        imagem = str(data.get("imagem") or "").strip()
+        mensagem = str(data.get("mensagem") or "").strip()
+        if not grupos:
+            return jsonify({"ok": False, "erro": "selecione ao menos 1 grupo"}), 400
+        if not mensagem and not imagem.startswith("http"):
+            return jsonify({"ok": False, "erro": "sem conteudo para enviar"}), 400
+        job = {"total": len(grupos), "enviados": 0, "ok": 0, "falhas": 0, "rodando": True, "inicio": time.time()}
+        def _status():
+            try:
+                requests.post(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                              headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+                              json={"chave": "grupos_envio_status", "valor": job}, timeout=10)
+            except Exception:
+                pass
+        _status()
+        INTROS = ["", "🔥 ", "✅ ", "🚗 ", "📢 ", "👇 ", "⚙️ ", "💥 "]
+        def _worker():
+            import random as R, time as T
+            for i, gid in enumerate(grupos):
+                cap = R.choice(INTROS) + mensagem
+                try:
+                    if imagem.startswith("http"):
+                        rr = requests.post(f"{WAHA_BASE}/api/sendImage",
+                                           headers=_waha_h({"Content-Type": "application/json"}),
+                                           json={"session": WAHA_SESSION, "chatId": gid,
+                                                 "file": {"url": imagem}, "caption": cap}, timeout=40)
+                    else:
+                        rr = requests.post(f"{WAHA_BASE}/api/sendText",
+                                           headers=_waha_h({"Content-Type": "application/json"}),
+                                           json={"session": WAHA_SESSION, "chatId": gid, "text": cap}, timeout=40)
+                    ok = rr.status_code in (200, 201)
+                except Exception:
+                    ok = False
+                job["enviados"] += 1
+                job["ok"] += 1 if ok else 0
+                job["falhas"] += 0 if ok else 1
+                _status()
+                if i < len(grupos) - 1:
+                    T.sleep(R.uniform(8, 20))   # espaçamento anti-bloqueio
+            job["rodando"] = False
+            job["fim"] = time.time()
+            _status()
+        _threading.Thread(target=_worker, daemon=True).start()
+        return jsonify({"ok": True, "msg": f"Disparo iniciado para {len(grupos)} grupos", "total": len(grupos)})
+
+    @app.route("/integracoes/whatsapp/enviar-grupos/status", methods=["GET", "OPTIONS"])
+    def whatsapp_enviar_grupos_status():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        try:
+            r = requests.get(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                             params={"chave": "eq.grupos_envio_status", "select": "valor"},
+                             headers=_wrx_headers(), timeout=10)
+            v = r.json()[0].get("valor") if (r.status_code == 200 and r.json()) else {}
+        except Exception:
+            v = {}
+        return jsonify({"ok": True, "status": v or {}})
+
     # Memória simples (em arquivo) do que já foi avisado, pra não repetir
     _AVISADOS_FILE = os.path.join(_INTEG_DIR, "wrx_whatsapp_avisados.json")
     def _avisados_load():
