@@ -3790,6 +3790,29 @@ if USE_FLASK:
         if not fotos_url and not video_url:
             return jsonify({"ok": False, "erro": "não consegui salvar a foto/vídeo (tente de novo)",
                             "detalhe": _prova_err["v"]}), 502
+        # Índice em dx_config (a publishable key NÃO lista o Storage, então guardamos as URLs
+        # aqui). 1 registro POR pedido (chave prova_<mkt>_<pedido>); acumula vários registros.
+        chave = f"prova_{mkt}_{pedido}"
+        item = {"em": dados["registrado_em"], "fotos": fotos_url, "video": video_url}
+        registro = {"pedido_mkt": pedido, "marketplace": mkt, "conta": d.get("conta"),
+                    "cliente": d.get("cliente"), "sku": d.get("sku"), "titulo": d.get("titulo"),
+                    "itens": [item]}
+        try:
+            ex = requests.get(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                              params={"chave": f"eq.{chave}", "select": "valor"},
+                              headers=_wrx_headers(), timeout=12)
+            if ex.status_code == 200 and ex.json():
+                v = (ex.json()[0] or {}).get("valor") or {}
+                if isinstance(v, dict) and isinstance(v.get("itens"), list):
+                    registro["itens"] = v["itens"] + [item]
+        except Exception:
+            pass
+        try:
+            requests.post(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                          headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+                          json={"chave": chave, "valor": registro}, timeout=12)
+        except Exception:
+            pass
         return jsonify({"ok": True, "fotos": fotos_url, "video": video_url})
 
     @app.route("/expedicao/provas", methods=["GET", "OPTIONS"])
@@ -3800,45 +3823,24 @@ if USE_FLASK:
         mkt = (str(request.args.get("marketplace") or "ml").strip().lower() or "ml")
         if not pedido:
             return jsonify({"ok": False, "erro": "pedido obrigatório"}), 400
-        prefixo = f"provas/{mkt}_{pedido}"
-        status_dbg, raw_dbg = 0, ""
-        itens = []
+        chave = f"prova_{mkt}_{pedido}"
+        fotos, videos, em = [], [], None
         try:
-            lr = requests.post(
-                f"{_WRX_SB_URL}/storage/v1/object/list/fotos-pecas",
-                headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}", "Content-Type": "application/json"},
-                json={"prefix": prefixo + "/", "limit": 200, "offset": 0,
-                      "sortBy": {"column": "name", "order": "asc"}}, timeout=20)
-            status_dbg = lr.status_code
-            raw_dbg = lr.text[:400]
-            if lr.status_code == 200:
-                itens = lr.json()
-        except Exception as e:
-            raw_dbg = f"EXC: {e}"
-        pub = f"{_WRX_SB_URL}/storage/v1/object/public/fotos-pecas/{prefixo}/"
-        fotos, video = [], None
-        for it in (itens if isinstance(itens, list) else []):
-            nome = (it or {}).get("name") or ""
-            if nome.endswith(".jpg"):
-                fotos.append(pub + nome)
-            elif nome.endswith((".webm", ".mp4")):
-                video = pub + nome
-        out = {"ok": True, "fotos": fotos, "video": video, "tem": bool(fotos or video)}
-        if request.args.get("debug"):
-            dbg = {}
-            for pfx in ["", "provas", prefixo]:
-                try:
-                    rr = requests.post(f"{_WRX_SB_URL}/storage/v1/object/list/fotos-pecas",
-                        headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}", "Content-Type": "application/json"},
-                        json={"prefix": pfx, "limit": 100}, timeout=15)
-                    if rr.status_code == 200 and isinstance(rr.json(), list):
-                        dbg[pfx or "(raiz)"] = [x.get("name") for x in rr.json()]
-                    else:
-                        dbg[pfx or "(raiz)"] = f"HTTP {rr.status_code}: {rr.text[:120]}"
-                except Exception as e:
-                    dbg[pfx or "(raiz)"] = f"EXC {e}"
-            out["_debug"] = dbg
-        return jsonify(out)
+            r = requests.get(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                             params={"chave": f"eq.{chave}", "select": "valor"},
+                             headers=_wrx_headers(), timeout=12)
+            if r.status_code == 200 and r.json():
+                v = (r.json()[0] or {}).get("valor") or {}
+                for it in (v.get("itens") or []):
+                    fotos += [f for f in (it.get("fotos") or []) if f]
+                    if it.get("video"):
+                        videos.append(it["video"])
+                    em = it.get("em") or em
+        except Exception:
+            pass
+        return jsonify({"ok": True, "fotos": fotos, "videos": videos,
+                        "video": (videos[-1] if videos else None),
+                        "tem": bool(fotos or videos), "em": em})
 
     @app.route("/cadastro-rapido", methods=["POST", "OPTIONS"])
     def cadastro_rapido():
