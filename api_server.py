@@ -3734,17 +3734,19 @@ if USE_FLASK:
     # Foto(s) + vídeo curto do produto embalado COM a etiqueta, salvos junto com os dados da
     # compra, pra defesa em devolução no ML/Shopee. Sobe pro Storage (bucket fotos-pecas,
     # pasta provas/<mkt>_<pedido>/). Auto-delete de 2 meses fica numa rotina à parte.
+    _prova_err = {"v": ""}
     def _subir_storage_prova(path, raw, ctype):
         try:
             up = requests.post(
                 f"{_WRX_SB_URL}/storage/v1/object/fotos-pecas/{path}",
                 headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}",
-                         "Content-Type": ctype, "x-upsert": "true"},
+                         "Content-Type": ctype},
                 data=raw, timeout=90)
             if up.status_code in (200, 201):
                 return f"{_WRX_SB_URL}/storage/v1/object/public/fotos-pecas/{path}"
-        except Exception:
-            pass
+            _prova_err["v"] = f"HTTP {up.status_code}: {up.text[:180]}"
+        except Exception as e:
+            _prova_err["v"] = f"EXC: {e}"
         return None
 
     @app.route("/expedicao/prova", methods=["POST", "OPTIONS"])
@@ -3786,7 +3788,8 @@ if USE_FLASK:
         _subir_storage_prova(f"{base}/{ts}_dados.json",
                              _json.dumps(dados, ensure_ascii=False).encode("utf-8"), "application/json")
         if not fotos_url and not video_url:
-            return jsonify({"ok": False, "erro": "não consegui salvar a foto/vídeo (tente de novo)"}), 502
+            return jsonify({"ok": False, "erro": "não consegui salvar a foto/vídeo (tente de novo)",
+                            "detalhe": _prova_err["v"]}), 502
         return jsonify({"ok": True, "fotos": fotos_url, "video": video_url})
 
     @app.route("/expedicao/provas", methods=["GET", "OPTIONS"])
