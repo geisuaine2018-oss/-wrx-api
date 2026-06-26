@@ -8907,13 +8907,20 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             whats = "".join(ch for ch in str(data.get("whatsapp") or "") if ch.isdigit())
             if not nome or len(whats) < 10:
                 return jsonify({"ok": False, "erro": "informe nome e WhatsApp com DDD"}), 400
-            try:
-                requests.post(f"{_WRX_SB_URL}/rest/v1/colaboradores",
-                              headers={**_wrx_headers(), "Prefer": "return=minimal"},
-                              json={"nome": nome, "whatsapp": whats, "disponivel": True}, timeout=12)
-            except Exception as e:
-                return jsonify({"ok": False, "erro": str(e)}), 502
-            return jsonify({"ok": True})
+            # timeout 30s: o Supabase grátis tem cold start (~19s na 1ª operação). Com 12s dava
+            # "Read timed out". Re-tenta 1x se o 1º POST estourar (a 1ª chamada acorda o banco).
+            erro_final = ""
+            for tentativa in (1, 2):
+                try:
+                    rp = requests.post(f"{_WRX_SB_URL}/rest/v1/colaboradores",
+                                       headers={**_wrx_headers(), "Prefer": "return=minimal"},
+                                       json={"nome": nome, "whatsapp": whats, "disponivel": True}, timeout=30)
+                    if rp.status_code >= 300:
+                        return jsonify({"ok": False, "erro": f"Supabase HTTP {rp.status_code}: {rp.text[:160]}"}), 502
+                    return jsonify({"ok": True})
+                except Exception as e:
+                    erro_final = str(e)
+            return jsonify({"ok": False, "erro": erro_final or "falhou"}), 502
         # ?tipo=colaboradores  -> só a tabela colaboradores (os que a dona MARCA pra procurar peça)
         # ?tipo=funcionarios   -> só a tabela funcionarios (recebem o pedido SEMPRE, automático)
         # sem tipo             -> as duas juntas (compatível com o uso antigo do CRM)
