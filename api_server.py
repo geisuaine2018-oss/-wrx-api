@@ -3730,6 +3730,92 @@ if USE_FLASK:
                 pass
         return out
 
+    # ===== PROVA DE ENVIO (expedição) =====================================================
+    # Foto(s) + vídeo curto do produto embalado COM a etiqueta, salvos junto com os dados da
+    # compra, pra defesa em devolução no ML/Shopee. Sobe pro Storage (bucket fotos-pecas,
+    # pasta provas/<mkt>_<pedido>/). Auto-delete de 2 meses fica numa rotina à parte.
+    def _subir_storage_prova(path, raw, ctype):
+        try:
+            up = requests.post(
+                f"{_WRX_SB_URL}/storage/v1/object/fotos-pecas/{path}",
+                headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}",
+                         "Content-Type": ctype, "x-upsert": "true"},
+                data=raw, timeout=90)
+            if up.status_code in (200, 201):
+                return f"{_WRX_SB_URL}/storage/v1/object/public/fotos-pecas/{path}"
+        except Exception:
+            pass
+        return None
+
+    @app.route("/expedicao/prova", methods=["POST", "OPTIONS"])
+    def expedicao_prova_salvar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        import base64 as _b64, time as _time, json as _json
+        d = request.get_json(force=True, silent=True) or {}
+        pedido = str(d.get("pedido_mkt") or d.get("pedido") or "").strip()
+        if not pedido:
+            return jsonify({"ok": False, "erro": "pedido obrigatório"}), 400
+        mkt = (str(d.get("marketplace") or "ml").strip().lower() or "ml")
+        base = f"provas/{mkt}_{pedido}"
+        ts = int(_time.time() * 1000)
+        fotos_url, video_url = [], None
+        for i, f in enumerate((d.get("fotos") or [])[:6]):
+            if isinstance(f, str) and f.startswith("data:"):
+                try:
+                    raw = _b64.b64decode(f.split(",", 1)[1])
+                    u = _subir_storage_prova(f"{base}/{ts}_{i}.jpg", raw, "image/jpeg")
+                    if u:
+                        fotos_url.append(u)
+                except Exception:
+                    pass
+        vid = d.get("video")
+        if isinstance(vid, str) and vid.startswith("data:"):
+            try:
+                ext = "mp4" if "mp4" in vid[:40] else "webm"
+                raw = _b64.b64decode(vid.split(",", 1)[1])
+                video_url = _subir_storage_prova(f"{base}/{ts}_video.{ext}", raw, f"video/{ext}")
+            except Exception:
+                pass
+        dados = {
+            "pedido_mkt": pedido, "marketplace": mkt, "conta": d.get("conta"),
+            "cliente": d.get("cliente"), "sku": d.get("sku"), "titulo": d.get("titulo"),
+            "registrado_em": _time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "fotos": fotos_url, "video": video_url,
+        }
+        _subir_storage_prova(f"{base}/{ts}_dados.json",
+                             _json.dumps(dados, ensure_ascii=False).encode("utf-8"), "application/json")
+        if not fotos_url and not video_url:
+            return jsonify({"ok": False, "erro": "não consegui salvar a foto/vídeo (tente de novo)"}), 502
+        return jsonify({"ok": True, "fotos": fotos_url, "video": video_url})
+
+    @app.route("/expedicao/provas", methods=["GET", "OPTIONS"])
+    def expedicao_prova_listar():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        pedido = str(request.args.get("pedido") or "").strip()
+        mkt = (str(request.args.get("marketplace") or "ml").strip().lower() or "ml")
+        if not pedido:
+            return jsonify({"ok": False, "erro": "pedido obrigatório"}), 400
+        prefixo = f"provas/{mkt}_{pedido}"
+        try:
+            lr = requests.post(
+                f"{_WRX_SB_URL}/storage/v1/object/list/fotos-pecas",
+                headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}", "Content-Type": "application/json"},
+                json={"prefix": prefixo, "limit": 200, "sortBy": {"column": "name", "order": "asc"}}, timeout=20)
+            itens = lr.json() if lr.status_code == 200 else []
+        except Exception:
+            itens = []
+        pub = f"{_WRX_SB_URL}/storage/v1/object/public/fotos-pecas/{prefixo}/"
+        fotos, video = [], None
+        for it in (itens if isinstance(itens, list) else []):
+            nome = (it or {}).get("name") or ""
+            if nome.endswith(".jpg"):
+                fotos.append(pub + nome)
+            elif nome.endswith((".webm", ".mp4")):
+                video = pub + nome
+        return jsonify({"ok": True, "fotos": fotos, "video": video, "tem": bool(fotos or video)})
+
     @app.route("/cadastro-rapido", methods=["POST", "OPTIONS"])
     def cadastro_rapido():
         # Cadastro rápido (mobile) -> grava em pecas_estoque com origem='manual'
