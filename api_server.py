@@ -3801,14 +3801,20 @@ if USE_FLASK:
         if not pedido:
             return jsonify({"ok": False, "erro": "pedido obrigatório"}), 400
         prefixo = f"provas/{mkt}_{pedido}"
+        status_dbg, raw_dbg = 0, ""
+        itens = []
         try:
             lr = requests.post(
                 f"{_WRX_SB_URL}/storage/v1/object/list/fotos-pecas",
                 headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}", "Content-Type": "application/json"},
-                json={"prefix": prefixo, "limit": 200, "sortBy": {"column": "name", "order": "asc"}}, timeout=20)
-            itens = lr.json() if lr.status_code == 200 else []
-        except Exception:
-            itens = []
+                json={"prefix": prefixo + "/", "limit": 200, "offset": 0,
+                      "sortBy": {"column": "name", "order": "asc"}}, timeout=20)
+            status_dbg = lr.status_code
+            raw_dbg = lr.text[:400]
+            if lr.status_code == 200:
+                itens = lr.json()
+        except Exception as e:
+            raw_dbg = f"EXC: {e}"
         pub = f"{_WRX_SB_URL}/storage/v1/object/public/fotos-pecas/{prefixo}/"
         fotos, video = [], None
         for it in (itens if isinstance(itens, list) else []):
@@ -3817,7 +3823,10 @@ if USE_FLASK:
                 fotos.append(pub + nome)
             elif nome.endswith((".webm", ".mp4")):
                 video = pub + nome
-        return jsonify({"ok": True, "fotos": fotos, "video": video, "tem": bool(fotos or video)})
+        out = {"ok": True, "fotos": fotos, "video": video, "tem": bool(fotos or video)}
+        if request.args.get("debug"):
+            out["_debug"] = {"prefixo": prefixo, "status": status_dbg, "raw": raw_dbg, "n_itens": len(itens) if isinstance(itens, list) else -1}
+        return jsonify(out)
 
     @app.route("/cadastro-rapido", methods=["POST", "OPTIONS"])
     def cadastro_rapido():
