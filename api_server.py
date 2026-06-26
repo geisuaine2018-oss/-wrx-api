@@ -3937,20 +3937,49 @@ if USE_FLASK:
         }
         # remove chaves None (colunas de medida podem não existir ainda)
         row = {k: v for k, v in row.items() if v is not None}
+        _novo = bool(d.get("novo"))  # cadastro NOVO (SKU sugerido) -> NUNCA mesclar; se colidir, gera o proximo
+        def _post_peca(_r, _merge):
+            _pref = "resolution=merge-duplicates,return=minimal" if _merge else "return=minimal"
+            _url = f"{_WRX_SB_URL}/rest/v1/pecas_estoque" + ("?on_conflict=sku" if _merge else "")
+            return requests.post(_url, headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": _pref}, json=_r, timeout=20)
+        def _sku_duplicado(_resp):
+            _t = (_resp.text or "").lower()
+            return _resp.status_code == 409 or "duplicate key" in _t or "23505" in _t
+        def _row_sem_medidas(_r):
+            _b = {k: _r[k] for k in ("sku", "titulo", "oem", "marca", "modelo", "ano", "preco", "qtd", "cond", "loc", "categoria", "fotos", "compatibilidade", "cadastrado_em", "cadastrado_por") if k in _r}
+            _b["origem"] = "manual"
+            return _b
         try:
-            r = requests.post(
-                f"{_WRX_SB_URL}/rest/v1/pecas_estoque?on_conflict=sku",
-                headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
-                json=row, timeout=20)
+            if _novo:
+                # INSERT ATOMICO: insere SEM mesclar. Se dois colaboradores cadastram no mesmo
+                # instante com o mesmo SKU, o banco (sku unico) rejeita o 2o -> pega o PROXIMO
+                # SKU e re-tenta. Assim os dados de uma peca NUNCA entram na outra ("vira o proximo SKU").
+                _cands = [row, _row_sem_medidas(row)]  # 1o com medidas; se a coluna nao existir, sem medidas
+                r = None
+                for _ci, _cand in enumerate(_cands):
+                    _falhou_coluna = False
+                    for _tent in range(8):
+                        r = _post_peca(_cand, False)
+                        if r.status_code in (200, 201, 204):
+                            _resp_ok = {"ok": True, "sku": _cand["sku"]}
+                            if _ci == 1:
+                                _resp_ok["aviso"] = "salvo sem medidas (colunas podem faltar)"
+                            return jsonify(_resp_ok)
+                        if _sku_duplicado(r):
+                            _cand["sku"] = str(_max_sku_numerico() + 1)  # colidiu -> proximo SKU livre
+                            continue
+                        _falhou_coluna = True  # erro diferente (provavel coluna inexistente) -> tenta candidato sem medidas
+                        break
+                    if not _falhou_coluna:
+                        break
+                return jsonify({"ok": False, "erro": f"Supabase {r.status_code if r is not None else '?'}: {(r.text[:200] if r is not None else '')}"}), 502
+            # EDICAO / SKU digitado a mao: mantem o merge (atualiza a peca existente)
+            r = _post_peca(row, True)
             if r.status_code in (200, 201, 204):
                 return jsonify({"ok": True, "sku": sku})
             # se falhou por coluna inexistente (medidas/origem), tenta sem os extras
-            base = {k: row[k] for k in ("sku", "titulo", "oem", "marca", "modelo", "ano", "preco", "qtd", "cond", "loc", "categoria", "fotos", "compatibilidade", "cadastrado_em", "cadastrado_por") if k in row}
-            base["origem"] = "manual"
-            r2 = requests.post(
-                f"{_WRX_SB_URL}/rest/v1/pecas_estoque?on_conflict=sku",
-                headers={**_wrx_headers(), "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"},
-                json=base, timeout=20)
+            base = _row_sem_medidas(row)
+            r2 = _post_peca(base, True)
             if r2.status_code in (200, 201, 204):
                 return jsonify({"ok": True, "sku": sku, "aviso": "salvo sem medidas (colunas podem faltar)"})
             return jsonify({"ok": False, "erro": f"Supabase {r.status_code}: {r.text[:200]}"}), 502
