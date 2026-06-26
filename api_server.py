@@ -8914,8 +8914,18 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             except Exception as e:
                 return jsonify({"ok": False, "erro": str(e)}), 502
             return jsonify({"ok": True})
+        # ?tipo=colaboradores  -> só a tabela colaboradores (os que a dona MARCA pra procurar peça)
+        # ?tipo=funcionarios   -> só a tabela funcionarios (recebem o pedido SEMPRE, automático)
+        # sem tipo             -> as duas juntas (compatível com o uso antigo do CRM)
+        tipo = (request.args.get("tipo") or "").strip().lower()
+        if tipo == "colaboradores":
+            tabs = ("colaboradores",)
+        elif tipo == "funcionarios":
+            tabs = ("funcionarios",)
+        else:
+            tabs = ("funcionarios", "colaboradores")
         out, visto = [], set()
-        for tab in ("funcionarios", "colaboradores"):
+        for tab in tabs:
             try:
                 rows = requests.get(f"{_WRX_SB_URL}/rest/v1/{tab}",
                                     params={"select": "nome,whatsapp", "limit": "200"},
