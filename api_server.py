@@ -9994,8 +9994,12 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 "timestamp": ts,
                 "access_token": access_token,
                 "item_name": titulo[:120],
-                # Todas as copias pertencem ao mesmo produto no estoque.
-                "item_sku": str(sku_interno)[:50],
+                # SKU UNICO por copia (ex 2093-SH1, -SH2...) p/ a Shopee NAO acusar
+                # duplicidade [302] "anuncios duplicados". Antes mandava o sku_interno (base),
+                # entao toda copia/republicacao tinha o MESMO item_sku -> duplicado.
+                # SEGURO: a baixa de estoque na venda tira o sufixo -SH/-DML/-GML
+                # (ver _shopee_processar_venda_webhook, re.sub r'-(SH|DML|GML)\d+$').
+                "item_sku": str(sku or sku_interno)[:50],
                 "description": descricao[:2000],
                 "original_price": float(preco),
                 "seller_stock": [{"stock": 1}],
