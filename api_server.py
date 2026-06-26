@@ -3749,10 +3749,54 @@ if USE_FLASK:
             _prova_err["v"] = f"EXC: {e}"
         return None
 
+    # Auto-delete de 2 meses: roda no máx 1x/dia (acionado quando a dona registra uma prova).
+    _prova_limpeza = {"ts": 0}
+    def _limpar_provas_antigas():
+        from datetime import datetime, timedelta
+        limite = datetime.now() - timedelta(days=60)
+        try:
+            r = requests.get(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                             params={"chave": "like.prova_*", "select": "chave,valor"},
+                             headers=_wrx_headers(), timeout=25)
+            rows = r.json() if r.status_code == 200 else []
+        except Exception:
+            rows = []
+        for row in (rows if isinstance(rows, list) else []):
+            chave = row.get("chave"); v = row.get("valor") or {}
+            itens = v.get("itens") or []
+            ems = [it.get("em") for it in itens if it.get("em")]
+            if not ems:
+                continue
+            try:
+                if max(datetime.fromisoformat(e) for e in ems) >= limite:
+                    continue   # ainda dentro dos 2 meses
+            except Exception:
+                continue
+            for it in itens:   # +60 dias: tenta apagar os arquivos (best-effort) e o índice
+                for u in (it.get("fotos") or []) + ([it.get("video")] if it.get("video") else []):
+                    try:
+                        path = str(u).split("/public/fotos-pecas/", 1)[1]
+                        requests.delete(f"{_WRX_SB_URL}/storage/v1/object/fotos-pecas/{path}",
+                                        headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}"}, timeout=15)
+                    except Exception:
+                        pass
+            try:
+                requests.delete(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                                params={"chave": f"eq.{chave}"}, headers=_wrx_headers(), timeout=15)
+            except Exception:
+                pass
+    def _talvez_limpar_provas():
+        import time as _time, threading
+        if _time.time() - _prova_limpeza["ts"] < 86400:
+            return
+        _prova_limpeza["ts"] = _time.time()
+        threading.Thread(target=_limpar_provas_antigas, daemon=True).start()
+
     @app.route("/expedicao/prova", methods=["POST", "OPTIONS"])
     def expedicao_prova_salvar():
         if request.method == "OPTIONS":
             return _options_resp()
+        _talvez_limpar_provas()
         import base64 as _b64, time as _time, json as _json
         d = request.get_json(force=True, silent=True) or {}
         pedido = str(d.get("pedido_mkt") or d.get("pedido") or "").strip()
