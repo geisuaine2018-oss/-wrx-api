@@ -3825,7 +3825,19 @@ if USE_FLASK:
                 video = pub + nome
         out = {"ok": True, "fotos": fotos, "video": video, "tem": bool(fotos or video)}
         if request.args.get("debug"):
-            out["_debug"] = {"prefixo": prefixo, "status": status_dbg, "raw": raw_dbg, "n_itens": len(itens) if isinstance(itens, list) else -1}
+            dbg = {}
+            for pfx in ["", "provas", prefixo]:
+                try:
+                    rr = requests.post(f"{_WRX_SB_URL}/storage/v1/object/list/fotos-pecas",
+                        headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}", "Content-Type": "application/json"},
+                        json={"prefix": pfx, "limit": 100}, timeout=15)
+                    if rr.status_code == 200 and isinstance(rr.json(), list):
+                        dbg[pfx or "(raiz)"] = [x.get("name") for x in rr.json()]
+                    else:
+                        dbg[pfx or "(raiz)"] = f"HTTP {rr.status_code}: {rr.text[:120]}"
+                except Exception as e:
+                    dbg[pfx or "(raiz)"] = f"EXC {e}"
+            out["_debug"] = dbg
         return jsonify(out)
 
     @app.route("/cadastro-rapido", methods=["POST", "OPTIONS"])
