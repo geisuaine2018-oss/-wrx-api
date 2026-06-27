@@ -3826,6 +3826,7 @@ if USE_FLASK:
         dados = {
             "pedido_mkt": pedido, "marketplace": mkt, "conta": d.get("conta"),
             "cliente": d.get("cliente"), "sku": d.get("sku"), "titulo": d.get("titulo"),
+            "data_venda": d.get("data_venda"),
             "registrado_em": _time.strftime("%Y-%m-%dT%H:%M:%S"),
             "fotos": fotos_url, "video": video_url,
         }
@@ -3840,7 +3841,7 @@ if USE_FLASK:
         item = {"em": dados["registrado_em"], "fotos": fotos_url, "video": video_url}
         registro = {"pedido_mkt": pedido, "marketplace": mkt, "conta": d.get("conta"),
                     "cliente": d.get("cliente"), "sku": d.get("sku"), "titulo": d.get("titulo"),
-                    "itens": [item]}
+                    "data_venda": d.get("data_venda"), "itens": [item]}
         try:
             ex = requests.get(f"{_WRX_SB_URL}/rest/v1/dx_config",
                               params={"chave": f"eq.{chave}", "select": "valor"},
@@ -3919,6 +3920,7 @@ if USE_FLASK:
                 em = it.get("em") or em
             out.append({"pedido_mkt": pedido, "marketplace": v.get("marketplace"),
                         "cliente": v.get("cliente"), "sku": sku, "titulo": v.get("titulo"),
+                        "data_venda": v.get("data_venda"),
                         "em": em, "fotos": fotos, "videos": videos})
         out.sort(key=lambda x: x.get("em") or "", reverse=True)
         return jsonify({"ok": True, "resultados": out, "total": len(out)})
