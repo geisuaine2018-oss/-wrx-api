@@ -3886,6 +3886,43 @@ if USE_FLASK:
                         "video": (videos[-1] if videos else None),
                         "tem": bool(fotos or videos), "em": em})
 
+    @app.route("/expedicao/provas/buscar", methods=["GET", "OPTIONS"])
+    def expedicao_prova_buscar():
+        # Conferir prova na DEVOLUÇÃO/RECLAMAÇÃO: busca por nº do pedido OU SKU.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        q = str(request.args.get("q") or "").strip()
+        if not q:
+            return jsonify({"ok": False, "erro": "informe o nº do pedido ou o SKU"}), 400
+        try:
+            r = requests.get(f"{_WRX_SB_URL}/rest/v1/dx_config",
+                             params={"chave": "like.prova_*", "select": "chave,valor"},
+                             headers=_wrx_headers(), timeout=25)
+            rows = r.json() if r.status_code == 200 else []
+        except Exception:
+            rows = []
+        ql = q.lower()
+        out = []
+        for row in (rows if isinstance(rows, list) else []):
+            v = row.get("valor") or {}
+            pedido = str(v.get("pedido_mkt") or "")
+            sku = str(v.get("sku") or "")
+            hit = (ql == pedido.lower() or ql == sku.lower()
+                   or (len(ql) >= 4 and (ql in pedido.lower() or ql in sku.lower())))
+            if not hit:
+                continue
+            fotos, videos, em = [], [], None
+            for it in (v.get("itens") or []):
+                fotos += [f for f in (it.get("fotos") or []) if f]
+                if it.get("video"):
+                    videos.append(it["video"])
+                em = it.get("em") or em
+            out.append({"pedido_mkt": pedido, "marketplace": v.get("marketplace"),
+                        "cliente": v.get("cliente"), "sku": sku, "titulo": v.get("titulo"),
+                        "em": em, "fotos": fotos, "videos": videos})
+        out.sort(key=lambda x: x.get("em") or "", reverse=True)
+        return jsonify({"ok": True, "resultados": out, "total": len(out)})
+
     @app.route("/cadastro-rapido", methods=["POST", "OPTIONS"])
     def cadastro_rapido():
         # Cadastro rápido (mobile) -> grava em pecas_estoque com origem='manual'
