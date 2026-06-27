@@ -3826,7 +3826,7 @@ if USE_FLASK:
         dados = {
             "pedido_mkt": pedido, "marketplace": mkt, "conta": d.get("conta"),
             "cliente": d.get("cliente"), "sku": d.get("sku"), "titulo": d.get("titulo"),
-            "data_venda": d.get("data_venda"),
+            "data_venda": d.get("data_venda"), "cliente_dados": d.get("cliente_dados") or {},
             "registrado_em": _time.strftime("%Y-%m-%dT%H:%M:%S"),
             "fotos": fotos_url, "video": video_url,
         }
@@ -3841,7 +3841,8 @@ if USE_FLASK:
         item = {"em": dados["registrado_em"], "fotos": fotos_url, "video": video_url}
         registro = {"pedido_mkt": pedido, "marketplace": mkt, "conta": d.get("conta"),
                     "cliente": d.get("cliente"), "sku": d.get("sku"), "titulo": d.get("titulo"),
-                    "data_venda": d.get("data_venda"), "itens": [item]}
+                    "data_venda": d.get("data_venda"), "cliente_dados": d.get("cliente_dados") or {},
+                    "itens": [item]}
         try:
             ex = requests.get(f"{_WRX_SB_URL}/rest/v1/dx_config",
                               params={"chave": f"eq.{chave}", "select": "valor"},
@@ -3920,10 +3921,58 @@ if USE_FLASK:
                 em = it.get("em") or em
             out.append({"pedido_mkt": pedido, "marketplace": v.get("marketplace"),
                         "cliente": v.get("cliente"), "sku": sku, "titulo": v.get("titulo"),
-                        "data_venda": v.get("data_venda"),
+                        "data_venda": v.get("data_venda"), "cliente_dados": v.get("cliente_dados") or {},
                         "em": em, "fotos": fotos, "videos": videos})
         out.sort(key=lambda x: x.get("em") or "", reverse=True)
         return jsonify({"ok": True, "resultados": out, "total": len(out)})
+
+    @app.route("/expedicao/dados-cliente", methods=["GET", "OPTIONS"])
+    def expedicao_dados_cliente():
+        # Puxa do ML o endereço de entrega + valor da venda (o ML libera isso pro vendedor).
+        # Usado no momento de registrar a prova, pra salvar os dados junto.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        mkt = (str(request.args.get("marketplace") or "ml").strip().lower() or "ml")
+        if mkt != "ml":
+            return jsonify({"ok": True, "dados": {}})   # Shopee não suportado aqui
+        conta = str(request.args.get("conta") or "default").strip() or "default"
+        shipment = str(request.args.get("shipment") or "").strip()
+        pedido = str(request.args.get("pedido") or "").strip()
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": "conta sem token ML"})
+        hd = {"Authorization": f"Bearer {token}"}
+        def _nome(x):
+            return (x.get("name") if isinstance(x, dict) else x) or ""
+        out = {}
+        if shipment:
+            try:
+                r = requests.get(f"https://api.mercadolibre.com/shipments/{shipment}", headers=hd, timeout=15)
+                if r.status_code == 200:
+                    ra = (r.json() or {}).get("receiver_address", {}) or {}
+                    out["nome"] = ra.get("receiver_name") or ""
+                    out["endereco"] = ra.get("address_line") or (str(ra.get("street_name", "")) + " " + str(ra.get("street_number", ""))).strip()
+                    out["complemento"] = ra.get("comment") or ""
+                    out["bairro"] = _nome(ra.get("neighborhood"))
+                    out["cidade"] = _nome(ra.get("city"))
+                    out["uf"] = (ra.get("state", {}) or {}).get("id", "").replace("BR-", "") or _nome(ra.get("state"))
+                    out["cep"] = ra.get("zip_code") or ""
+                    out["telefone"] = ra.get("receiver_phone") or ""
+            except Exception:
+                pass
+        if pedido:
+            try:
+                r = requests.get(f"https://api.mercadolibre.com/orders/{pedido}", headers=hd, timeout=15)
+                if r.status_code == 200:
+                    o = r.json() or {}
+                    out["valor"] = o.get("total_amount")
+                    b = o.get("buyer", {}) or {}
+                    nome_b = (str(b.get("first_name", "")) + " " + str(b.get("last_name", ""))).strip() or b.get("nickname", "")
+                    if nome_b and not out.get("nome"):
+                        out["nome"] = nome_b
+            except Exception:
+                pass
+        return jsonify({"ok": True, "dados": out})
 
     @app.route("/cadastro-rapido", methods=["POST", "OPTIONS"])
     def cadastro_rapido():
