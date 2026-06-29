@@ -78,6 +78,28 @@ def _ml_preferir_categoria_carro(candidatos):
             return c
     return fallback
 
+def _ml_predizer_categoria(titulo):
+    """Prediz o category_id do ML pelo TÍTULO (domain_discovery, preferindo categoria de CARRO).
+    Usado na publicação quando a peça vem SEM categoria -> evita o anúncio travar/cair em genérica."""
+    titulo = (titulo or "").strip()
+    if not titulo:
+        return ""
+    try:
+        tok = _get_ml_token()
+        h = {"Accept": "application/json"}
+        if tok:
+            h["Authorization"] = f"Bearer {tok}"
+        r = requests.get("https://api.mercadolibre.com/sites/MLB/domain_discovery/search",
+                         params={"limit": 6, "q": titulo}, headers=h, timeout=10)
+        if r.status_code == 200:
+            cands = r.json() or []
+            if cands:
+                esc = _ml_preferir_categoria_carro(cands) or cands[0]
+                return (esc or {}).get("category_id", "") or ""
+    except Exception:
+        pass
+    return ""
+
 # Cache de fotos já enviadas ao ML: (conta, chave_foto) -> picture_id.
 # Evita reenviar a MESMA foto a cada um dos 10 anúncios do mesmo produto.
 _ML_PIC_CACHE = {}
@@ -4554,7 +4576,14 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         # CONDIÇÃO: se a categoria do ML SÓ aceita "novo" (ex: Eixos e várias de catálogo), o anúncio
         # USADO é RECUSADO pelo ML -> só metade dos planos entrava ("3 de 6"). Converte usado->novo
         # nessas categorias (desmonte anuncia usado como novo). Vale p/ publicação direta E 2º plano.
-        _cat_id = data.get("mlCategoryId", "") or "MLB3530"
+        _cat_id = (data.get("mlCategoryId", "") or "").strip()
+        if not _cat_id or _cat_id == "MLB3530":
+            # categoria VAZIA/genérica -> prediz pelo título (senão o anúncio trava ou cai em genérica)
+            _pred = _ml_predizer_categoria(data.get("titulo") or data.get("nomeInterno") or _titulo)
+            if _pred:
+                _cat_id = _pred
+        if not _cat_id:
+            _cat_id = "MLB3530"
         _cond = data.get("condicao", "used")
         if _cond == "used" and _ml_categoria_so_novo(_cat_id):
             _cond = "new"
