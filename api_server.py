@@ -37,6 +37,26 @@ def _ml_categoria_attrs(cat_id):
     _ML_CAT_ATTRS_CACHE[cat_id] = m
     return m
 
+_ML_CAT_COND_CACHE = {}
+def _ml_categoria_so_novo(cat_id):
+    """True se a categoria do ML SÓ aceita 'new' (settings.item_conditions sem 'used'). Nessas
+    categorias (ex: Eixos MLB271698 e muitas de catálogo) o anúncio USADO é RECUSADO pelo ML —
+    então o desmonte precisa anunciar como NOVO. Usado p/ converter usado->novo na publicação."""
+    if not cat_id:
+        return False
+    if cat_id in _ML_CAT_COND_CACHE:
+        return _ML_CAT_COND_CACHE[cat_id]
+    so_novo = False
+    try:
+        _s = requests.get(f"https://api.mercadolibre.com/categories/{cat_id}", timeout=10).json()
+        _ic = (_s.get("settings") or {}).get("item_conditions") or []
+        if _ic and "used" not in _ic:   # tem restrição de condição e "used" NÃO está liberado
+            so_novo = True
+    except Exception:
+        pass
+    _ML_CAT_COND_CACHE[cat_id] = so_novo
+    return so_novo
+
 def _ml_preferir_categoria_carro(candidatos):
     """Entre as categorias candidatas do predictor do ML, prefere a de VEHICLE_TYPE
     'Carro/Caminhonete'. Muitas categorias de autopeça são iguais e só mudam o tipo de
@@ -4531,14 +4551,21 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         if preco <= 0:
             return jsonify({"ok": False, "erro": "preco invalido"}), 400
         _titulo = (data.get("titulo", "") or data.get("nomeInterno", ""))[:60]
+        # CONDIÇÃO: se a categoria do ML SÓ aceita "novo" (ex: Eixos e várias de catálogo), o anúncio
+        # USADO é RECUSADO pelo ML -> só metade dos planos entrava ("3 de 6"). Converte usado->novo
+        # nessas categorias (desmonte anuncia usado como novo). Vale p/ publicação direta E 2º plano.
+        _cat_id = data.get("mlCategoryId", "") or "MLB3530"
+        _cond = data.get("condicao", "used")
+        if _cond == "used" and _ml_categoria_so_novo(_cat_id):
+            _cond = "new"
         ml_payload = {
             "family_name": (data.get("family_name") or _titulo)[:60],
-            "category_id": data.get("mlCategoryId", "") or "MLB3530",
+            "category_id": _cat_id,
             "price": preco,
             "currency_id": "BRL",
             "available_quantity": int(data.get("quantidade", 1) or 1),
             "buying_mode": "buy_it_now",
-            "condition": data.get("condicao", "used"),
+            "condition": _cond,
             "listing_type_id": data.get("listingTypeId", "gold_special"),
             "seller_custom_field": sku,
             "shipping": {"mode": "me2", "free_shipping": bool(data.get("freeShipping", False))}
