@@ -4503,11 +4503,27 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
                     attrs.append({"id": "VEHICLE_TYPE", "value_id": _esc.get("id"), "value_name": _esc.get("name")})
                 else:
                     attrs.append({"id": "VEHICLE_TYPE", "value_name": "Carro/Caminhonete"})
+        # Peso/medidas do ENVIO: o frontend manda em PORTUGUES (peso[kg], altura/largura/profundidade[cm]).
+        # ANTES o codigo so lia package_* (ingles) -> NUNCA batia -> caia no PADRAO 30x30x50/2kg em TODA
+        # peca (frete errado; pior com a tarifa nova por peso+cubagem). Agora le os nomes que o frontend
+        # realmente envia (e package_* se vier), converte peso kg->g, e so usa o default se vier vazio.
+        def _num_pos(v):
+            try:
+                n = float(str(v).replace(",", ".").strip())
+                return n if n > 0 else None
+            except Exception:
+                return None
+        _alt_cm  = _num_pos(data.get("package_height") or data.get("altura"))
+        _lar_cm  = _num_pos(data.get("package_width")  or data.get("largura"))
+        _comp_cm = _num_pos(data.get("package_length") or data.get("profundidade") or data.get("comprimento"))
+        _peso_in = _num_pos(data.get("package_weight") or data.get("peso"))
+        # f-peso e em KG (ex 25 = 25kg). Converte p/ gramas; se vier >=100 assume que ja veio em gramas.
+        _peso_g  = (int(round(_peso_in * 1000)) if _peso_in < 100 else int(round(_peso_in))) if _peso_in else None
         _pkg_defaults = [
-            ("seller_package_height", f"{int(data.get('package_height') or 30)} cm"),
-            ("seller_package_width",  f"{int(data.get('package_width')  or 30)} cm"),
-            ("seller_package_length", f"{int(data.get('package_length') or 50)} cm"),
-            ("seller_package_weight", f"{int(data.get('package_weight') or 2000)} g"),
+            ("seller_package_height", f"{int(round(_alt_cm))  if _alt_cm  else 30} cm"),
+            ("seller_package_width",  f"{int(round(_lar_cm))  if _lar_cm  else 30} cm"),
+            ("seller_package_length", f"{int(round(_comp_cm)) if _comp_cm else 50} cm"),
+            ("seller_package_weight", f"{_peso_g if _peso_g else 2000} g"),
         ]
         for pid, pval in _pkg_defaults:
             if pid not in attr_ids:
