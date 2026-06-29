@@ -4512,6 +4512,48 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         for pid, pval in _pkg_defaults:
             if pid not in attr_ids:
                 attrs.append({"id": pid, "value_name": pval})
+        # ── Lado / Posição (farol, lanterna, maçaneta...) ─────────────────────────
+        # Em algumas categorias o LADO (SIDE_POSITION / VEHICLE_PARTS_POSITION) e a POSIÇÃO
+        # (POSITION: dianteira/traseira) são atributo EDITÁVEL que DEFINE A FOTO e o filtro de
+        # lado do comprador. Quando é editável (não read_only) e o TÍTULO indica o lado/posição
+        # de forma INEQUÍVOCA, preenche o value certo — casado pelo NOME (robusto a value_ids
+        # diferentes por categoria). Em categorias read_only (ex: pinça/retrovisor/amortecedor) o
+        # ML decide sozinho pelo título -> NÃO mexe. Roda ANTES do fallback de obrigatórios p/ o
+        # lado CERTO entrar (e o fallback não pôr "o 1º valor" errado num atributo de lado).
+        try:
+            import re as _re2
+            _cat_lp = _ml_categoria_attrs(ml_payload.get("category_id"))
+            _ja2 = {a.get("id") for a in attrs}
+            _tl = (_titulo or "").lower()
+            _esq = bool(_re2.search(r'\b(esq|esquerd[oa])\b', _tl))
+            _dir = bool(_re2.search(r'\b(dir|direit[oa])\b', _tl))
+            _diant = bool(_re2.search(r'\b(diant|dianteir[oa]|frente|frontal)\b', _tl))
+            _tras = bool(_re2.search(r'\b(tras|traseir[oa]|posterior)\b', _tl))
+            def _casar_val(_a, _alvos):
+                for _v in (_a.get("values") or []):
+                    _n = (_v.get("name") or "").lower()
+                    if any(_t in _n for _t in _alvos):
+                        return _v
+                return None
+            _lado_alvos = ["esquerd", "motorista"] if (_esq and not _dir) else (["direit", "passageiro"] if (_dir and not _esq) else None)
+            if _lado_alvos:
+                for _aid in ("SIDE_POSITION", "VEHICLE_PARTS_POSITION"):
+                    _a = _cat_lp.get(_aid)
+                    if not _a or _aid in _ja2 or (_a.get("tags") or {}).get("read_only"):
+                        continue
+                    _v = _casar_val(_a, _lado_alvos)
+                    if _v and _v.get("id"):
+                        attrs.append({"id": _aid, "value_id": _v["id"], "value_name": _v.get("name")})
+                        _ja2.add(_aid)
+            _pos_alvos = ["diant", "frente", "frontal"] if (_diant and not _tras) else (["tras", "posterior"] if (_tras and not _diant) else None)
+            if _pos_alvos:
+                _ap = _cat_lp.get("POSITION")
+                if _ap and "POSITION" not in _ja2 and not (_ap.get("tags") or {}).get("read_only"):
+                    _v = _casar_val(_ap, _pos_alvos)
+                    if _v and _v.get("id"):
+                        attrs.append({"id": "POSITION", "value_id": _v["id"], "value_name": _v.get("name")})
+        except Exception:
+            pass
         # ── BLOCO ISOLADO: atributos OBRIGATÓRIOS da categoria que ainda faltam ──
         # Aditivo: só PREENCHE o que falta (não altera o resto). Evita "Validation error"
         # por atributo obrigatório ausente. Ex: Rodas (MLB4860) exigem RIM_DIAMETER (aro).
