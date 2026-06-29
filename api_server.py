@@ -4397,6 +4397,96 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         ok = _revisao_patch(rev_id, {"status": "ignorado", "revisado_em": "now"})
         return jsonify({"ok": ok})
 
+    @app.route("/integracoes/mercadolivre/reenviar-compat", methods=["POST", "OPTIONS"])
+    def ml_reenviar_compat():
+        # Reenvia a COMPATIBILIDADE do banco (pecas_estoque.compatibilidade, com os ml*Id) para
+        # anúncios JÁ publicados que estão SEM compatibilidade no ML (tag incomplete_compatibilities,
+        # que PAUSA o anúncio). Acontece quando o anúncio foi criado por fora (ex: Mercado Turbo) ou
+        # antes do envio automático existir. Usa a MESMA API oficial do envio na publicação.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        sku = str(data.get("sku") or "").strip()
+        ml_id_in = str(data.get("ml_id") or "").strip()
+        forcar = bool(data.get("forcar"))
+        if not sku and not ml_id_in:
+            return jsonify({"ok": False, "erro": "informe sku ou ml_id"}), 400
+        _sbh = {"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}"}
+        try:
+            _q = (f"{_WRX_SB_URL}/rest/v1/ml_anuncios?ml_id=eq.{ml_id_in}&select=ml_id,conta,sku" if ml_id_in
+                  else f"{_WRX_SB_URL}/rest/v1/ml_anuncios?sku=eq.{sku}&select=ml_id,conta,sku")
+            _r = requests.get(_q, headers=_sbh, timeout=15)
+            anuncios = (_r.json() or []) if _r.status_code == 200 else []
+        except Exception:
+            anuncios = []
+        if not anuncios:
+            return jsonify({"ok": False, "erro": "nenhum anuncio ML encontrado p/ esse sku/ml_id"}), 404
+        resultados = []
+        for _an in anuncios:
+            item_id = str(_an.get("ml_id") or "").strip()
+            conta = _an.get("conta") or "default"
+            sku_b = str(_an.get("sku") or sku).strip()
+            res = {"ml_id": item_id, "conta": conta, "sku": sku_b}
+            token = _ml_get_user_token(conta)
+            if not token:
+                res["erro"] = f"conta '{conta}' sem token autorizado"; resultados.append(res); continue
+            try:
+                _di = requests.get(f"https://api.mercadolibre.com/items/{item_id}",
+                                   headers={"Authorization": f"Bearer {token}"}, timeout=12).json()
+                _up = _di.get("user_product_id")
+                if not _up:
+                    res["erro"] = "anuncio sem user_product_id (nao e de catalogo)"; resultados.append(res); continue
+                _gc = requests.get(f"https://api.mercadolibre.com/items/{item_id}/compatibilities",
+                                   headers={"Authorization": f"Bearer {token}"}, timeout=12).json()
+                res["compat_antes"] = len(_gc.get("products") or [])
+                if res["compat_antes"] and not forcar:
+                    res["status"] = "ja_tem"; resultados.append(res); continue
+                _rc = requests.get(f"{_WRX_SB_URL}/rest/v1/pecas_estoque?sku=eq.{sku_b}&select=compatibilidade",
+                                   headers=_sbh, timeout=15)
+                _cv = (_rc.json()[0].get("compatibilidade") or []) if (_rc.status_code == 200 and _rc.json()) else []
+                if isinstance(_cv, str):
+                    _cv = json.loads(_cv)
+                _combos = set()
+                for _c in (_cv or []):
+                    if isinstance(_c, dict):
+                        _b = str(_c.get("mlBrandId") or "").strip(); _m = str(_c.get("mlModelId") or "").strip(); _y = str(_c.get("mlYearId") or "").strip()
+                        if _b and _m and _y:
+                            _combos.add((_b, _m, _y))
+                res["combos_banco"] = len(_combos)
+                if not _combos:
+                    res["erro"] = "compat do banco sem ml*Id (nada p/ enviar)"; resultados.append(res); continue
+                _cpids = []
+                for (_b, _m, _y) in _combos:
+                    try:
+                        _rs = requests.post("https://api.mercadolibre.com/catalog_compatibilities/products_search/chunks",
+                                            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                                            json={"domain_id": "MLB-CARS_AND_VANS", "site_id": "MLB",
+                                                  "known_attributes": [{"id": "BRAND", "value_ids": [_b]},
+                                                                       {"id": "MODEL", "value_ids": [_m]},
+                                                                       {"id": "VEHICLE_YEAR", "value_ids": [_y]}]}, timeout=20)
+                        if _rs.status_code == 200:
+                            for _p in (_rs.json().get("results") or []):
+                                _cid = _p.get("id") or _p.get("catalog_product_id")
+                                if _cid:
+                                    _cpids.append(_cid)
+                    except Exception:
+                        pass
+                _cpids = list(dict.fromkeys(_cpids))[:200]
+                res["veiculos_resolvidos"] = len(_cpids)
+                if not _cpids:
+                    res["erro"] = "0 catalog_products no ML (mlYearId desatualizado?)"; resultados.append(res); continue
+                _rcomp = requests.post(f"https://api.mercadolibre.com/user-products/{_up}/compatibilities",
+                                       headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                                       json={"domain_id": "MLB-CARS_AND_VANS",
+                                             "products": [{"id": _cid, "creation_source": "SELLER"} for _cid in _cpids]}, timeout=30)
+                res["http"] = _rcomp.status_code
+                res["resposta"] = _rcomp.text[:200]
+                res["status"] = "enviado" if _rcomp.status_code in (200, 201) else "erro_envio"
+            except Exception as _e:
+                res["erro"] = str(_e)[:200]
+            resultados.append(res)
+        return jsonify({"ok": True, "total": len(resultados), "resultados": resultados})
+
     @app.route("/integracoes/mercadolivre/publicar", methods=["POST", "OPTIONS"])
     def ml_publicar():
         if request.method == "OPTIONS":
