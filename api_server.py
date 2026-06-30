@@ -4507,6 +4507,21 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
                                            json={"attributes": _pkg}, timeout=20)
                         res["peso_http"] = _ru.status_code
                         res["peso_medida"] = " x ".join(p["value_name"] for p in _pkg)
+                        if _ru.status_code not in (200, 201):
+                            res["peso_resposta"] = (_ru.text or "")[:300]
+                            # FALLBACK: anúncio antigo recusa PUT de attributes -> tenta no SHIPPING
+                            # (dimensions string "alturaxlarguraxcomprimento,peso_g") que é o campo de
+                            # envio do anúncio publicado.
+                            try:
+                                _dimstr = f"{int(round(_alt))}x{int(round(_lar))}x{int(round(_comp))}," + str(int(round(_pes * 1000)) if _pes < 100 else int(round(_pes)))
+                                _rs2 = requests.put(f"https://api.mercadolibre.com/items/{item_id}",
+                                                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                                                    json={"shipping": {"dimensions": _dimstr}}, timeout=20)
+                                res["peso_http2"] = _rs2.status_code
+                                if _rs2.status_code not in (200, 201):
+                                    res["peso_resposta2"] = (_rs2.text or "")[:300]
+                            except Exception as _e2:
+                                res["peso_erro2"] = str(_e2)[:150]
                 except Exception as _ep:
                     res["peso_erro"] = str(_ep)[:150]
                 _gc = requests.get(f"https://api.mercadolibre.com/items/{item_id}/compatibilities",
