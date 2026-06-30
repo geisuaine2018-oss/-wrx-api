@@ -4439,6 +4439,110 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         ok = _revisao_patch(rev_id, {"status": "ignorado", "revisado_em": "now"})
         return jsonify({"ok": ok})
 
+    @app.route("/integracoes/mercadolivre/buscar-compat-veiculo", methods=["POST", "OPTIONS"])
+    def ml_buscar_compat_veiculo():
+        # Busca a COMPATIBILIDADE REAL de um veículo direto no catálogo do ML
+        # (catalog_compatibilities/products_search), quando o modelo/ano NÃO está na base local
+        # compat-ml/<marca>.json — ex.: Fiat Scudo 24/26 (modelo novo). Recebe {marca, modelo, anos}
+        # e devolve itens no MESMO formato do índice (mlBrandId/mlModelId/mlYearId/mlVersionId), pra
+        # dona CONFERIR e gravar. É só LEITURA do catálogo público — NÃO publica nada.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        marca = str(data.get("marca") or "").strip()
+        modelo = str(data.get("modelo") or "").strip()
+        anos_in = data.get("anos") or []
+        if not marca or not modelo:
+            return jsonify({"ok": False, "erro": "informe marca e modelo"}), 400
+
+        def _normv(s):
+            import unicodedata
+            return "".join(c for c in unicodedata.normalize("NFD", str(s or "")) if unicodedata.category(c) != "Mn").lower().strip()
+
+        # mapas extraídos da base REAL da dona (compat-ml/*.json) — códigos de marca e ano do ML
+        BRANDS = {"acura": "60244", "alfa romeo": "67695", "audi": "40661", "bmw": "66352", "byd": "2103733",
+            "chana": "389166", "chery": "389168", "caoa": "389168", "chevrolet": "58955", "gm": "58955",
+            "citroen": "389169", "dodge": "66708", "ferrari": "23937", "fiat": "67781", "ford": "66432",
+            "gwm": "17820030", "honda": "60559", "hyundai": "1089", "iveco": "396749", "jac": "2839844",
+            "jeep": "60395", "kia": "374002", "land rover": "66655", "lexus": "71552", "mazda": "66811",
+            "mercedes-benz": "75966", "mercedes": "75966", "mini": "65127", "mitsubishi": "1138",
+            "nissan": "60505", "peugeot": "60279", "porsche": "56870", "ram": "2710997", "renault": "9909",
+            "seat": "60268", "shineray": "380886", "subaru": "60285", "suzuki": "43943", "toyota": "60297",
+            "troller": "389179", "volkswagen": "60249", "vw": "60249", "volvo": "60658"}
+        YEARS = {"2015": "423549", "2016": "423562", "2017": "436694", "2018": "460382", "2019": "2451646",
+            "2020": "6730991", "2021": "8197742", "2022": "9836402", "2023": "12023859", "2024": "19060055",
+            "2025": "34466003", "2026": "45742656", "2027": "73057742", "2028": "27230836"}
+
+        brand_id = BRANDS.get(_normv(marca))
+        if not brand_id:
+            return jsonify({"ok": False, "erro": f"marca '{marca}' não está no mapa de códigos do ML"}), 200
+        anos = []
+        for a in anos_in:
+            m = re.search(r"(20\d{2})", str(a))
+            if m and m.group(1) in YEARS:
+                anos.append(m.group(1))
+        anos = sorted(set(anos))
+        if not anos:
+            anos = list(YEARS.keys())   # sem ano -> tenta todos (a busca filtra pelo modelo mesmo assim)
+
+        token = _get_ml_token()
+        if not token:
+            return jsonify({"ok": False, "erro": "sem token ML"}), 502
+        _h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        alvo = _normv(modelo)
+        cand = []   # (exato?, ano, attrs)
+        for ano in anos:
+            yid = YEARS[ano]
+            off = 0
+            while off < 500:   # teto de segurança (10 páginas); o break por 'total' para bem antes
+                try:
+                    _r = requests.post("https://api.mercadolibre.com/catalog_compatibilities/products_search/chunks",
+                        headers=_h, json={"domain_id": "MLB-CARS_AND_VANS", "site_id": "MLB",
+                        "known_attributes": [{"id": "BRAND", "value_ids": [brand_id]},
+                                             {"id": "VEHICLE_YEAR", "value_ids": [yid]}],
+                        "offset": off}, timeout=20)
+                except Exception:
+                    break
+                if _r.status_code != 200:
+                    break
+                _j = _r.json() or {}
+                res = _j.get("results") or []
+                total = _j.get("total") or 0
+                for p in res:
+                    at = {a.get("id"): a for a in p.get("attributes", [])}
+                    nm = _normv((at.get("MODEL") or {}).get("value_name", ""))
+                    if nm == alvo or nm.startswith(alvo + " "):
+                        cand.append((nm == alvo, ano, at))
+                off += 50
+                if off >= total:
+                    break
+        tem_exato = any(c[0] for c in cand)   # match exato (Onix) tem prioridade sobre prefixo (Onix Plus)
+        itens, vistos = [], set()
+        for exato, ano, at in cand:
+            if tem_exato and not exato:
+                continue
+            b = at.get("BRAND") or {}; mo = at.get("MODEL") or {}; y = at.get("VEHICLE_YEAR") or {}; t = at.get("TRIM") or {}
+            bv, mv, yv, tv = b.get("value_id"), mo.get("value_id"), y.get("value_id"), (t.get("value_id") or "")
+            if not (bv and mv and yv):
+                continue
+            k = (bv, mv, yv, tv)
+            if k in vistos:
+                continue
+            vistos.add(k)
+            _yn = str(y.get("value_name") or ano)
+            itens.append({
+                "id": f"{bv}_{mv}_{yv}_{tv}", "year": _yn, "anos": _yn, "status": "COMPATIVEL",
+                "mlBrandId": bv, "mlModelId": mv, "mlYearId": yv, "mlVersionId": tv,
+                "brandName": b.get("value_name") or marca, "modelName": mo.get("value_name") or modelo,
+                "versionName": t.get("value_name") or "",
+                "displayText": (f"{b.get('value_name') or marca} {mo.get('value_name') or modelo} "
+                                f"{t.get('value_name') or ''} ({_yn})").replace("  ", " ").strip(),
+                "veiculo": f"{b.get('value_name') or marca} {mo.get('value_name') or modelo}".strip(),
+            })
+        return jsonify({"ok": True, "itens": itens, "total": len(itens), "marca": marca, "modelo": modelo,
+                        "modelos_ml": sorted(set(i["modelName"] for i in itens)),
+                        "anos": sorted(set(i["year"] for i in itens))})
+
     @app.route("/integracoes/mercadolivre/reenviar-compat", methods=["POST", "OPTIONS"])
     def ml_reenviar_compat():
         # Reenvia a COMPATIBILIDADE do banco (pecas_estoque.compatibilidade, com os ml*Id) para

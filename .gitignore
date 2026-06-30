@@ -4,3 +4,10 @@ __pycache__/
 *.pyc
 .env
 wrx_debug.log
+
+# caches/sessões/logs pesados — NUNCA versionar (estouram limite do GitHub)
+ml_sessao/
+.playwright-mcp/
+*.log
+.netlify/
+.wrangler/
