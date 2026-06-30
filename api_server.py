@@ -4478,6 +4478,37 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
                 _up = _di.get("user_product_id")
                 if not _up:
                     res["erro"] = "anuncio sem user_product_id (nao e de catalogo)"; resultados.append(res); continue
+                # CORRIGE peso/medida do anuncio com a medida REAL do banco (conserta o frete errado).
+                try:
+                    _rp = requests.get(f"{_WRX_SB_URL}/rest/v1/pecas_estoque?sku=eq.{sku_b}&select=peso,altura,largura,comprimento,medidas",
+                                       headers=_sbh, timeout=15)
+                    _pj = (_rp.json()[0] if (_rp.status_code == 200 and _rp.json()) else {}) or {}
+                    def _np2(v):
+                        try:
+                            n = float(str(v).replace(",", ".").strip()); return n if n > 0 else None
+                        except Exception:
+                            return None
+                    _med = _pj.get("medidas") or {}
+                    if isinstance(_med, str):
+                        try: _med = json.loads(_med)
+                        except Exception: _med = {}
+                    _alt = _np2(_pj.get("altura")) or _np2((_med or {}).get("altura"))
+                    _lar = _np2(_pj.get("largura")) or _np2((_med or {}).get("largura"))
+                    _comp = _np2(_pj.get("comprimento")) or _np2((_med or {}).get("comprimento"))
+                    _pes = _np2(_pj.get("peso"))
+                    _pkg = []
+                    if _alt: _pkg.append({"id": "SELLER_PACKAGE_HEIGHT", "value_name": f"{int(round(_alt))} cm"})
+                    if _lar: _pkg.append({"id": "SELLER_PACKAGE_WIDTH", "value_name": f"{int(round(_lar))} cm"})
+                    if _comp: _pkg.append({"id": "SELLER_PACKAGE_LENGTH", "value_name": f"{int(round(_comp))} cm"})
+                    if _pes: _pkg.append({"id": "SELLER_PACKAGE_WEIGHT", "value_name": f"{int(round(_pes * 1000)) if _pes < 100 else int(round(_pes))} g"})
+                    if _pkg:
+                        _ru = requests.put(f"https://api.mercadolibre.com/items/{item_id}",
+                                           headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                                           json={"attributes": _pkg}, timeout=20)
+                        res["peso_http"] = _ru.status_code
+                        res["peso_medida"] = " x ".join(p["value_name"] for p in _pkg)
+                except Exception as _ep:
+                    res["peso_erro"] = str(_ep)[:150]
                 _gc = requests.get(f"https://api.mercadolibre.com/items/{item_id}/compatibilities",
                                    headers={"Authorization": f"Bearer {token}"}, timeout=12).json()
                 res["compat_antes"] = len(_gc.get("products") or [])
@@ -4716,6 +4747,46 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
                         attrs.append({"id": "POSITION", "value_id": _v["id"], "value_name": _v.get("name")})
         except Exception:
             pass
+        # ── ORIGEM (Brasil) + MATERIAL ─────────────────────────────────────────────
+        # ORIGEM: o ML tem o atributo ORIGIN em quase toda categoria de autopeça -> preenche
+        # "Brasil" AUTOMÁTICO (pedido da dona). MATERIAL: se a peça informou (data.material),
+        # preenche MATERIAL / LENS_MATERIAL / HOUSING_MATERIAL conforme a categoria. Casa o valor
+        # pelo NOME (lista) ou manda texto livre. Só em atributo EDITÁVEL (pula read_only).
+        try:
+            _cat_om = _ml_categoria_attrs(ml_payload.get("category_id"))
+            _ja3 = {a.get("id") for a in attrs}
+            def _casar_nome(_a, _alvo):
+                _alvo = (_alvo or "").lower().strip()
+                if not _alvo:
+                    return None
+                for _v in (_a.get("values") or []):
+                    if _alvo in (_v.get("name") or "").lower():
+                        return _v
+                return None
+            _orig = str(data.get("origem") or "Brasil").strip() or "Brasil"
+            _ao = _cat_om.get("ORIGIN")
+            if _ao and "ORIGIN" not in _ja3 and not (_ao.get("tags") or {}).get("read_only"):
+                _vb = _casar_nome(_ao, _orig)
+                if _vb and _vb.get("id"):
+                    attrs.append({"id": "ORIGIN", "value_id": _vb["id"], "value_name": _vb.get("name")})
+                elif not (_ao.get("values") or []):
+                    attrs.append({"id": "ORIGIN", "value_name": _orig})
+            _mat = str(data.get("material") or "").strip()
+            if _mat:
+                for _mid in ("MATERIAL", "LENS_MATERIAL", "HOUSING_MATERIAL"):
+                    _am = _cat_om.get(_mid)
+                    if not _am or _mid in _ja3 or (_am.get("tags") or {}).get("read_only"):
+                        continue
+                    _vm = _casar_nome(_am, _mat)
+                    if _vm and _vm.get("id"):
+                        attrs.append({"id": _mid, "value_id": _vm["id"], "value_name": _vm.get("name")})
+                    elif not (_am.get("values") or []):
+                        attrs.append({"id": _mid, "value_name": _mat})
+                    else:
+                        continue   # tem lista mas o material nao casou -> nao forca valor errado
+                    break
+        except Exception:
+            pass
         # ── BLOCO ISOLADO: atributos OBRIGATÓRIOS da categoria que ainda faltam ──
         # Aditivo: só PREENCHE o que falta (não altera o resto). Evita "Validation error"
         # por atributo obrigatório ausente. Ex: Rodas (MLB4860) exigem RIM_DIAMETER (aro).
@@ -4822,7 +4893,11 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
                         else:
                             _cv = []
                             try:
-                                _rc = requests.get(f"{_WRX_SB_URL}/rest/v1/pecas_estoque?sku=eq.{sku}&select=compatibilidade",
+                                # SKU BASE (sem o sufixo -DML/-GML/-SH dos planos): a compat fica na peça
+                                # base no banco. Antes usava o sku SUFIXADO -> nunca achava -> compat
+                                # NUNCA entrava na publicação (so quando reenviada manualmente).
+                                _sku_compat = (data.get("skuInterno") or sku.split("-")[0] or sku).strip()
+                                _rc = requests.get(f"{_WRX_SB_URL}/rest/v1/pecas_estoque?sku=eq.{_sku_compat}&select=compatibilidade",
                                                    headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}"}, timeout=15)
                                 if _rc.status_code == 200 and _rc.json():
                                     _cv = _rc.json()[0].get("compatibilidade") or []
