@@ -5866,6 +5866,50 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             "permalink": it.get("permalink", ""),
         }
 
+    def _ml_fmt_num(x):
+        try:
+            f = float(x)
+            return str(int(f)) if f == int(f) else ("%g" % f)
+        except Exception:
+            return ""
+
+    def _ml_preencher_medidas(itens):
+        """A maioria dos anuncios do ML nao guarda peso/medida — mas a loja cadastrou
+        no pecas_estoque (por SKU). Cruza o SKU e preenche peso/dimensoes a partir dai."""
+        skus = list({(i.get("sku") or "").strip() for i in itens if (i.get("sku") or "").strip()})
+        if not skus:
+            return itens
+        mapa = {}
+        try:
+            for k in range(0, len(skus), 80):
+                lote = skus[k:k + 80]
+                inlist = ",".join('"%s"' % s.replace('"', '') for s in lote)
+                r = requests.get(
+                    f"{_WRX_SB_URL}/rest/v1/pecas_estoque?sku=in.({inlist})&select=sku,peso,altura,largura,comprimento",
+                    headers=_wrx_headers(), timeout=15)
+                if r.status_code == 200:
+                    for row in r.json():
+                        mapa[str(row.get("sku", "")).strip()] = row
+        except Exception:
+            pass
+        for i in itens:
+            row = mapa.get((i.get("sku") or "").strip())
+            if not row:
+                continue
+            c, l, a = _ml_fmt_num(row.get("comprimento")), _ml_fmt_num(row.get("largura")), _ml_fmt_num(row.get("altura"))
+            if not (i.get("dimensoes") or "").strip() and (c or l or a):
+                partes = [p for p in (c, l, a) if p]
+                i["dimensoes"] = " x ".join(partes) + " cm"
+            pw = row.get("peso")
+            if not (i.get("peso") or "").strip() and pw not in (None, "", 0):
+                try:
+                    pwf = float(pw)
+                    i["peso"] = (("%.1f" % pwf).replace(".", ",") + " kg") if pwf >= 1 else (str(int(round(pwf * 1000))) + " g")
+                except Exception:
+                    pass
+            i["medidaFonte"] = "estoque"
+        return itens
+
     @app.route("/integracoes/mercadolivre/anuncios-pagina", methods=["GET", "OPTIONS"])
     def ml_anuncios_pagina():
         """Página de anúncios usando scroll_id (pega TODOS, sem limite de 1000).
@@ -5894,6 +5938,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         fim = ini + tamanho
         ids_pagina = ids[ini:fim]
         itens = [_ml_montar_item(it) for it in _ml_buscar_detalhes_lote(token, ids_pagina)] if ids_pagina else []
+        itens = _ml_preencher_medidas(itens)
         return jsonify({
             "ok": True, "total": total, "pagina": pagina,
             "tem_mais": fim < total, "itens": itens
@@ -5952,6 +5997,32 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": True, "itens": itens, "total": len(itens)})
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e), "itens": [], "total": 0})
+
+    @app.route("/integracoes/mercadolivre/_debug-item", methods=["GET", "OPTIONS"])
+    def ml_debug_item():
+        """TEMPORARIO: dump dos campos de medida do item cru do ML (com token do dono)."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta = request.args.get("conta", "default")
+        ml_id = (request.args.get("ml_id") or "").strip()
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": "conta nao autorizada"}), 404
+        out = {}
+        try:
+            r = requests.get(f"https://api.mercadolibre.com/items/{ml_id}",
+                             headers={"Authorization": f"Bearer {token}"}, timeout=15)
+            it = r.json() if r.status_code == 200 else {"http": r.status_code}
+            out["shipping"] = it.get("shipping")
+            out["attrs_medida"] = [
+                {"id": a.get("id"), "v": a.get("value_name")}
+                for a in (it.get("attributes") or [])
+                if any(k in (a.get("id") or "") for k in ("PACKAGE", "WEIGHT", "LENGTH", "WIDTH", "HEIGHT", "DIM", "VOLUME"))
+            ]
+            out["var_shipping"] = [v.get("shipping") for v in (it.get("variations") or [])][:2]
+        except Exception as e:
+            out["erro"] = str(e)
+        return jsonify(out)
 
     @app.route("/integracoes/mercadolivre/sem-vinculo", methods=["GET", "OPTIONS"])
     def ml_sem_vinculo():
