@@ -5896,8 +5896,21 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         dimensoes = (" x ".join(partes) + " cm") if partes else ""
         if not dimensoes and shipping.get("dimensions"):
             dimensoes = str(shipping.get("dimensions"))
+        # variacoes do anuncio (cor/tamanho/etc) — ja vem no item, sem chamada extra
+        variacoes = []
+        for v in (it.get("variations") or []):
+            combo = " · ".join(
+                str(c.get("value_name")) for c in (v.get("attribute_combinations") or [])
+                if c.get("value_name"))
+            variacoes.append({
+                "desc": combo or "Variação",
+                "estoque": v.get("available_quantity", 0),
+                "preco": v.get("price", 0),
+                "sku": (v.get("seller_sku") or v.get("seller_custom_field") or ""),
+            })
         return {
             "mlId": it.get("id", ""), "titulo": it.get("title", ""),
+            "variacoes": variacoes,
             "preco": it.get("price", 0), "estoque": it.get("available_quantity", 0),
             "vendidos": it.get("sold_quantity", 0),
             "status": it.get("status", "active"), "grupo": it.get("status", "active"),
