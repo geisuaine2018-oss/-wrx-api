@@ -5162,6 +5162,47 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
                 break
         return ids
 
+    def _ml_buscar_ids_ordenado(token, user_id, status="active"):
+        """IDs dos anuncios do vendedor, RECEM-PUBLICADOS PRIMEIRO.
+
+        A busca por scan (search_type=scan) nao aceita ordenacao, entao os anuncios
+        vinham "misturados". Aqui pegamos ate 1000 pela busca por offset com
+        orders=start_time_desc (mais novos primeiro) e completamos o resto
+        (vendedores com +1000 anuncios) pelo scan, mantendo os novos no topo.
+        """
+        ordenados = []
+        vistos = set()
+        try:
+            offset = 0
+            while offset <= 950:
+                r = requests.get(
+                    f"https://api.mercadolibre.com/users/{user_id}/items/search",
+                    params={"status": status, "orders": "start_time_desc",
+                            "limit": 50, "offset": offset},
+                    headers={"Authorization": f"Bearer {token}"}, timeout=15)
+                if r.status_code != 200:
+                    break
+                batch = (r.json() or {}).get("results", [])
+                if not batch:
+                    break
+                for i in batch:
+                    if i not in vistos:
+                        vistos.add(i); ordenados.append(i)
+                if len(batch) < 50:
+                    break
+                offset += 50
+        except Exception:
+            pass
+        # completa o resto (mais antigos, alem de 1000) via scan
+        try:
+            for i in _ml_buscar_todos_ids(token, user_id, status):
+                if i not in vistos:
+                    vistos.add(i); ordenados.append(i)
+        except Exception:
+            pass
+        # fallback: se a busca ordenada falhou por completo, usa o scan puro
+        return ordenados or _ml_buscar_todos_ids(token, user_id, status)
+
     def _ml_buscar_detalhes_lote(token, ids):
         """Busca detalhes de até 20 itens por vez.
         IMPORTANTE: NÃO usar projeção `attributes=` aqui — o multiget com projeção
@@ -6007,7 +6048,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         # cache de IDs por 5 min
         cache = _ml_ids_cache.get(conta)
         if not cache or (time.time() - cache.get("ts", 0)) > 300:
-            ids = _ml_buscar_todos_ids(token, user_id, status="active")
+            # recem-publicados primeiro (orders=start_time_desc + scan p/ o resto)
+            ids = _ml_buscar_ids_ordenado(token, user_id, status="active")
             _ml_ids_cache[conta] = {"ids": ids, "ts": time.time()}
         else:
             ids = cache["ids"]
@@ -6045,6 +6087,42 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": False, "erro": f"ML {r.status_code}", "texto": ""})
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e), "texto": ""})
+
+    @app.route("/integracoes/mercadolivre/ficha-tecnica", methods=["GET", "OPTIONS"])
+    def ml_ficha_tecnica():
+        """Ficha tecnica (atributos) + fotos de um anuncio — sob demanda pelo chip."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta = request.args.get("conta", "default")
+        ml_id = (request.args.get("ml_id") or "").strip()
+        if not ml_id:
+            return jsonify({"ok": False, "erro": "ml_id obrigatorio"}), 400
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": "conta nao autorizada"}), 404
+        # atributos internos que nao interessam na ficha (SKU/codigos de controle)
+        _skip = {"SELLER_SKU", "GTIN", "EMPTY_GTIN_REASON"}
+        try:
+            r = requests.get(
+                f"https://api.mercadolibre.com/items/{ml_id}",
+                headers={"Authorization": f"Bearer {token}"}, timeout=15)
+            if r.status_code != 200:
+                return jsonify({"ok": True, "atributos": [], "fotos": []})
+            d = r.json()
+            atributos = []
+            for a in (d.get("attributes") or []):
+                nome = (a.get("name") or "").strip()
+                valor = (a.get("value_name") or "").strip()
+                if nome and valor and a.get("id") not in _skip:
+                    atributos.append({"nome": nome, "valor": valor})
+            fotos = []
+            for p in (d.get("pictures") or []):
+                u = p.get("secure_url") or p.get("url") or ""
+                if u:
+                    fotos.append(u.replace("http://", "https://"))
+            return jsonify({"ok": True, "atributos": atributos, "fotos": fotos})
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e), "atributos": [], "fotos": []})
 
     @app.route("/integracoes/mercadolivre/compatibilidades", methods=["GET", "OPTIONS"])
     def ml_compatibilidades():
