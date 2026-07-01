@@ -5955,6 +5955,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             "categoriaId": it.get("category_id", ""),
             "listingTypeId": it.get("listing_type_id", ""),
             "data": it.get("date_created", ""),
+            "health": it.get("health"),
             "permalink": it.get("permalink", ""),
         }
 
@@ -6065,6 +6066,21 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             i["freteVendedor"] = round(frete, 2)
             i["liquido"] = liquido
             i["pctLiquido"] = round((liquido / preco * 100), 1) if preco else 0
+            # compatibilidades: verde (tem) / vermelho (nao tem) — mostra sem clicar
+            try:
+                rc = requests.get(
+                    f"https://api.mercadolibre.com/items/{i.get('mlId')}/compatibilities",
+                    headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                if rc.status_code == 200:
+                    prods = (rc.json() or {}).get("products") or []
+                    i["numCompat"] = len(prods)
+                    i["temCompat"] = len(prods) > 0
+                else:
+                    i["numCompat"] = 0
+                    i["temCompat"] = None
+            except Exception:
+                i["numCompat"] = 0
+                i["temCompat"] = None
             return i
         try:
             with ThreadPoolExecutor(max_workers=8) as ex:
