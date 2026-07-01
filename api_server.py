@@ -6038,14 +6038,20 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 out["listing_prices"] = rf.json() if rf.status_code == 200 else rf.text[:200]
             except Exception as e:
                 out["listing_prices_err"] = str(e)
-            # FRETE que o vendedor paga (frete gratis)
-            try:
-                rs = requests.get(f"https://api.mercadolibre.com/items/{ml_id}/shipping_options/free",
-                                  headers={"Authorization": f"Bearer {token}"}, timeout=15)
-                out["frete_free_http"] = rs.status_code
-                out["frete_free"] = rs.json() if rs.status_code == 200 else rs.text[:200]
-            except Exception as e:
-                out["frete_free_err"] = str(e)
+            # FRETE que o vendedor paga (frete gratis) — testando varios endpoints
+            uid = _ml_conta_user_id(conta, token)
+            tentativas = {
+                "A_user_free": f"https://api.mercadolibre.com/users/{uid}/shipping_options/free?item_id={ml_id}",
+                "B_item_options": f"https://api.mercadolibre.com/items/{ml_id}/shipping_options",
+                "C_shipping_free": f"https://api.mercadolibre.com/shipping_options/free?item_id={ml_id}",
+            }
+            for nome, url in tentativas.items():
+                try:
+                    rs = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=15)
+                    out[nome + "_http"] = rs.status_code
+                    out[nome] = (rs.json() if rs.status_code == 200 else rs.text[:150])
+                except Exception as e:
+                    out[nome + "_err"] = str(e)
         except Exception as e:
             out["erro"] = str(e)
         return jsonify(out)
