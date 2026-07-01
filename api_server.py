@@ -5823,30 +5823,36 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         "custom": "Combinado",
     }
 
+    def _ml_so_numero(s):
+        """'20 cm' -> '20' ; mantem digitos, virgula e ponto."""
+        return "".join(ch for ch in (s or "") if ch.isdigit() or ch in ".,").strip(".,")
+
     def _ml_montar_item(it):
         peso = ""
-        dims = {}   # c=comprimento, l=largura, a=altura
+        dW = dH = dC = ""   # largura, altura, comprimento (numeros, ja do ML)
         for a in (it.get("attributes") or []):
-            aid = a.get("id")
+            aid = a.get("id") or ""
             val = a.get("value_name") or ""
-            if aid in ("PACKAGE_WEIGHT", "WEIGHT", "GROSS_WEIGHT") and not peso:
+            # ML guarda a medida do anuncio em SELLER_PACKAGE_* (com prefixo SELLER_)
+            if aid in ("SELLER_PACKAGE_WEIGHT", "PACKAGE_WEIGHT", "WEIGHT", "GROSS_WEIGHT") and not peso:
                 peso = val
-            elif aid == "PACKAGE_LENGTH":
-                dims["c"] = val
-            elif aid == "PACKAGE_WIDTH":
-                dims["l"] = val
-            elif aid == "PACKAGE_HEIGHT":
-                dims["a"] = val
+            elif aid in ("SELLER_PACKAGE_WIDTH", "PACKAGE_WIDTH") and not dW:
+                dW = _ml_so_numero(val)
+            elif aid in ("SELLER_PACKAGE_HEIGHT", "PACKAGE_HEIGHT") and not dH:
+                dH = _ml_so_numero(val)
+            elif aid in ("SELLER_PACKAGE_LENGTH", "PACKAGE_LENGTH") and not dC:
+                dC = _ml_so_numero(val)
         shipping = it.get("shipping") or {}
         frete_gratis = bool(
             shipping.get("free_shipping")
             or ("free_shipping" in (shipping.get("tags") or []))
+            or ("mandatory_free_shipping" in (shipping.get("tags") or []))
             or any(m.get("free_shipping") for m in (shipping.get("free_methods") or []))
         )
         logistic = shipping.get("logistic_type") or ""
-        # medidas: 1o dos atributos (o que a dona cadastrou); senao shipping.dimensions ("20x20x10,400")
-        partes = [dims.get("c", ""), dims.get("l", ""), dims.get("a", "")]
-        dimensoes = " x ".join([p for p in partes if p])
+        # medidas REAIS publicadas no ML (atributos SELLER_PACKAGE_*). Ordem igual ao MT: L x A x C
+        partes = [p for p in (dW, dH, dC) if p]
+        dimensoes = (" x ".join(partes) + " cm") if partes else ""
         if not dimensoes and shipping.get("dimensions"):
             dimensoes = str(shipping.get("dimensions"))
         return {
@@ -5938,7 +5944,6 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         fim = ini + tamanho
         ids_pagina = ids[ini:fim]
         itens = [_ml_montar_item(it) for it in _ml_buscar_detalhes_lote(token, ids_pagina)] if ids_pagina else []
-        itens = _ml_preencher_medidas(itens)
         return jsonify({
             "ok": True, "total": total, "pagina": pagina,
             "tem_mais": fim < total, "itens": itens
