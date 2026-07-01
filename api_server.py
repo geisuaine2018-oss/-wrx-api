@@ -5813,25 +5813,56 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
     # cache de IDs por conta (scroll_id traz TODOS, passa do limite de 1000 do offset)
     _ml_ids_cache = {}  # conta -> {"ids": [...], "ts": epoch}
 
+    # Logistica do ML -> rotulo amigavel (igual ao Mercado Turbo mostra)
+    _ML_LOGISTICA_LABEL = {
+        "fulfillment": "Full",
+        "self_service": "Flex",
+        "cross_docking": "Coleta",
+        "xd_drop_off": "Agencia",
+        "drop_off": "Correios",
+        "custom": "Combinado",
+    }
+
     def _ml_montar_item(it):
         peso = ""
+        dims = {}   # c=comprimento, l=largura, a=altura
         for a in (it.get("attributes") or []):
-            if a.get("id") in ("PACKAGE_WEIGHT", "WEIGHT", "GROSS_WEIGHT"):
-                peso = a.get("value_name") or ""
-                break
+            aid = a.get("id")
+            val = a.get("value_name") or ""
+            if aid in ("PACKAGE_WEIGHT", "WEIGHT", "GROSS_WEIGHT") and not peso:
+                peso = val
+            elif aid == "PACKAGE_LENGTH":
+                dims["c"] = val
+            elif aid == "PACKAGE_WIDTH":
+                dims["l"] = val
+            elif aid == "PACKAGE_HEIGHT":
+                dims["a"] = val
         shipping = it.get("shipping") or {}
         frete_gratis = bool(
             shipping.get("free_shipping")
             or ("free_shipping" in (shipping.get("tags") or []))
             or any(m.get("free_shipping") for m in (shipping.get("free_methods") or []))
         )
+        logistic = shipping.get("logistic_type") or ""
+        # medidas: 1o dos atributos (o que a dona cadastrou); senao shipping.dimensions ("20x20x10,400")
+        partes = [dims.get("c", ""), dims.get("l", ""), dims.get("a", "")]
+        dimensoes = " x ".join([p for p in partes if p])
+        if not dimensoes and shipping.get("dimensions"):
+            dimensoes = str(shipping.get("dimensions"))
         return {
             "mlId": it.get("id", ""), "titulo": it.get("title", ""),
             "preco": it.get("price", 0), "estoque": it.get("available_quantity", 0),
+            "vendidos": it.get("sold_quantity", 0),
             "status": it.get("status", "active"), "grupo": it.get("status", "active"),
             "thumbnail": it.get("thumbnail", ""), "sku": _ml_extrair_sku(it),
+            "fotos": len(it.get("pictures") or []),
             "condicao": it.get("condition", ""), "freteGratis": frete_gratis,
-            "peso": peso, "data": it.get("date_created", ""),
+            "logistica": logistic, "logisticaLabel": _ML_LOGISTICA_LABEL.get(logistic, ""),
+            "modoEnvio": shipping.get("mode", ""),
+            "peso": peso, "dimensoes": dimensoes,
+            "categoriaId": it.get("category_id", ""),
+            "listingTypeId": it.get("listing_type_id", ""),
+            "data": it.get("date_created", ""),
             "permalink": it.get("permalink", ""),
         }
 
@@ -5867,6 +5898,60 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             "ok": True, "total": total, "pagina": pagina,
             "tem_mais": fim < total, "itens": itens
         })
+
+    @app.route("/integracoes/mercadolivre/descricao", methods=["GET", "OPTIONS"])
+    def ml_descricao():
+        """Descricao (texto) de um anuncio — carregada sob demanda (lazy) pelo chip."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta = request.args.get("conta", "default")
+        ml_id = (request.args.get("ml_id") or "").strip()
+        if not ml_id:
+            return jsonify({"ok": False, "erro": "ml_id obrigatorio"}), 400
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": "conta nao autorizada"}), 404
+        try:
+            r = requests.get(
+                f"https://api.mercadolibre.com/items/{ml_id}/description",
+                headers={"Authorization": f"Bearer {token}"}, timeout=15)
+            if r.status_code == 200:
+                d = r.json()
+                return jsonify({"ok": True, "texto": d.get("plain_text") or d.get("text") or ""})
+            return jsonify({"ok": False, "erro": f"ML {r.status_code}", "texto": ""})
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e), "texto": ""})
+
+    @app.route("/integracoes/mercadolivre/compatibilidades", methods=["GET", "OPTIONS"])
+    def ml_compatibilidades():
+        """Compatibilidades (veiculos) de um anuncio — carregada sob demanda pelo chip."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta = request.args.get("conta", "default")
+        ml_id = (request.args.get("ml_id") or "").strip()
+        if not ml_id:
+            return jsonify({"ok": False, "erro": "ml_id obrigatorio"}), 400
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": "conta nao autorizada"}), 404
+        try:
+            r = requests.get(
+                f"https://api.mercadolibre.com/items/{ml_id}/compatibilities",
+                headers={"Authorization": f"Bearer {token}"}, timeout=15)
+            if r.status_code != 200:
+                return jsonify({"ok": True, "itens": [], "total": 0})
+            d = r.json()
+            itens = []
+            for p in (d.get("products") or []):
+                nome = p.get("name") or ""
+                if not nome:
+                    partes = [str(a.get("value_name")) for a in (p.get("attributes") or []) if a.get("value_name")]
+                    nome = " ".join(partes)
+                if nome:
+                    itens.append(nome)
+            return jsonify({"ok": True, "itens": itens, "total": len(itens)})
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e), "itens": [], "total": 0})
 
     @app.route("/integracoes/mercadolivre/sem-vinculo", methods=["GET", "OPTIONS"])
     def ml_sem_vinculo():
