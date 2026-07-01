@@ -6107,8 +6107,10 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": False, "erro": "conta nao autorizada"}), 404
         user_id = _ml_conta_user_id(conta, token)
         # cache de IDs por 5 min
+        # ?refresh=1 fura o cache (botao "Atualizar") p/ pegar recem-criados na hora
+        forcar = request.args.get("refresh") in ("1", "true", "yes")
         cache = _ml_ids_cache.get(conta)
-        if not cache or (time.time() - cache.get("ts", 0)) > 300:
+        if forcar or not cache or (time.time() - cache.get("ts", 0)) > 300:
             # recem-publicados primeiro (orders=start_time_desc + scan p/ o resto)
             ids = _ml_buscar_ids_ordenado(token, user_id, status="active")
             _ml_ids_cache[conta] = {"ids": ids, "ts": time.time()}
