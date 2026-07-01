@@ -6025,6 +6025,27 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 if any(k in (a.get("id") or "") for k in ("PACKAGE", "WEIGHT", "LENGTH", "WIDTH", "HEIGHT", "DIM", "VOLUME"))
             ]
             out["var_shipping"] = [v.get("shipping") for v in (it.get("variations") or [])][:2]
+            out["preco"] = it.get("price")
+            out["listing_type_id"] = it.get("listing_type_id")
+            out["category_id"] = it.get("category_id")
+            # TARIFA (sale_fee) via listing_prices
+            try:
+                rf = requests.get("https://api.mercadolibre.com/sites/MLB/listing_prices",
+                                  params={"price": it.get("price"), "listing_type_id": it.get("listing_type_id"),
+                                          "category_id": it.get("category_id")},
+                                  headers={"Authorization": f"Bearer {token}"}, timeout=15)
+                out["listing_prices_http"] = rf.status_code
+                out["listing_prices"] = rf.json() if rf.status_code == 200 else rf.text[:200]
+            except Exception as e:
+                out["listing_prices_err"] = str(e)
+            # FRETE que o vendedor paga (frete gratis)
+            try:
+                rs = requests.get(f"https://api.mercadolibre.com/items/{ml_id}/shipping_options/free",
+                                  headers={"Authorization": f"Bearer {token}"}, timeout=15)
+                out["frete_free_http"] = rs.status_code
+                out["frete_free"] = rs.json() if rs.status_code == 200 else rs.text[:200]
+            except Exception as e:
+                out["frete_free_err"] = str(e)
         except Exception as e:
             out["erro"] = str(e)
         return jsonify(out)
