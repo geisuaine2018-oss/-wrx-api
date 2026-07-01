@@ -4711,6 +4711,43 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
             resultados.append(res)
         return jsonify({"ok": True, "total": len(resultados), "resultados": resultados})
 
+    def _ml_reativar_apos_fotos(conta, item_id):
+        """FIX 01/07: quando a foto vai por URL (fotos migraram pro R2/dominio), o item nasce
+        status=paused + sub_status=picture_download_pending (o ML baixa a foto async) e o PUT active
+        imediato falha porque a foto ainda nao processou -> ficava pausado/sem foto e parecia 'nao enviou'.
+        Esta thread espera as fotos terminarem e reativa SO este item recem-criado. Nao toca nos demais.
+        Respeita paused_by_seller (nao reativa pausa intencional / anti-venda-dupla)."""
+        if not item_id:
+            return
+        import threading, time as _t
+        def _run():
+            for _pausa in (90, 90, 120, 180):
+                _t.sleep(_pausa)
+                try:
+                    tok = _ml_get_user_token(conta)
+                    if not tok:
+                        continue
+                    _hdr = {"Authorization": f"Bearer {tok}"}
+                    g = requests.get(f"https://api.mercadolibre.com/items/{item_id}",
+                                     headers=_hdr, timeout=12).json()
+                    st = g.get("status")
+                    sub = g.get("sub_status") or []
+                    if st == "active":
+                        print(f"[ML-REATIVAR] {item_id} ja ativo"); return
+                    if "paused_by_seller" in sub:
+                        print(f"[ML-REATIVAR] {item_id} pausado pelo vendedor -- respeitando"); return
+                    if "picture_download_pending" in sub:
+                        continue  # foto ainda processando; tenta na proxima passada
+                    r = requests.put(f"https://api.mercadolibre.com/items/{item_id}",
+                                     headers={**_hdr, "Content-Type": "application/json"},
+                                     json={"status": "active"}, timeout=12)
+                    if r.status_code == 200 and (r.json() or {}).get("status") == "active":
+                        print(f"[ML-REATIVAR] {item_id} ativado apos fotos"); return
+                    print(f"[ML-REATIVAR] {item_id} nao ativou: {r.status_code} {r.text[:120]}")
+                except Exception as _e:
+                    print(f"[ML-REATIVAR] {item_id} erro: {_e}")
+        threading.Thread(target=_run, daemon=True).start()
+
     @app.route("/integracoes/mercadolivre/publicar", methods=["POST", "OPTIONS"])
     def ml_publicar():
         if request.method == "OPTIONS":
@@ -5015,6 +5052,10 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
                             print(f"[ML] nao ativou item {item_id}: {_ra.status_code} {_ra.text[:200]}")
                     except Exception as _ea:
                         print(f"[ML] erro ao ativar item {item_id}: {_ea}")
+                # Se ainda nao ativou (foto processando), agenda reativacao numa thread quando as
+                # fotos terminarem de baixar. (fix 01/07 — antes ficava pausado/sem foto = "nao enviou")
+                if _status_final != "active":
+                    _ml_reativar_apos_fotos(conta_nome, item_id)
                 # ── COMPATIBILIDADE veicular: evita o ML PAUSAR o anúncio por falta de ficha ──
                 # Lê a compat rica do banco (pecas_estoque.compatibilidade — migrada do PartsHub com
                 # mlBrandId/mlModelId/mlYearId), resolve os produtos de catálogo de veículo do ML e
