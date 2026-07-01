@@ -3483,6 +3483,38 @@ if USE_FLASK:
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e)}), 500
 
+    @app.route("/integracoes/mercadolivre/flex", methods=["POST", "OPTIONS"])
+    def ml_flex():
+        # Ativa/desativa Mercado Envios Flex (self_service) num anuncio. EXPERIMENTAL:
+        # o ML so aceita se o vendedor tiver Flex habilitado na conta e o item for elegivel.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        ml_id = (data.get("ml_id") or data.get("mlId") or "").strip()
+        conta = data.get("nome", "default")
+        ativar = bool(data.get("ativar"))
+        if not ml_id:
+            return jsonify({"ok": False, "erro": "ml_id obrigatorio"}), 400
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": f"conta '{conta}' sem token ML"}), 401
+        novo_logistic = "self_service" if ativar else "cross_docking"
+        try:
+            r = requests.put(
+                f"https://api.mercadolibre.com/items/{ml_id}",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"shipping": {"logistic_type": novo_logistic}}, timeout=15)
+            if r.status_code == 200:
+                return jsonify({"ok": True, "ml_id": ml_id, "logistica": novo_logistic})
+            _txt = r.text[:300]
+            _amig = ""
+            if "logistic" in _txt.lower() or "shipping" in _txt.lower():
+                _amig = ("O ML não aceitou mudar o Flex deste anúncio. O vendedor precisa ter o "
+                         "Mercado Envios Flex habilitado na conta e o anúncio ser elegível na sua região.")
+            return jsonify({"ok": False, "erro": _amig or f"ML {r.status_code}: {_txt}", "ml_raw": _txt}), 502
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 500
+
     # ════════════════════════════════════════════════════════════════════════
     # REVISÃO DE PREÇOS — revisa anúncios ativos vs concorrência (ML) p/ aprovação
     # Fase 1: lote pequeno sob demanda. NUNCA altera preço sozinho — só com aprovação.
