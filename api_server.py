@@ -5916,6 +5916,78 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             i["medidaFonte"] = "estoque"
         return itens
 
+    # ── Financeiro do anuncio (tarifa + frete pago + liquido), igual ao Mercado Turbo ──
+    _ml_fee_cache = {}     # (cat, ltid, preco) -> sale_fee   (tarifas repetem muito)
+    _ml_frete_cache = {}   # item_id -> list_cost do frete gratis
+
+    def _ml_calc_tarifa(token, preco, ltid, cat):
+        if not preco or not ltid:
+            return None
+        key = (cat, ltid, round(float(preco), 2))
+        if key in _ml_fee_cache:
+            return _ml_fee_cache[key]
+        val = None
+        try:
+            r = requests.get("https://api.mercadolibre.com/sites/MLB/listing_prices",
+                             params={"price": preco, "listing_type_id": ltid, "category_id": cat},
+                             headers={"Authorization": f"Bearer {token}"}, timeout=12)
+            if r.status_code == 200:
+                d = r.json()
+                if isinstance(d, list):
+                    for x in d:
+                        if x.get("listing_type_id") == ltid:
+                            val = x.get("sale_fee_amount"); break
+                    if val is None and d:
+                        val = d[0].get("sale_fee_amount")
+                else:
+                    val = d.get("sale_fee_amount")
+        except Exception:
+            pass
+        _ml_fee_cache[key] = val
+        return val
+
+    def _ml_calc_frete_vendedor(token, uid, item_id):
+        if item_id in _ml_frete_cache:
+            return _ml_frete_cache[item_id]
+        val = None
+        try:
+            r = requests.get(f"https://api.mercadolibre.com/users/{uid}/shipping_options/free",
+                             params={"item_id": item_id},
+                             headers={"Authorization": f"Bearer {token}"}, timeout=12)
+            if r.status_code == 200:
+                cov = ((r.json() or {}).get("coverage") or {}).get("all_country") or {}
+                val = cov.get("list_cost")
+        except Exception:
+            pass
+        _ml_frete_cache[item_id] = val
+        return val
+
+    def _ml_financeiro_lote(token, uid, itens):
+        from concurrent.futures import ThreadPoolExecutor
+        def preencher(i):
+            preco = float(i.get("preco") or 0)
+            tarifa = _ml_calc_tarifa(token, preco, i.get("listingTypeId"), i.get("categoriaId")) or 0
+            frete = 0
+            if i.get("freteGratis"):
+                frete = _ml_calc_frete_vendedor(token, uid, i.get("mlId")) or 0
+            try:
+                tarifa = float(tarifa); frete = float(frete)
+            except Exception:
+                tarifa, frete = 0, 0
+            liquido = round(preco - tarifa - frete, 2)
+            i["tarifa"] = round(tarifa, 2)
+            i["freteVendedor"] = round(frete, 2)
+            i["liquido"] = liquido
+            i["pctLiquido"] = round((liquido / preco * 100), 1) if preco else 0
+            return i
+        try:
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                list(ex.map(preencher, itens))
+        except Exception:
+            for i in itens:
+                preencher(i)
+        return itens
+
     @app.route("/integracoes/mercadolivre/anuncios-pagina", methods=["GET", "OPTIONS"])
     def ml_anuncios_pagina():
         """Página de anúncios usando scroll_id (pega TODOS, sem limite de 1000).
@@ -5944,6 +6016,8 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         fim = ini + tamanho
         ids_pagina = ids[ini:fim]
         itens = [_ml_montar_item(it) for it in _ml_buscar_detalhes_lote(token, ids_pagina)] if ids_pagina else []
+        if itens:
+            itens = _ml_financeiro_lote(token, user_id, itens)
         return jsonify({
             "ok": True, "total": total, "pagina": pagina,
             "tem_mais": fim < total, "itens": itens
@@ -6002,59 +6076,6 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             return jsonify({"ok": True, "itens": itens, "total": len(itens)})
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e), "itens": [], "total": 0})
-
-    @app.route("/integracoes/mercadolivre/_debug-item", methods=["GET", "OPTIONS"])
-    def ml_debug_item():
-        """TEMPORARIO: dump dos campos de medida do item cru do ML (com token do dono)."""
-        if request.method == "OPTIONS":
-            return _options_resp()
-        conta = request.args.get("conta", "default")
-        ml_id = (request.args.get("ml_id") or "").strip()
-        token = _ml_get_user_token(conta)
-        if not token:
-            return jsonify({"ok": False, "erro": "conta nao autorizada"}), 404
-        out = {}
-        try:
-            r = requests.get(f"https://api.mercadolibre.com/items/{ml_id}",
-                             headers={"Authorization": f"Bearer {token}"}, timeout=15)
-            it = r.json() if r.status_code == 200 else {"http": r.status_code}
-            out["shipping"] = it.get("shipping")
-            out["attrs_medida"] = [
-                {"id": a.get("id"), "v": a.get("value_name")}
-                for a in (it.get("attributes") or [])
-                if any(k in (a.get("id") or "") for k in ("PACKAGE", "WEIGHT", "LENGTH", "WIDTH", "HEIGHT", "DIM", "VOLUME"))
-            ]
-            out["var_shipping"] = [v.get("shipping") for v in (it.get("variations") or [])][:2]
-            out["preco"] = it.get("price")
-            out["listing_type_id"] = it.get("listing_type_id")
-            out["category_id"] = it.get("category_id")
-            # TARIFA (sale_fee) via listing_prices
-            try:
-                rf = requests.get("https://api.mercadolibre.com/sites/MLB/listing_prices",
-                                  params={"price": it.get("price"), "listing_type_id": it.get("listing_type_id"),
-                                          "category_id": it.get("category_id")},
-                                  headers={"Authorization": f"Bearer {token}"}, timeout=15)
-                out["listing_prices_http"] = rf.status_code
-                out["listing_prices"] = rf.json() if rf.status_code == 200 else rf.text[:200]
-            except Exception as e:
-                out["listing_prices_err"] = str(e)
-            # FRETE que o vendedor paga (frete gratis) — testando varios endpoints
-            uid = _ml_conta_user_id(conta, token)
-            tentativas = {
-                "A_user_free": f"https://api.mercadolibre.com/users/{uid}/shipping_options/free?item_id={ml_id}",
-                "B_item_options": f"https://api.mercadolibre.com/items/{ml_id}/shipping_options",
-                "C_shipping_free": f"https://api.mercadolibre.com/shipping_options/free?item_id={ml_id}",
-            }
-            for nome, url in tentativas.items():
-                try:
-                    rs = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=15)
-                    out[nome + "_http"] = rs.status_code
-                    out[nome] = (rs.json() if rs.status_code == 200 else rs.text[:150])
-                except Exception as e:
-                    out[nome + "_err"] = str(e)
-        except Exception as e:
-            out["erro"] = str(e)
-        return jsonify(out)
 
     @app.route("/integracoes/mercadolivre/sem-vinculo", methods=["GET", "OPTIONS"])
     def ml_sem_vinculo():
