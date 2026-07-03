@@ -6637,6 +6637,56 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 print(f"[CLAIMS] erro conta {conta}: {_e}")
         return jsonify({"ok": True, "total": len(reclamacoes), "reclamacoes": reclamacoes})
 
+    @app.route("/integracoes/mercadolivre/reputacao", methods=["GET", "OPTIONS"])
+    def ml_reputacao():
+        """Reputação do vendedor (nível/termômetro + métricas) por conta — de /users/{id}."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta_req = request.args.get("conta", "").strip()
+        tokens = _ml_load_tokens()
+        if not tokens:
+            return jsonify({"ok": False, "erro": "Mercado Livre nao autorizado"}), 401
+        contas = [conta_req] if conta_req else list(tokens.keys())
+        reputacoes = []
+        for conta in contas:
+            token = _ml_get_user_token(conta)
+            if not token:
+                continue
+            user_id = _ml_conta_user_id(conta, token)
+            if not user_id:
+                continue
+            try:
+                r = requests.get(f"https://api.mercadolibre.com/users/{user_id}",
+                                 headers={"Authorization": f"Bearer {token}"}, timeout=15)
+                if r.status_code != 200:
+                    continue
+                u = r.json()
+                rep = u.get("seller_reputation", {}) or {}
+                metrics = rep.get("metrics", {}) or {}
+                trans = rep.get("transactions", {}) or {}
+                ratings = trans.get("ratings", {}) or {}
+                def _rate(k):
+                    m = metrics.get(k, {}) or {}
+                    return {"rate": m.get("rate", 0), "value": m.get("value", 0)}
+                reputacoes.append({
+                    "conta": conta,
+                    "apelido": u.get("nickname", ""),
+                    "nivel": rep.get("level_id") or "",          # ex "5_green"
+                    "power_seller": rep.get("power_seller_status") or "",  # ex "platinum"
+                    "transacoes_total": trans.get("total", 0),
+                    "transacoes_completas": trans.get("completed", 0),
+                    "transacoes_canceladas": trans.get("canceled", 0),
+                    "rating_positivo": ratings.get("positive", 0),
+                    "rating_neutro": ratings.get("neutral", 0),
+                    "rating_negativo": ratings.get("negative", 0),
+                    "reclamacoes": _rate("claims"),
+                    "cancelamentos": _rate("cancellations"),
+                    "atrasos": _rate("delayed_handling_time"),
+                })
+            except Exception as _e:
+                print(f"[REPUTACAO] erro conta {conta}: {_e}")
+        return jsonify({"ok": True, "total": len(reputacoes), "reputacoes": reputacoes})
+
     @app.route("/integracoes/mercadolivre/vendas-recentes", methods=["GET", "OPTIONS"])
     def ml_vendas_recentes():
         if request.method == "OPTIONS":
