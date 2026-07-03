@@ -11334,14 +11334,28 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
     def shopee_anuncios_db():
         if request.method == "OPTIONS":
             return _options_resp()
-        # Tenta Supabase primeiro
+        # Tenta Supabase primeiro. O PostgREST corta cada resposta em 1000 linhas
+        # (max-rows), então PAGINA por offset pra trazer TODOS os anúncios (havia 2000+).
         try:
-            r = requests.get(
-                f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?select=*&order=sync_at.desc&limit=5000",
-                headers=_wrx_headers(), timeout=10
-            )
-            if r.status_code == 200:
-                dados = r.json()
+            dados = []
+            offset = 0
+            ok_sb = False
+            while True:
+                r = requests.get(
+                    f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?select=*&order=sync_at.desc&limit=1000&offset={offset}",
+                    headers=_wrx_headers(), timeout=15
+                )
+                if r.status_code != 200:
+                    break
+                ok_sb = True
+                lote = r.json()
+                dados.extend(lote)
+                if len(lote) < 1000:
+                    break
+                offset += 1000
+                if offset > 50000:  # trava de segurança
+                    break
+            if ok_sb:
                 return jsonify({"ok": True, "itens": dados, "total": len(dados), "fonte": "supabase"})
         except Exception:
             pass
