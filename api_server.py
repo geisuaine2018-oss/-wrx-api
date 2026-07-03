@@ -11246,6 +11246,16 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates"},
                     json=lote, timeout=30
                 )
+                # Se a coluna create_time ainda nao existir (deploy antes do setup-tabela),
+                # o PostgREST devolve 400 citando a coluna — re-tenta o lote SEM ela pra nao
+                # perder o sync (o resto continua igual). Quando a coluna existir, salva a data.
+                if r_up.status_code == 400 and "create_time" in (r_up.text or ""):
+                    lote2 = [{k: v for k, v in it.items() if k != "create_time"} for it in lote]
+                    r_up = requests.post(
+                        f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?on_conflict=shop_id,item_id",
+                        headers={**_wrx_headers(), "Prefer": "resolution=merge-duplicates"},
+                        json=lote2, timeout=30
+                    )
                 if r_up.status_code not in (200, 201, 204):
                     break  # tabela nao existe, para silenciosamente
         except Exception:
@@ -11311,6 +11321,9 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     "status": item.get("item_status", "NORMAL"),
                     "fotos": json.dumps(fotos),
                     "sync_at": now_iso,
+                    # data de CRIAÇÃO do anúncio na Shopee (unix segundos) — usada na página
+                    # "Anúncios Shopee (Turbo)" pra mostrar/ordenar por data. Pode faltar em item antigo.
+                    "create_time": item.get("create_time") or None,
                 })
             total_importados += len(todos_itens)
 
@@ -11993,9 +12006,13 @@ CREATE TABLE IF NOT EXISTS shopee_anuncios (
   status TEXT DEFAULT 'NORMAL',
   fotos JSONB DEFAULT '[]',
   sync_at TIMESTAMPTZ DEFAULT NOW(),
+  create_time BIGINT,
   UNIQUE(shop_id, item_id)
 );
 CREATE INDEX IF NOT EXISTS idx_shopee_anuncios_sku ON shopee_anuncios(sku);
+-- coluna da data de criação do anúncio na Shopee (unix segundos); ADD IF NOT EXISTS
+-- para tabelas já existentes, sem recriar nada.
+ALTER TABLE shopee_anuncios ADD COLUMN IF NOT EXISTS create_time BIGINT;
 """
         if service_key:
             r = requests.post(
