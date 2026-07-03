@@ -11341,8 +11341,11 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             offset = 0
             ok_sb = False
             while True:
+                # ordena por id (chave única) — paginar por offset sobre uma coluna
+                # NÃO-única (ex.: sync_at, igual pra todos) faz o Postgres pular/repetir
+                # linhas entre páginas e o total oscilar. O frontend reordena como o usuário quiser.
                 r = requests.get(
-                    f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?select=*&order=sync_at.desc&limit=1000&offset={offset}",
+                    f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?select=*&order=id.asc&limit=1000&offset={offset}",
                     headers=_wrx_headers(), timeout=15
                 )
                 if r.status_code != 200:
