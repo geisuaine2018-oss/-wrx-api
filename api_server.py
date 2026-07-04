@@ -4611,13 +4611,11 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
             "mercedes-benz": "75966", "mercedes": "75966", "mini": "65127", "mitsubishi": "1138",
             "nissan": "60505", "peugeot": "60279", "porsche": "56870", "ram": "2710997", "renault": "9909",
             "seat": "60268", "shineray": "380886", "subaru": "60285", "suzuki": "43943", "toyota": "60297",
-            "troller": "389179", "volkswagen": "60249", "vw": "60249", "volvo": "60658"}
+            "troller": "389179", "volkswagen": "60249", "vw": "60249", "volvo": "60658",
+            "gac": "39013632", "omoda": "23689205"}
         YEARS = {"2015": "423549", "2016": "423562", "2017": "436694", "2018": "460382", "2019": "2451646",
             "2020": "6730991", "2021": "8197742", "2022": "9836402", "2023": "12023859", "2024": "19060055",
             "2025": "34466003", "2026": "45742656", "2027": "73057742", "2028": "27230836"}
-        brand_id = BRANDS.get(_normv(marca))
-        if not brand_id:
-            return jsonify({"ok": False, "erro": f"marca '{marca}' não está no mapa de códigos do ML", "itens": []})
         anos = []
         for a in anos_in:
             m = re.search(r"(20\d{2})", str(a))
@@ -4629,6 +4627,34 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         if not token:
             return jsonify({"ok": False, "erro": "sem token ML", "itens": []}), 502
         _h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        brand_id = BRANDS.get(_normv(marca))
+        if not brand_id:
+            # Marca fora da lista: DESCOBRE o código no ML (varre alguns anos e casa pelo nome).
+            # Pega marca nova/exótica (GAC, Omoda, Zeekr...) sem precisar cadastrar antes.
+            mnorm = _normv(marca)
+            for yid in ("45742656", "34466003", "19060055", "6730991", "460382", "423549"):
+                if brand_id:
+                    break
+                for off in (0, 50):
+                    try:
+                        _rb = requests.post("https://api.mercadolibre.com/catalog_compatibilities/products_search/chunks",
+                            headers=_h, json={"domain_id": "MLB-CARS_AND_VANS", "site_id": "MLB",
+                            "known_attributes": [{"id": "VEHICLE_YEAR", "value_ids": [yid]}], "offset": off}, timeout=20)
+                        if _rb.status_code != 200:
+                            continue
+                        for p in (_rb.json().get("results") or []):
+                            for a in p.get("attributes", []):
+                                if a.get("id") == "BRAND" and _normv(a.get("value_name")) == mnorm:
+                                    brand_id = a.get("value_id"); break
+                            if brand_id:
+                                break
+                    except Exception:
+                        pass
+                    if brand_id:
+                        break
+        if not brand_id:
+            return jsonify({"ok": False, "erro": f"marca '{marca}' não encontrada no catálogo do ML", "itens": []})
 
         # sufixos de CARROCERIA (tiram do nome pra virar o "core" do modelo). NÃO inclui 'plus'/'cross'
         # etc. que são modelos diferentes.
