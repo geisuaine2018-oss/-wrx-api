@@ -4701,17 +4701,13 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         tcons = " " + _normv(titulo) + " "
         achados = set()
         for core in sorted(set(c for c, _ in todos), key=len, reverse=True):
-            rgx = r"(?:^|[^a-z0-9])" + re.escape(core) + r"(?:[^a-z0-9]|$)"
-            casou = re.search(rgx, tcons)
-            # modelo que é SÓ número (ex Omoda "5"/"7") pode vir com 1 LETRA colada no título:
-            # "Omoda C5" -> modelo "5". Exige exatamente [a-z]+número como token, então NÃO casa
-            # "1.5"/"15"/"2015". Só tenta quando o número sozinho não apareceu.
-            if not casou and re.match(r"^\d{1,2}$", core):
-                rgx2 = r"(?:^|[^a-z0-9])[a-z]" + re.escape(core) + r"(?:[^a-z0-9]|$)"
-                if re.search(rgx2, tcons):
-                    casou = True
-                    rgx = rgx2
-            if casou:
+            if re.match(r"^\d{1,2}$", core):
+                # modelo que é SÓ número (ex Omoda "5"/"7"): casa só como TOKEN entre espaços, com no
+                # máx 1 letra colada ("Omoda C5" -> "5"). NÃO casa "1.5" (motor), "15", "2015" (ano).
+                rgx = r"(?:^|\s)[a-z]?" + re.escape(core) + r"(?:\s|$)"
+            else:
+                rgx = r"(?:^|[^a-z0-9])" + re.escape(core) + r"(?:[^a-z0-9]|$)"
+            if re.search(rgx, tcons):
                 achados.add(core)
                 tcons = re.sub(rgx, "  ", tcons)
 
