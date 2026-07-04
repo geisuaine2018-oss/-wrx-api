@@ -4543,15 +4543,23 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
                 for p in res:
                     at = {a.get("id"): a for a in p.get("attributes", [])}
                     nm = _normv((at.get("MODEL") or {}).get("value_name", ""))
-                    if nm == alvo or nm.startswith(alvo + " "):
-                        cand.append((nm == alvo, ano, at))
+                    # casa: modelo exato ("expert"), variação de carroceria ("expert cargo/vitré")
+                    # ou versão ELÉTRICA ("e-expert cargo", "e expert") — é o MESMO veículo pra dona.
+                    exato = (nm == alvo)
+                    variacao = (nm.startswith(alvo + " ") or nm.startswith("e-" + alvo)
+                                or nm.startswith("e " + alvo) or nm.startswith("e-" + alvo + " "))
+                    if exato or variacao:
+                        cand.append((exato, ano, at))
                 off += 50
                 if off >= total:
                     break
-        tem_exato = any(c[0] for c in cand)   # match exato (Onix) tem prioridade sobre prefixo (Onix Plus)
+        # "exato tem prioridade sobre variação" mas POR ANO (não global): buscar "Onix" descarta
+        # "Onix Plus" em cada ano; mas "Expert" (que só existe até 2022) NÃO faz sumir "Expert Cargo/
+        # Vitré/E-Expert" de 2023+ (anos sem o modelo exato). Antes era global e engolia os anos novos.
+        _exato_por_ano = set(ano for exato, ano, _ in cand if exato)
         itens, vistos = [], set()
         for exato, ano, at in cand:
-            if tem_exato and not exato:
+            if (ano in _exato_por_ano) and not exato:
                 continue
             b = at.get("BRAND") or {}; mo = at.get("MODEL") or {}; y = at.get("VEHICLE_YEAR") or {}; t = at.get("TRIM") or {}
             bv, mv, yv, tv = b.get("value_id"), mo.get("value_id"), y.get("value_id"), (t.get("value_id") or "")
@@ -6686,92 +6694,6 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             except Exception as _e:
                 print(f"[REPUTACAO] erro conta {conta}: {_e}")
         return jsonify({"ok": True, "total": len(reputacoes), "reputacoes": reputacoes})
-
-    # ─── ML: catálogo de compatibilidade AO VIVO ─────────────────────────────────
-    # Busca os veículos de uma marca+modelo(+anos) direto no catálogo do ML, com os IDs reais
-    # pra montar a compatibilidade. Pega modelos novos/elétricos/renomeados (ex: "Expert" virou
-    # "Expert Cargo/Vitré/E-Expert" em 2023+) SEM depender de índice local. O filtro do modelo é
-    # por TEXTO (contém), então "expert" casa "Expert", "Expert Cargo", "E-Expert Furgão".
-    _ML_BRAND_IDS = {"acura":"60244","alfa romeo":"67695","audi":"40661","bmw":"66352","byd":"2103733","chana":"389166","chery":"389168","chevrolet":"58955","citroen":"389169","citroën":"389169","dodge":"66708","ferrari":"23937","fiat":"67781","ford":"66432","gwm":"17820030","honda":"60559","hyundai":"1089","iveco":"396749","jac":"2839844","jeep":"60395","kia":"374002","land rover":"66655","lexus":"71552","mazda":"66811","mercedes-benz":"75966","mercedes benz":"75966","mini":"65127","mitsubishi":"1138","nissan":"60505","peugeot":"60279","porsche":"56870","ram":"2710997","renault":"9909","seat":"60268","shineray":"380886","subaru":"60285","suzuki":"43943","toyota":"60297","troller":"389179","volkswagen":"60249","vw":"60249","volvo":"60658","wake":"1119495"}
-    _ML_YEAR_IDS = {"2015":"423549","2018":"460382","2019":"2451646","2020":"6730991","2021":"8197742","2022":"9836402","2023":"12023859","2024":"19060055","2025":"34466003","2026":"45742656"}
-
-    @app.route("/integracoes/mercadolivre/compat-catalogo", methods=["GET", "OPTIONS"])
-    def ml_compat_catalogo():
-        if request.method == "OPTIONS":
-            return _options_resp()
-        marca = (request.args.get("marca") or "").strip().lower()
-        modelo = (request.args.get("modelo") or "").strip().lower()
-        anos_req = [a.strip() for a in (request.args.get("anos") or "").split(",") if a.strip()]
-        if not marca or not modelo:
-            return jsonify({"ok": False, "erro": "marca e modelo obrigatorios", "itens": []}), 400
-        brand_id = _ML_BRAND_IDS.get(marca)
-        if not brand_id:
-            return jsonify({"ok": False, "erro": "marca nao mapeada: " + marca, "itens": []})
-        token = _get_ml_token()
-        if not token:
-            return jsonify({"ok": False, "erro": "sem token ML", "itens": []}), 502
-        URL = "https://api.mercadolibre.com/catalog_compatibilities/products_search/chunks"
-        HDR = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
-
-        def _proc(results, itens, vistos):
-            for it in results:
-                attrs = {a.get("id"): a for a in it.get("attributes", [])}
-                mdl = attrs.get("MODEL", {}); yr = attrs.get("VEHICLE_YEAR", {})
-                trim = attrs.get("TRIM", {}); brand = attrs.get("BRAND", {})
-                model_name = mdl.get("value_name") or ""
-                if modelo not in model_name.lower():
-                    continue
-                year_name = yr.get("value_name") or ""
-                if anos_req and year_name not in anos_req:
-                    continue
-                key = (mdl.get("value_id"), yr.get("value_id"), trim.get("value_id"))
-                if key in vistos:
-                    continue
-                vistos.add(key)
-                disp = " ".join(x for x in [brand.get("value_name"), model_name, trim.get("value_name")] if x)
-                if year_name:
-                    disp += " (" + year_name + ")"
-                itens.append({
-                    "id": "_".join(str(x) for x in [brand.get("value_id"), mdl.get("value_id"), yr.get("value_id"), trim.get("value_id")]),
-                    "year": year_name, "mlBrandId": brand.get("value_id"), "mlModelId": mdl.get("value_id"),
-                    "mlYearId": yr.get("value_id"), "mlVersionId": trim.get("value_id"),
-                    "brandName": brand.get("value_name"), "modelName": model_name,
-                    "versionName": trim.get("value_name"), "displayText": disp,
-                })
-
-        itens, vistos = [], set()
-        try:
-            anos_com_id = [a for a in anos_req if a in _ML_YEAR_IDS]
-            anos_sem_id = [a for a in anos_req if a not in _ML_YEAR_IDS]
-            for a in anos_com_id:
-                body = {"domain_id": "MLB-CARS_AND_VANS", "site_id": "MLB",
-                        "known_attributes": [{"id": "BRAND", "value_ids": [brand_id]},
-                                             {"id": "VEHICLE_YEAR", "value_ids": [_ML_YEAR_IDS[a]]}],
-                        "limit": 50, "offset": 0}
-                r = requests.post(URL, headers=HDR, json=body, timeout=25)
-                if r.status_code == 200:
-                    _proc(r.json().get("results", []), itens, vistos)
-            # sem anos, ou anos sem id conhecido -> pagina por marca (teto) e filtra por texto
-            if (not anos_req) or anos_sem_id:
-                offset = 0
-                while offset < 800:
-                    body = {"domain_id": "MLB-CARS_AND_VANS", "site_id": "MLB",
-                            "known_attributes": [{"id": "BRAND", "value_ids": [brand_id]}],
-                            "limit": 50, "offset": offset}
-                    r = requests.post(URL, headers=HDR, json=body, timeout=25)
-                    if r.status_code != 200:
-                        break
-                    d = r.json(); res = d.get("results", [])
-                    if not res:
-                        break
-                    _proc(res, itens, vistos)
-                    offset += 50
-                    if d.get("total") and offset >= d.get("total"):
-                        break
-        except Exception as e:
-            return jsonify({"ok": False, "erro": str(e)[:200], "itens": itens})
-        itens.sort(key=lambda x: (x.get("modelName", ""), x.get("year", "")))
-        return jsonify({"ok": True, "total": len(itens), "marca": marca, "modelo": modelo, "itens": itens})
 
     @app.route("/integracoes/mercadolivre/vendas-recentes", methods=["GET", "OPTIONS"])
     def ml_vendas_recentes():
