@@ -4583,6 +4583,130 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
                         "modelos_ml": sorted(set(i["modelName"] for i in itens)),
                         "anos": sorted(set(i["year"] for i in itens))})
 
+    @app.route("/integracoes/mercadolivre/compat-por-titulo", methods=["POST", "OPTIONS"])
+    def ml_compat_por_titulo():
+        # 100% AUTOMÁTICO: descobre o(s) modelo(s) direto do TÍTULO comparando com os modelos REAIS
+        # da marca no catálogo do ML (não depende de lista local). Casa pelo "core" do modelo (sem o
+        # sufixo de carroceria: cargo/vitré/furgão/van...) e CONSOME o trecho mais específico primeiro:
+        #  - "Expert" no título casa Expert/Expert Cargo/Expert Vitré/E-Expert (mesmo core "expert");
+        #  - "Onix Plus" casa só Onix Plus (consome "onix plus" antes de "onix"); "Onix" casa só Onix.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        marca = str(data.get("marca") or "").strip()
+        titulo = str(data.get("titulo") or "").strip()
+        anos_in = data.get("anos") or []
+        if not marca or not titulo:
+            return jsonify({"ok": False, "erro": "informe marca e titulo", "itens": []}), 400
+
+        def _normv(s):
+            import unicodedata
+            return "".join(c for c in unicodedata.normalize("NFD", str(s or "")) if unicodedata.category(c) != "Mn").lower().strip()
+
+        BRANDS = {"acura": "60244", "alfa romeo": "67695", "audi": "40661", "bmw": "66352", "byd": "2103733",
+            "chana": "389166", "chery": "389168", "caoa": "389168", "chevrolet": "58955", "gm": "58955",
+            "citroen": "389169", "dodge": "66708", "ferrari": "23937", "fiat": "67781", "ford": "66432",
+            "gwm": "17820030", "honda": "60559", "hyundai": "1089", "iveco": "396749", "jac": "2839844",
+            "jeep": "60395", "kia": "374002", "land rover": "66655", "lexus": "71552", "mazda": "66811",
+            "mercedes-benz": "75966", "mercedes": "75966", "mini": "65127", "mitsubishi": "1138",
+            "nissan": "60505", "peugeot": "60279", "porsche": "56870", "ram": "2710997", "renault": "9909",
+            "seat": "60268", "shineray": "380886", "subaru": "60285", "suzuki": "43943", "toyota": "60297",
+            "troller": "389179", "volkswagen": "60249", "vw": "60249", "volvo": "60658"}
+        YEARS = {"2015": "423549", "2016": "423562", "2017": "436694", "2018": "460382", "2019": "2451646",
+            "2020": "6730991", "2021": "8197742", "2022": "9836402", "2023": "12023859", "2024": "19060055",
+            "2025": "34466003", "2026": "45742656", "2027": "73057742", "2028": "27230836"}
+        brand_id = BRANDS.get(_normv(marca))
+        if not brand_id:
+            return jsonify({"ok": False, "erro": f"marca '{marca}' não está no mapa de códigos do ML", "itens": []})
+        anos = []
+        for a in anos_in:
+            m = re.search(r"(20\d{2})", str(a))
+            if m and m.group(1) in YEARS:
+                anos.append(m.group(1))
+        anos = sorted(set(anos)) or list(YEARS.keys())
+
+        token = _get_ml_token()
+        if not token:
+            return jsonify({"ok": False, "erro": "sem token ML", "itens": []}), 502
+        _h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        # sufixos de CARROCERIA (tiram do nome pra virar o "core" do modelo). NÃO inclui 'plus'/'cross'
+        # etc. que são modelos diferentes.
+        SUFIXOS = {"cargo", "vitre", "furgao", "van", "minibus", "vidrada", "sedan", "hatch", "sw",
+                   "cc", "pickup", "coupe", "wagon", "rapid", "tourer", "kombi"}
+        def _core(model_name):
+            m = _normv(model_name)
+            if m.startswith("e-"):
+                m = m[2:].strip()
+            elif m.startswith("e "):
+                m = m[2:].strip()
+            return " ".join(p for p in m.split() if p not in SUFIXOS).strip()
+
+        # coleta TODOS os produtos dos anos pedidos (por BRAND+YEAR — poucos por ano)
+        todos = []   # (core, at)
+        try:
+            for ano in anos:
+                yid = YEARS[ano]
+                off = 0
+                while off < 500:
+                    _r = requests.post("https://api.mercadolibre.com/catalog_compatibilities/products_search/chunks",
+                        headers=_h, json={"domain_id": "MLB-CARS_AND_VANS", "site_id": "MLB",
+                        "known_attributes": [{"id": "BRAND", "value_ids": [brand_id]},
+                                             {"id": "VEHICLE_YEAR", "value_ids": [yid]}],
+                        "offset": off}, timeout=20)
+                    if _r.status_code != 200:
+                        break
+                    _j = _r.json() or {}
+                    res = _j.get("results") or []
+                    total = _j.get("total") or 0
+                    for p in res:
+                        at = {a.get("id"): a for a in p.get("attributes", [])}
+                        core = _core((at.get("MODEL") or {}).get("value_name", ""))
+                        if core:
+                            todos.append((core, at))
+                    off += 50
+                    if off >= total:
+                        break
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)[:200], "itens": []})
+
+        # acha os cores que aparecem no título — do mais ESPECÍFICO (longo) pro genérico, consumindo
+        # o trecho casado (assim "onix plus" bloqueia "onix"; "corolla cross" bloqueia "corolla").
+        tcons = " " + _normv(titulo) + " "
+        achados = set()
+        for core in sorted(set(c for c, _ in todos), key=len, reverse=True):
+            rgx = r"(?:^|[^a-z0-9])" + re.escape(core) + r"(?:[^a-z0-9]|$)"
+            if re.search(rgx, tcons):
+                achados.add(core)
+                tcons = re.sub(rgx, "  ", tcons)
+
+        itens, vistos, modelos_ach = [], set(), set()
+        for core, at in todos:
+            if core not in achados:
+                continue
+            b = at.get("BRAND") or {}; mo = at.get("MODEL") or {}; y = at.get("VEHICLE_YEAR") or {}; t = at.get("TRIM") or {}
+            bv, mv, yv, tv = b.get("value_id"), mo.get("value_id"), y.get("value_id"), (t.get("value_id") or "")
+            if not (bv and mv and yv):
+                continue
+            k = (bv, mv, yv, tv)
+            if k in vistos:
+                continue
+            vistos.add(k)
+            modelos_ach.add(mo.get("value_name") or "")
+            _yn = str(y.get("value_name") or "")
+            itens.append({
+                "id": f"{bv}_{mv}_{yv}_{tv}", "year": _yn, "anos": _yn, "status": "COMPATIVEL",
+                "mlBrandId": bv, "mlModelId": mv, "mlYearId": yv, "mlVersionId": tv,
+                "brandName": b.get("value_name") or marca, "modelName": mo.get("value_name") or "",
+                "versionName": t.get("value_name") or "",
+                "displayText": (f"{b.get('value_name') or marca} {mo.get('value_name') or ''} "
+                                f"{t.get('value_name') or ''} ({_yn})").replace("  ", " ").strip(),
+                "veiculo": f"{b.get('value_name') or marca} {mo.get('value_name') or ''}".strip(),
+            })
+        return jsonify({"ok": True, "itens": itens, "total": len(itens), "marca": marca,
+                        "modelos_ml": sorted(x for x in modelos_ach if x),
+                        "anos": sorted(set(i["year"] for i in itens if i["year"]))})
+
     @app.route("/integracoes/mercadolivre/reenviar-compat", methods=["POST", "OPTIONS"])
     def ml_reenviar_compat():
         # Reenvia a COMPATIBILIDADE do banco (pecas_estoque.compatibilidade, com os ml*Id) para
