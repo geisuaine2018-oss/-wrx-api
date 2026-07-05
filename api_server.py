@@ -4493,7 +4493,7 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
 
         # mapas extraídos da base REAL da dona (compat-ml/*.json) — códigos de marca e ano do ML
         BRANDS = {"acura": "60244", "alfa romeo": "67695", "audi": "40661", "bmw": "66352", "byd": "2103733",
-            "chana": "389166", "chery": "389168", "caoa": "389168", "chevrolet": "58955", "gm": "58955",
+            "chana": "389166", "chery": "389168", "caoa": "389168", "chrysler": "66395", "chevrolet": "58955", "gm": "58955",
             "citroen": "389169", "dodge": "66708", "ferrari": "23937", "fiat": "67781", "ford": "66432",
             "gwm": "17820030", "honda": "60559", "hyundai": "1089", "iveco": "396749", "jac": "2839844",
             "jeep": "60395", "kia": "374002", "land rover": "66655", "lexus": "71552", "mazda": "66811",
@@ -4605,7 +4605,7 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
             return "".join(c for c in unicodedata.normalize("NFD", str(s or "")) if unicodedata.category(c) != "Mn").lower().strip()
 
         BRANDS = {"acura": "60244", "alfa romeo": "67695", "audi": "40661", "bmw": "66352", "byd": "2103733",
-            "chana": "389166", "chery": "389168", "caoa": "389168", "chevrolet": "58955", "gm": "58955",
+            "chana": "389166", "chery": "389168", "caoa": "389168", "chrysler": "66395", "chevrolet": "58955", "gm": "58955",
             "citroen": "389169", "dodge": "66708", "ferrari": "23937", "fiat": "67781", "ford": "66432",
             "gwm": "17820030", "honda": "60559", "hyundai": "1089", "iveco": "396749", "jac": "2839844",
             "jeep": "60395", "kia": "374002", "land rover": "66655", "lexus": "71552", "mazda": "66811",
