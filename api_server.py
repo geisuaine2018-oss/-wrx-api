@@ -2038,6 +2038,98 @@ if USE_FLASK:
         resultado = executar_busca(codigo, compatibilidade_oem=compatibilidade_oem, nome_peca_fixo=nome_peca_fixo)
         return jsonify(resultado)
 
+    @app.route("/importar-ml", methods=["GET", "OPTIONS"])
+    def importar_ml():
+        """Puxa um anúncio do Mercado Livre pelo LINK (ou ?id=MLBxxxx) via API oficial.
+        Usado pela página /importar (Safari iPhone, Android, PC) — substitui a raspagem
+        da extensão. Retorna título, preço, condição, FOTOS, marca/modelo/ano, oem, descrição."""
+        if request.method == "OPTIONS":
+            return _cors(app.response_class(status=204))
+        import re as _re
+        url = request.args.get("url", "").strip()
+        item_id = request.args.get("id", "").strip().upper()
+        if not item_id and url:
+            m = _re.search(r"MLB-?(\d+)", url, _re.I)
+            if m:
+                item_id = "MLB" + m.group(1)
+        if not item_id:
+            return jsonify({"ok": False, "erro": "Link inválido — não achei o código MLB do anúncio."}), 400
+
+        token = _get_ml_token()
+        headers = {"Accept": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            r = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=headers, timeout=15)
+            if r.status_code != 200:
+                return jsonify({"ok": False, "erro": f"O ML não retornou o anúncio (HTTP {r.status_code}). Confira o link."}), 502
+            data = r.json()
+        except Exception as e:
+            return jsonify({"ok": False, "erro": f"Falha ao consultar o Mercado Livre: {e}"}), 502
+
+        # Atributos -> chave canônica (marca/modelo/ano/oem/...)
+        attrs = {}
+        for a in data.get("attributes", []):
+            nome = (a.get("name") or "").lower().strip()
+            valores = [v.get("name", "") for v in a.get("values", []) if v.get("name")]
+            if not valores and a.get("value_name"):
+                valores = [a["value_name"]]
+            if nome and valores:
+                attrs[nome] = ", ".join(filter(None, valores))
+
+        def _attr(*canonicas):
+            for k, v in attrs.items():
+                if _normalizar_chave_attr(k) in canonicas and v:
+                    return v
+            return ""
+
+        # Fotos em alta (secure_url); fallback thumbnail
+        fotos = []
+        for p in data.get("pictures", []):
+            u = p.get("secure_url") or p.get("url") or ""
+            if u:
+                fotos.append(u)
+        if not fotos:
+            t = data.get("secure_thumbnail") or data.get("thumbnail") or ""
+            if t:
+                fotos.append(t)
+
+        # Descrição (texto puro)
+        descricao = ""
+        try:
+            rd = requests.get(f"https://api.mercadolibre.com/items/{item_id}/description", headers=headers, timeout=10)
+            if rd.status_code == 200:
+                descricao = (rd.json().get("plain_text") or "")[:3000]
+        except Exception:
+            pass
+
+        # Peso/medidas — o ML raramente publica; tenta dos atributos, senão fica manual (0)
+        def _num(s):
+            m = _re.search(r"[\d]+(?:[.,][\d]+)?", str(s or ""))
+            return float(m.group(0).replace(",", ".")) if m else 0.0
+        peso = _num(_attr("peso") or attrs.get("peso", "") or attrs.get("peso líquido", ""))
+        altura = _num(attrs.get("altura", ""))
+        largura = _num(attrs.get("largura", ""))
+        comprimento = _num(attrs.get("comprimento", "") or attrs.get("profundidade", ""))
+
+        return jsonify({
+            "ok": True,
+            "id": item_id,
+            "titulo": data.get("title", ""),
+            "preco": float(data.get("price") or 0),
+            "condicao": data.get("condition", "used"),
+            "permalink": data.get("permalink", ""),
+            "fotos": fotos[:12],
+            "marca": _attr("marca"),
+            "modelo": _attr("modelo"),
+            "ano": _attr("ano"),
+            "oem": _attr("oem"),
+            "categoria": _attr("tipo"),
+            "descricao": descricao,
+            "peso": peso, "altura": altura, "largura": largura, "comprimento": comprimento,
+            "atributos": attrs,
+        })
+
     @app.route("/limpar-cache", methods=["GET", "POST", "OPTIONS"])
     def limpar_cache():
         if request.method == "OPTIONS":
