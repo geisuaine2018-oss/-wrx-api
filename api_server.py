@@ -2651,7 +2651,8 @@ if USE_FLASK:
                 ctx.append("Descricao (use como apoio): " + descricao[:600])
             prompt = (
                 "Voce e especialista em titulos de anuncio de autopecas (Mercado Livre e Shopee). "
-                "Monte 5 titulos para a peca abaixo, do MAIS COMPLETO ao mais curto.\n\n"
+                "Monte 6 titulos para a peca abaixo, do MAIS COMPLETO ao mais curto, TODOS DIFERENTES entre si "
+                "(varie a ordem/abreviacoes/anos por extenso) porque sao 6 anuncios na mesma conta e o ML barra titulos iguais.\n\n"
                 "DADOS:\n- " + "\n- ".join(ctx) + "\n\n"
                 "REGRAS OBRIGATORIAS:\n"
                 "1. O PRINCIPAL e MARCA + MODELO(S) + ANO (NAO o codigo). O titulo gira em torno disso.\n"
@@ -2661,7 +2662,7 @@ if USE_FLASK:
                 "5. NAO coloque codigo, OEM nem SKU no titulo (nem numeros tipo 109053). O codigo NAO e o principal. Se a peca nao tem OEM real, pode usar a palavra 'Original'.\n"
                 "6. APROVEITE O ESPACO: titulo o MAIS COMPLETO possivel dentro do limite. Se sobrar espaco, inclua mais modelos, os anos por extenso, a palavra 'Original'. Prefira SEMPRE completo a curto. NAO repita nem invente.\n"
                 "7. Cada titulo com ATE 60 caracteres (limite Mercado Livre) e use o MAXIMO desse limite. O 1o titulo entre 52 e 60 caracteres. Sem aspas, sem numeracao no inicio.\n"
-                'Responda SOMENTE em JSON: {"titulos":["t1","t2","t3","t4","t5"]}'
+                'Responda SOMENTE em JSON: {"titulos":["t1","t2","t3","t4","t5","t6"]}'
             )
             data_ia = _gemini(key, prompt)  # funcao testada (usa thinkingBudget=0)
             titulos = (data_ia or {}).get("titulos") or []
@@ -2676,7 +2677,7 @@ if USE_FLASK:
                 except Exception as _e:
                     _diag["gemini_excecao"] = str(_e)
                 return jsonify(_diag), 502
-            return jsonify({"titulos": [str(t)[:90] for t in titulos[:5]]})
+            return jsonify({"titulos": [str(t)[:90] for t in titulos[:6]]})
         except Exception as e:
             return jsonify({"erro": str(e)}), 500
 
