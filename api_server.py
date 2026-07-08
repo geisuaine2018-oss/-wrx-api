@@ -1586,7 +1586,7 @@ def _gemini(api_key, prompt):
                 json={"contents": [{"parts": [{"text": prompt}]}],
                       "generationConfig": {"maxOutputTokens": 1800, "temperature": 0.3,
                                            "thinkingConfig": {"thinkingBudget": 0}}},
-                timeout=60)
+                timeout=12)
             if r.status_code not in (200,):
                 continue
             parts = r.json()["candidates"][0]["content"]["parts"]
@@ -2671,7 +2671,7 @@ if USE_FLASK:
                 try:
                     import requests as _rq
                     _u = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + key
-                    _r = _rq.post(_u, json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": 1800, "temperature": 0.3, "thinkingConfig": {"thinkingBudget": 0}}}, timeout=40)
+                    _r = _rq.post(_u, json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": 1800, "temperature": 0.3, "thinkingConfig": {"thinkingBudget": 0}}}, timeout=12)
                     _diag["gemini_status"] = _r.status_code
                     _diag["gemini_body"] = _r.text[:400]
                 except Exception as _e:
