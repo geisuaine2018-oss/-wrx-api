@@ -3594,6 +3594,30 @@ if USE_FLASK:
                 continue
         return jsonify({"ok": True, "conta": conta, "total": len(out), "anuncios": out})
 
+    @app.route("/integracoes/mercadolivre/item-debug", methods=["GET", "OPTIONS"])
+    def ml_item_debug():
+        # DEBUG: retorna o item completo + health/quality pra descobrir de onde vem a CAUSA detalhada
+        # ("adicione as posições", "não indica compatíveis"...) que o ML mostra na central.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        iid = (request.args.get("id") or "").strip()
+        conta = (request.args.get("conta") or "default").strip()
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"erro": f"conta '{conta}' sem token"}), 401
+        _h = {"Authorization": f"Bearer {token}"}
+        out = {}
+        for chave, url in [
+            ("item", f"https://api.mercadolibre.com/items/{iid}"),
+            ("health", f"https://api.mercadolibre.com/items/{iid}/health"),
+        ]:
+            try:
+                r = requests.get(url, headers=_h, timeout=12)
+                out[chave] = r.json() if r.status_code == 200 else {"_status_code": r.status_code, "_body": r.text[:300]}
+            except Exception as e:
+                out[chave] = {"_erro": str(e)}
+        return jsonify(out)
+
     @app.route("/integracoes/mercadolivre/publicar-local", methods=["POST", "OPTIONS"])
     def ml_publicar_local():
         if request.method == "OPTIONS":
