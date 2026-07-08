@@ -3530,6 +3530,66 @@ if USE_FLASK:
                 out[iid] = "erro"
         return jsonify({"ok": True, "status": out})
 
+    @app.route("/integracoes/mercadolivre/anuncios-monitor", methods=["GET", "OPTIONS"])
+    def ml_anuncios_monitor():
+        # Painel de monitoramento: lista os anúncios da conta com status REAL, sub_status (motivo da
+        # restrição), data de criação e última alteração (≈ quando pausou), saúde e link — direto da API.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        conta = (request.args.get("conta") or "default").strip() or "default"
+        limite = min(int(request.args.get("limite", 400) or 400), 1000)
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": f"conta '{conta}' sem token ML"}), 401
+        _h = {"Authorization": f"Bearer {token}"}
+        try:
+            me = requests.get("https://api.mercadolibre.com/users/me", headers=_h, timeout=10)
+            if me.status_code != 200:
+                return jsonify({"ok": False, "erro": "não autenticou no ML"}), 502
+            uid = me.json().get("id")
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 502
+        # 1) coleta os IDs dos anúncios (paginado)
+        ids, offset = [], 0
+        while offset < limite:
+            try:
+                sr = requests.get(f"https://api.mercadolibre.com/users/{uid}/items/search",
+                                  params={"limit": 100, "offset": offset}, headers=_h, timeout=15)
+                if sr.status_code != 200:
+                    break
+                res = sr.json().get("results", [])
+                ids += res
+                if len(res) < 100:
+                    break
+                offset += 100
+            except Exception:
+                break
+        # 2) multiget dos campos (20 por vez)
+        out = []
+        campos = "id,title,status,sub_status,date_created,last_updated,health,price,permalink,available_quantity"
+        for i in range(0, len(ids), 20):
+            chunk = ids[i:i + 20]
+            try:
+                mg = requests.get("https://api.mercadolibre.com/items",
+                                  params={"ids": ",".join(chunk), "attributes": campos}, headers=_h, timeout=20)
+                if mg.status_code != 200:
+                    continue
+                for x in mg.json():
+                    b = x.get("body") or {}
+                    if not b.get("id"):
+                        continue
+                    out.append({
+                        "mlId": b.get("id"), "titulo": b.get("title", ""),
+                        "status": b.get("status", ""), "subStatus": b.get("sub_status") or [],
+                        "criadoEm": b.get("date_created", ""), "alteradoEm": b.get("last_updated", ""),
+                        "saude": b.get("health"), "preco": b.get("price"),
+                        "qtd": b.get("available_quantity"), "url": b.get("permalink", ""),
+                        "conta": conta
+                    })
+            except Exception:
+                continue
+        return jsonify({"ok": True, "conta": conta, "total": len(out), "anuncios": out})
+
     @app.route("/integracoes/mercadolivre/publicar-local", methods=["POST", "OPTIONS"])
     def ml_publicar_local():
         if request.method == "OPTIONS":
