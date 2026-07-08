@@ -2666,6 +2666,12 @@ if USE_FLASK:
             )
             data_ia = _gemini(key, prompt)  # funcao testada (usa thinkingBudget=0)
             titulos = (data_ia or {}).get("titulos") or []
+            # RESERVA: se a Gemini falhar/estourar a cota (429), tenta o Claude automaticamente
+            if not titulos:
+                _ak = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+                if _ak:
+                    data_ia = _claude(_ak, prompt)
+                    titulos = (data_ia or {}).get("titulos") or []
             if not titulos:
                 _diag = {"erro": "IA nao retornou titulos"}
                 try:
