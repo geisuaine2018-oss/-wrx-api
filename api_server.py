@@ -3549,21 +3549,25 @@ if USE_FLASK:
             uid = me.json().get("id")
         except Exception as e:
             return jsonify({"ok": False, "erro": str(e)}), 502
-        # 1) coleta os IDs dos anúncios (paginado)
-        ids, offset = [], 0
-        while offset < limite:
-            try:
-                sr = requests.get(f"https://api.mercadolibre.com/users/{uid}/items/search",
-                                  params={"limit": 100, "offset": offset}, headers=_h, timeout=15)
-                if sr.status_code != 200:
+        # 1) coleta os IDs por STATUS (default: os "vivos" = active + paused; closed é histórico grande)
+        status_filtro = (request.args.get("status") or "active,paused").strip()
+        status_list = [s.strip() for s in status_filtro.split(",") if s.strip()] or ["active", "paused"]
+        ids = []
+        for _st in status_list:
+            offset = 0
+            while offset < limite:
+                try:
+                    sr = requests.get(f"https://api.mercadolibre.com/users/{uid}/items/search",
+                                      params={"status": _st, "limit": 100, "offset": offset}, headers=_h, timeout=15)
+                    if sr.status_code != 200:
+                        break
+                    res = sr.json().get("results", [])
+                    ids += res
+                    if len(res) < 100:
+                        break
+                    offset += 100
+                except Exception:
                     break
-                res = sr.json().get("results", [])
-                ids += res
-                if len(res) < 100:
-                    break
-                offset += 100
-            except Exception:
-                break
         # 2) multiget dos campos (20 por vez)
         out = []
         campos = "id,title,status,sub_status,date_created,last_updated,health,price,permalink,available_quantity"
