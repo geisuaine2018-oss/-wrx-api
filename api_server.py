@@ -3570,7 +3570,7 @@ if USE_FLASK:
                     break
         # 2) multiget dos campos (20 por vez)
         out = []
-        campos = "id,title,status,sub_status,date_created,last_updated,health,price,permalink,available_quantity"
+        campos = "id,title,status,sub_status,tags,date_created,last_updated,health,price,permalink,available_quantity"
         for i in range(0, len(ids), 20):
             chunk = ids[i:i + 20]
             try:
@@ -3588,6 +3588,7 @@ if USE_FLASK:
                         "criadoEm": b.get("date_created", ""), "alteradoEm": b.get("last_updated", ""),
                         "saude": b.get("health"), "preco": b.get("price"),
                         "qtd": b.get("available_quantity"), "url": b.get("permalink", ""),
+                        "tags": b.get("tags") or [],
                         "conta": conta
                     })
             except Exception:
