@@ -3507,6 +3507,29 @@ if USE_FLASK:
             return jsonify({"ok": True, "anuncios": all_items, "item": all_items[0]})
         return jsonify({"ok": False, "anuncios": [], "mensagem": "SKU nao encontrado"})
 
+    @app.route("/integracoes/mercadolivre/status-por-ids", methods=["POST", "OPTIONS"])
+    def ml_status_por_ids():
+        # Status REAL (active/paused/closed) de anuncios ML por MLB id — mais confiavel que por seller_sku.
+        # Usado pelo popup do card pra pegar anuncio que o ML PAUSOU mas o sistema mostrava "Publicado".
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True) or {}
+        ids = [str(x).strip() for x in (data.get("ids") or []) if x]
+        conta = (data.get("conta") or data.get("nome") or "default").strip() or "default"
+        token = _ml_get_user_token(conta)
+        if not token:
+            return jsonify({"ok": False, "erro": f"conta '{conta}' sem token ML"}), 401
+        out = {}
+        for iid in ids[:20]:
+            try:
+                r = requests.get(f"https://api.mercadolibre.com/items/{iid}",
+                                 params={"attributes": "id,status"},
+                                 headers={"Authorization": f"Bearer {token}"}, timeout=8)
+                out[iid] = r.json().get("status", "") if r.status_code == 200 else ("erro_" + str(r.status_code))
+            except Exception:
+                out[iid] = "erro"
+        return jsonify({"ok": True, "status": out})
+
     @app.route("/integracoes/mercadolivre/publicar-local", methods=["POST", "OPTIONS"])
     def ml_publicar_local():
         if request.method == "OPTIONS":
