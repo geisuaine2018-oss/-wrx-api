@@ -2659,9 +2659,9 @@ if USE_FLASK:
                 "1. O PRINCIPAL e MARCA + MODELO(S) + ANO (NAO o codigo). O titulo gira em torno disso.\n"
                 "2. ORDEM: Produto (tipo da peca) + Marca + Modelo(s) + [Motor, se mecanica/eletrica | Lado, se lataria/farol/lanterna/acabamento] + ANOS. Comece pelo tipo da peca.\n"
                 "3. Liste TODAS as MARCAS e TODOS os MODELOS compativeis (ex: Fiat Argo Cronos Pulse). Se ha mais de uma marca, inclua todas. NAO invente, NAO omita.\n"
-                "4. SEMPRE inclua os ANOS dos compativeis (faixa, ex '2016 a 2022' ou '2016 2022'). Use SOMENTE anos reais dos veiculos compativeis. NUNCA invente. Se faltam anos e sobra espaco, ADICIONE os anos.\n"
+                "4. SEMPRE inclua os ANOS dos compativeis (faixa, ex '2016 a 2022' ou '2016 2022'). Escreva os anos SEMPRE em NUMEROS de 4 digitos (2018, 2019), NUNCA por palavras (proibido 'dois mil e dezoito'). Use SOMENTE anos reais dos veiculos compativeis. NUNCA invente. Se faltam anos e sobra espaco, ADICIONE os anos.\n"
                 "5. NAO coloque codigo, OEM nem SKU no titulo (nem numeros tipo 109053). O codigo NAO e o principal. Se a peca nao tem OEM real, pode usar a palavra 'Original'.\n"
-                "6. APROVEITE O ESPACO: titulo o MAIS COMPLETO possivel dentro do limite. Se sobrar espaco, inclua mais modelos, os anos por extenso, a palavra 'Original'. Prefira SEMPRE completo a curto. NAO repita nem invente.\n"
+                "6. APROVEITE O ESPACO: titulo o MAIS COMPLETO possivel dentro do limite. Se sobrar espaco, inclua mais modelos, os anos listados um a um em NUMEROS (ex 2018 2019 2020 2021 2022 2023), a palavra 'Original'. Prefira SEMPRE completo a curto. NAO repita nem invente.\n"
                 "7. Cada titulo com ATE 60 caracteres (limite Mercado Livre) e use o MAXIMO desse limite. O 1o titulo entre 52 e 60 caracteres. Sem aspas, sem numeracao no inicio.\n"
                 'Responda SOMENTE em JSON: {"titulos":["t1","t2","t3","t4","t5","t6"]}'
             )
