@@ -2614,8 +2614,9 @@ if USE_FLASK:
             if not nome:
                 return jsonify({"erro": "nome obrigatorio"}), 400
             key = os.environ.get("GEMINI_API_KEY", "").strip()
-            if not key:
-                return jsonify({"erro": "GEMINI_API_KEY ausente no servidor"}), 500
+            _ak = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+            if not key and not _ak:
+                return jsonify({"erro": "Nenhuma chave de IA no servidor (GEMINI/ANTHROPIC)"}), 500
             # Dados estruturados da peca (frontend manda; se nao mandar, usa so o nome)
             marca = (data.get("marca") or "").strip()
             modelo = (data.get("modelo") or "").strip()
@@ -2664,14 +2665,16 @@ if USE_FLASK:
                 "7. Cada titulo com ATE 60 caracteres (limite Mercado Livre) e use o MAXIMO desse limite. O 1o titulo entre 52 e 60 caracteres. Sem aspas, sem numeracao no inicio.\n"
                 'Responda SOMENTE em JSON: {"titulos":["t1","t2","t3","t4","t5","t6"]}'
             )
-            data_ia = _gemini(key, prompt)  # funcao testada (usa thinkingBudget=0)
-            titulos = (data_ia or {}).get("titulos") or []
-            # RESERVA: se a Gemini falhar/estourar a cota (429), tenta o Claude automaticamente
-            if not titulos:
-                _ak = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-                if _ak:
-                    data_ia = _claude(_ak, prompt)
-                    titulos = (data_ia or {}).get("titulos") or []
+            # Claude e o motor PRINCIPAL (pago, rapido, confiavel). O Gemini fica de RESERVA
+            # enquanto o projeto do Gemini nao migra do free tier pro pago (demora do lado do Google).
+            titulos = []
+            if _ak:
+                data_ia = _claude(_ak, prompt)
+                titulos = (data_ia or {}).get("titulos") or []
+            # RESERVA: se o Claude falhar (sem credito/erro), tenta o Gemini
+            if not titulos and key:
+                data_ia = _gemini(key, prompt)
+                titulos = (data_ia or {}).get("titulos") or []
             if not titulos:
                 _diag = {"erro": "IA nao retornou titulos"}
                 try:
