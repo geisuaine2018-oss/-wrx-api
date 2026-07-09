@@ -11761,17 +11761,21 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         if request.method == "OPTIONS":
             return _options_resp()
         # Tenta Supabase primeiro. O PostgREST corta cada resposta em 1000 linhas
-        # (max-rows), então PAGINA por offset pra trazer TODOS os anúncios (havia 2000+).
+        # (max-rows), então PAGINA por offset pra trazer TODOS os anúncios (2000+).
+        # ⚠️ NÃO puxar a coluna `fotos` na LISTAGEM: anúncios antigos guardam fotos em base64
+        # (registros de MB cada) → `select=*` puxava centenas de MB de uma vez, estourava a RAM do
+        # Postgres e DERRUBAVA o banco (confirmado pelo suporte Supabase, memory pressure).
+        # A lista traz só colunas LEVES; as fotos vêm sob demanda (endpoint fotos-anuncio).
         try:
             dados = []
             offset = 0
             ok_sb = False
             while True:
-                # ordena por id (chave única) — paginar por offset sobre uma coluna
-                # NÃO-única (ex.: sync_at, igual pra todos) faz o Postgres pular/repetir
-                # linhas entre páginas e o total oscilar. O frontend reordena como o usuário quiser.
+                # ordena por id (chave única); paginar por sync_at (igual p/ todos) pularia linhas
                 r = requests.get(
-                    f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?select=*&order=id.asc&limit=1000&offset={offset}",
+                    f"{_WRX_SB_URL}/rest/v1/shopee_anuncios"
+                    "?select=id,shop_id,item_id,sku,titulo,preco,estoque,status,sync_at"
+                    f"&order=id.asc&limit=1000&offset={offset}",
                     headers=_wrx_headers(), timeout=15
                 )
                 if r.status_code != 200:
@@ -11785,12 +11789,37 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 if offset > 50000:  # trava de segurança
                     break
             if ok_sb:
+                for _d in dados:
+                    _d.setdefault("fotos", [])  # compat: o frontend espera .fotos (carrega sob demanda)
                 return jsonify({"ok": True, "itens": dados, "total": len(dados), "fonte": "supabase"})
         except Exception:
             pass
         # Fallback: cache local
         dados = _shopee_cache_load()
         return jsonify({"ok": True, "itens": dados, "total": len(dados), "fonte": "cache"})
+
+    # ── Shopee: fotos de UM anúncio (sob demanda) ─────────────────────────────────
+    # A listagem (anuncios-db) não traz mais `fotos` (era o que estourava a RAM do banco).
+    # A galeria "ver fotos" e a miniatura buscam aqui, 1 anúncio por vez = leve.
+    @app.route("/integracoes/shopee/fotos-anuncio", methods=["GET", "OPTIONS"])
+    def shopee_fotos_anuncio():
+        if request.method == "OPTIONS":
+            return _options_resp()
+        item_id = (request.args.get("item_id") or "").strip()
+        if not item_id:
+            return jsonify({"ok": False, "erro": "item_id obrigatorio"}), 400
+        try:
+            r = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?item_id=eq.{item_id}&select=fotos&limit=1",
+                headers=_wrx_headers(), timeout=10
+            )
+            if r.status_code == 200:
+                arr = r.json()
+                fotos = (arr[0].get("fotos") if arr else []) or []
+                return jsonify({"ok": True, "fotos": fotos})
+            return jsonify({"ok": False, "erro": f"HTTP {r.status_code}"}), 502
+        except Exception as e:
+            return jsonify({"ok": False, "erro": str(e)}), 500
 
     # ── Shopee: atualizar estoque ─────────────────────────────────────────────────
 
