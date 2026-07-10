@@ -4737,6 +4737,7 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
             return jsonify({"ok": False, "erro": "sem token ML"}), 502
         _h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         alvo = _normv(modelo)
+        alvo_sq = re.sub(r"[^a-z0-9]", "", alvo)   # sem hífen/espaço: "HR-V" casa "HRV" (Honda HR-V/CR-V/WR-V/ZR-V)
         cand = []   # (exato?, ano, attrs)
         for ano in anos:
             yid = YEARS[ano]
@@ -4760,7 +4761,7 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
                     nm = _normv((at.get("MODEL") or {}).get("value_name", ""))
                     # casa: modelo exato ("expert"), variação de carroceria ("expert cargo/vitré")
                     # ou versão ELÉTRICA ("e-expert cargo", "e expert") — é o MESMO veículo pra dona.
-                    exato = (nm == alvo)
+                    exato = (nm == alvo) or (re.sub(r"[^a-z0-9]", "", nm) == alvo_sq)
                     variacao = (nm.startswith(alvo + " ") or nm.startswith("e-" + alvo)
                                 or nm.startswith("e " + alvo) or nm.startswith("e-" + alvo + " "))
                     if exato or variacao:
@@ -4917,12 +4918,13 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         tcons = " " + _normv(titulo) + " "
         achados = set()
         for core in sorted(set(c for c, _ in todos), key=len, reverse=True):
+            _cre = re.escape(core).replace("\\-", "-?")   # hífen opcional: "HR-V" casa "hrv" e "hr-v"
             if re.match(r"^\d{1,2}$", core):
                 # modelo que é SÓ número (ex Omoda "5"/"7"): casa só como TOKEN entre espaços, com no
                 # máx 1 letra colada ("Omoda C5" -> "5"). NÃO casa "1.5" (motor), "15", "2015" (ano).
-                rgx = r"(?:^|\s)[a-z]?" + re.escape(core) + r"(?:\s|$)"
+                rgx = r"(?:^|\s)[a-z]?" + _cre + r"(?:\s|$)"
             else:
-                rgx = r"(?:^|[^a-z0-9])" + re.escape(core) + r"(?:[^a-z0-9]|$)"
+                rgx = r"(?:^|[^a-z0-9])" + _cre + r"(?:[^a-z0-9]|$)"
             if re.search(rgx, tcons):
                 achados.add(core)
                 tcons = re.sub(rgx, "  ", tcons)
