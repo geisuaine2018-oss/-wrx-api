@@ -4715,7 +4715,9 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
             "nissan": "60505", "peugeot": "60279", "porsche": "56870", "ram": "2710997", "renault": "9909",
             "seat": "60268", "shineray": "380886", "subaru": "60285", "suzuki": "43943", "toyota": "60297",
             "troller": "389179", "volkswagen": "60249", "vw": "60249", "volvo": "60658"}
-        YEARS = {"2010": "436687", "2011": "436698", "2012": "436707", "2013": "436662", "2014": "423566",
+        YEARS = {"1999": "436667", "2000": "436658", "2001": "436653", "2002": "436666", "2003": "436690",
+            "2004": "436685", "2005": "436649", "2006": "436668", "2007": "436673", "2008": "436677", "2009": "436676",
+            "2010": "436687", "2011": "436698", "2012": "436707", "2013": "436662", "2014": "423566",
             "2015": "423549", "2016": "423562", "2017": "436694", "2018": "460382", "2019": "2451646",
             "2020": "6730991", "2021": "8197742", "2022": "9836402", "2023": "12023859", "2024": "19060055",
             "2025": "34466003", "2026": "45742656", "2027": "73057742", "2028": "27230836"}
@@ -4723,14 +4725,20 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
         brand_id = BRANDS.get(_normv(marca))
         if not brand_id:
             return jsonify({"ok": False, "erro": f"marca '{marca}' não está no mapa de códigos do ML"}), 200
-        anos = []
+        anos_pedidos = []
         for a in anos_in:
-            m = re.search(r"(20\d{2})", str(a))
-            if m and m.group(1) in YEARS:
-                anos.append(m.group(1))
-        anos = sorted(set(anos))
+            m = re.search(r"((?:19|20)\d{2})", str(a))
+            if m:
+                anos_pedidos.append(m.group(1))
+        anos_pedidos = sorted(set(anos_pedidos))
+        anos = [a for a in anos_pedidos if a in YEARS]
+        # Se o título PEDIU anos mas NENHUM existe no catálogo do ML (ex.: carro anterior a 1999), NÃO
+        # despeja todos os anos — era o bug que trazia "2010..2027" numa peça de 2004-2009. Aviso e para.
+        if not anos and anos_pedidos:
+            return jsonify({"ok": False, "itens": [], "total": 0,
+                "erro": "O Mercado Livre não tem compatibilidade estruturada pros anos " + ", ".join(anos_pedidos) + " desse veículo. Adicione o carro manualmente se precisar."}), 200
         if not anos:
-            anos = list(YEARS.keys())   # sem ano -> tenta todos (a busca filtra pelo modelo mesmo assim)
+            anos = list(YEARS.keys())   # título SEM ano -> tenta todos (a busca filtra pelo modelo mesmo assim)
 
         token = _get_ml_token()
         if not token:
@@ -4829,16 +4837,25 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
             "seat": "60268", "shineray": "380886", "subaru": "60285", "suzuki": "43943", "toyota": "60297",
             "troller": "389179", "volkswagen": "60249", "vw": "60249", "volvo": "60658",
             "gac": "39013632", "omoda": "23689205"}
-        YEARS = {"2010": "436687", "2011": "436698", "2012": "436707", "2013": "436662", "2014": "423566",
+        YEARS = {"1999": "436667", "2000": "436658", "2001": "436653", "2002": "436666", "2003": "436690",
+            "2004": "436685", "2005": "436649", "2006": "436668", "2007": "436673", "2008": "436677", "2009": "436676",
+            "2010": "436687", "2011": "436698", "2012": "436707", "2013": "436662", "2014": "423566",
             "2015": "423549", "2016": "423562", "2017": "436694", "2018": "460382", "2019": "2451646",
             "2020": "6730991", "2021": "8197742", "2022": "9836402", "2023": "12023859", "2024": "19060055",
             "2025": "34466003", "2026": "45742656", "2027": "73057742", "2028": "27230836"}
-        anos = []
+        anos_pedidos = []
         for a in anos_in:
-            m = re.search(r"(20\d{2})", str(a))
-            if m and m.group(1) in YEARS:
-                anos.append(m.group(1))
-        anos = sorted(set(anos)) or list(YEARS.keys())
+            m = re.search(r"((?:19|20)\d{2})", str(a))
+            if m:
+                anos_pedidos.append(m.group(1))
+        anos_pedidos = sorted(set(anos_pedidos))
+        anos = [a for a in anos_pedidos if a in YEARS]
+        # título pediu anos mas NENHUM existe no catálogo do ML -> NÃO despeja 2010..2027; para com aviso
+        if not anos and anos_pedidos:
+            return jsonify({"ok": False, "itens": [], "total": 0,
+                "erro": "O Mercado Livre não tem compatibilidade estruturada pros anos " + ", ".join(anos_pedidos) + " desse veículo."})
+        if not anos:
+            anos = list(YEARS.keys())
 
         token = _get_ml_token()
         if not token:
