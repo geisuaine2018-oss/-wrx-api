@@ -7603,6 +7603,41 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         except Exception as _e:
             return jsonify({"ok": False, "erro": str(_e)}), 500
 
+    @app.route("/integracoes/olx/status", methods=["POST", "OPTIONS"])
+    def olx_status():
+        # Consulta o RESULTADO REAL de uma importação OLX. O /publicar só devolve "will be
+        # processed" (recebido); o status VERDADEIRO (accepted/queued/refused/error + motivo,
+        # ex.: NOT_ENOUGH_AD_SLOTS) vem aqui, consultando pelo token da importação.
+        # POST { token: "<token que o /publicar devolveu em raw.token>" }
+        if request.method == "OPTIONS":
+            return _options_resp()
+        global _olx_token_mem
+        if not _olx_token_mem.get("access_token"):
+            try:
+                with open(_OLX_TOKENS_FILE) as _f:
+                    _olx_token_mem = json.load(_f)
+            except Exception:
+                pass
+        tok = _olx_token_mem.get("access_token")
+        if not tok:
+            return jsonify({"ok": False, "erro": "OLX nao autorizada"}), 401
+        data = request.get_json(force=True, silent=True) or {}
+        _imp = str(data.get("token") or "").strip()
+        if not _imp:
+            return jsonify({"ok": False, "erro": "informe o token da importacao"}), 400
+        try:
+            _r = requests.post(f"https://apps.olx.com.br/autoupload/import/{_imp}",
+                               headers={"Content-Type": "application/json"},
+                               json={"access_token": tok}, timeout=30)
+            _js = None
+            try:
+                _js = _r.json()
+            except Exception:
+                _js = _r.text[:500]
+            return jsonify({"ok": _r.status_code == 200, "http": _r.status_code, "raw": _js})
+        except Exception as _e:
+            return jsonify({"ok": False, "erro": str(_e)}), 500
+
     # ─── Magalu (Magazine Luiza) ────────────────────────────────────────────────
     #   OAuth2 Authorization Code via ID Magalu (id.magalu.com). O refresh_token é
     #   longo e crítico, então o token é guardado de forma DURÁVEL no dx_config
