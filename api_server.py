@@ -1090,6 +1090,33 @@ def buscar_ml(codigo, usar_playwright=True):
     usados = sorted(set(round(p, 2) for p in usados))[:15]
     return titles[:15], novos, usados
 
+# ─── Remove o código OEM GENÉRICO/placeholder da DESCRIÇÃO antes de publicar ──────────
+# Rede de segurança (pedido da dona 12/07): o editor novo já NÃO escreve "CÓDIGO OEM: 012345678"
+# na descrição, mas peças ANTIGAS têm esse texto salvo no banco. Aqui, na hora de publicar em
+# QUALQUER canal (ML/Shopee/OLX/Magalu), tiramos o bloco quando o código é placeholder
+# (012345678, só zeros, sequência trivial). Código REAL (com letras ou número de verdade) NUNCA é
+# tocado — o regex só casa quando a linha após "CÓDIGO OEM:" começa por dígito e é puramente numérica.
+_OEM_GENERICO_DESC_RE = re.compile(
+    r'C[ÓO]DIGO\s+OEM:[ \t]*\r?\n[ \t]*([0-9][0-9\-\./ ]{2,})[ \t]*(?:\r?\n){0,2}',
+    re.IGNORECASE
+)
+def _desc_sem_oem_generico(desc):
+    if not desc:
+        return desc
+    texto = str(desc)
+    def _rep(m):
+        digitos = re.sub(r'\D', '', m.group(1))
+        generico = (
+            (not digitos)
+            or (re.fullmatch(r'0+', digitos) is not None)
+            or digitos in ('012345678', '0123456789', '0123456', '123456789', '12345678')
+        )
+        return '' if generico else m.group(0)
+    texto = _OEM_GENERICO_DESC_RE.sub(_rep, texto)
+    texto = re.sub(r'\n{3,}', '\n\n', texto).strip()
+    return texto
+
+
 # ─── Extrai nome da peça a partir de títulos ML que contêm o OEM exato ────────
 _MARCAS_VEICULOS = re.compile(
     r'\b(renault|peugeot|citroen|volkswagen|vw|fiat|chevrolet|gm|toyota|honda|ford|hyundai|'
@@ -5414,7 +5441,7 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
                         requests.post(
                             f"https://api.mercadolibre.com/items/{item_id}/description",
                             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                            json={"plain_text": str(data["descricao"])[:50000]},
+                            json={"plain_text": _desc_sem_oem_generico(str(data["descricao"]))[:50000]},
                             timeout=10
                         )
                     except Exception:
@@ -7430,6 +7457,17 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 print(f"[OLX] erro refresh: {_e}")
         data = request.get_json(force=True) or {}
         _sku = data.get("_sku") or data.get("sku", "")
+        # REGRA (pedido da dona 12/07): peça com preço ZERADO (R$ 0, sem preço no cadastro) NÃO vai pra OLX.
+        # O front força piso R$ 180, então o backend não enxerga o "0" pelo payload — confere no banco
+        # (lookup por PK sku, leve). Peça com preço real baixo (>0) continua indo (vira 180); só o 0 é barrado.
+        if _sku:
+            try:
+                _rpz = requests.get(f"{_WRX_SB_URL}/rest/v1/pecas_estoque?sku=eq.{_sku}&select=preco",
+                                    headers={"apikey": _WRX_SB_KEY, "Authorization": f"Bearer {_WRX_SB_KEY}"}, timeout=12)
+                if _rpz.ok and _rpz.json() and float(_rpz.json()[0].get("preco") or 0) <= 0:
+                    return jsonify({"ok": False, "erro": "Peca com preco zerado (R$ 0) no cadastro nao vai pra OLX"}), 400
+            except Exception as _epz:
+                print(f"[OLX] checagem preco-zero falhou (sku {_sku}): {_epz}")
         fotos = [f for f in (data.get("fotos") or data.get("images") or []) if f and f.startswith("http")]
         # A OLX só aceita fotos por URL (http). As fotos editadas no canvas chegam como base64
         # (data:image/...) e seriam filtradas aqui -> anúncio SEM FOTO (bug confirmado 23/06: o
@@ -7466,7 +7504,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             "type": "s",                         # s = venda
             "category": 2101,                    # Peças e acessórios > Carros/vans/utilitários
             "subject": (data.get("subject") or data.get("titulo") or data.get("nomeInterno", "Peca Automotiva"))[:90],
-            "body": (data.get("body") or data.get("descricao") or data.get("titulo", ""))[:6000],
+            "body": _desc_sem_oem_generico(data.get("body") or data.get("descricao") or data.get("titulo", ""))[:6000],
             "price": int(preco),                 # sem centavos
             "phone": int(_tel) if len(_tel) >= 10 else 0,
             "phone_hidden": False,
@@ -7499,6 +7537,68 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     return jsonify({"ok": False, "erro": msg, "raw": _resp}), 400
                 _ad = (_resp.get("ad_list") or [{}])[0]
                 return jsonify({"ok": True, "status": _ad.get("status", ""), "id": _ad.get("id", "") or _tok, "raw": _resp})
+            return jsonify({"ok": False, "erro": _r.text[:300]}), _r.status_code
+        except Exception as _e:
+            return jsonify({"ok": False, "erro": str(_e)}), 500
+
+    @app.route("/integracoes/olx/remover", methods=["POST", "OPTIONS"])
+    def olx_remover():
+        # Remove (delete) um anúncio da OLX pelo SKU — usa operation "delete" do autoupload.
+        # Criado 12/07 pra tirar da OLX peças enviadas por engano (ex.: preço zerado). Mesmo
+        # id usado no insert (SKU limpo, até 19 chars). Sucesso da OLX = statusCode >= 0.
+        if request.method == "OPTIONS":
+            return _options_resp()
+        if not OLX_CLIENT_ID:
+            return jsonify({"ok": False, "erro": "OLX nao configurada"}), 501
+        global _olx_token_mem
+        if not _olx_token_mem.get("access_token"):
+            try:
+                with open(_OLX_TOKENS_FILE) as _f:
+                    _olx_token_mem = json.load(_f)
+            except Exception:
+                pass
+        if not _olx_token_mem.get("access_token"):
+            return jsonify({"ok": False, "erro": "OLX nao autorizada — clique em Conectar"}), 401
+        # Renova o token se está expirando (OLX expira em ~1h) — mesma lógica do publicar.
+        if _olx_token_mem.get("expires_at", 0) - time.time() < 120 and _olx_token_mem.get("refresh_token"):
+            try:
+                _rt = requests.post("https://auth.olx.com.br/oauth/token", data={
+                    "grant_type": "refresh_token",
+                    "client_id": OLX_CLIENT_ID,
+                    "client_secret": OLX_CLIENT_SECRET,
+                    "refresh_token": _olx_token_mem.get("refresh_token", ""),
+                }, timeout=15)
+                if _rt.status_code == 200:
+                    _rd = _rt.json()
+                    _olx_token_mem = {
+                        "access_token": _rd.get("access_token", ""),
+                        "refresh_token": _rd.get("refresh_token", _olx_token_mem.get("refresh_token", "")),
+                        "expires_at": time.time() + _rd.get("expires_in", 3600),
+                    }
+                    try:
+                        with open(_OLX_TOKENS_FILE, "w") as _f:
+                            json.dump(_olx_token_mem, _f)
+                    except Exception:
+                        pass
+            except Exception as _e:
+                print(f"[OLX] erro refresh (remover): {_e}")
+        data = request.get_json(force=True, silent=True) or {}
+        _sku = data.get("_sku") or data.get("sku", "")
+        _id = ("".join(c for c in str(_sku) if (c.isalnum() or c in "_{}-")) or "0")[:19]
+        payload = {"id": _id, "operation": "delete"}
+        try:
+            _r = requests.put("https://apps.olx.com.br/autoupload/import",
+                              headers={"Authorization": f"Bearer {_olx_token_mem['access_token']}", "Content-Type": "application/json"},
+                              json={"access_token": _olx_token_mem["access_token"], "ad_list": [payload]}, timeout=30)
+            if _r.status_code in (200, 201, 202):
+                _resp = _r.json()
+                _sc = _resp.get("statusCode")
+                if _sc is not None and _sc < 0:
+                    msg = _resp.get("statusMessage") or "OLX recusou a remocao"
+                    if "permission" in msg.lower():
+                        msg += " (token expirado/sem permissao — reconecte a OLX)"
+                    return jsonify({"ok": False, "erro": msg, "raw": _resp}), 400
+                return jsonify({"ok": True, "id": _id, "raw": _resp})
             return jsonify({"ok": False, "erro": _r.text[:300]}), _r.status_code
         except Exception as _e:
             return jsonify({"ok": False, "erro": str(_e)}), 500
@@ -7740,7 +7840,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         payload = {
             "code": str(p.get("sku") or p.get("id") or "").strip(),     # SKU do vendedor
             "name": (p.get("titulo") or p.get("nome") or "")[:120],
-            "description": (p.get("descricao") or p.get("titulo") or "")[:8000],
+            "description": _desc_sem_oem_generico(p.get("descricao") or p.get("titulo") or "")[:8000],
             "brand": (p.get("marca") or "").strip(),                     # precisa casar c/ catálogo Magalu
             "category": str(p.get("categoria_magalu") or p.get("categoria") or "").strip(),  # ID da categoria
             "ncm": "".join(c for c in str(p.get("ncm") or "") if c.isdigit()),
@@ -11253,7 +11353,7 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
         sku_interno = data.get("skuInterno") or sku  # SKU real da peca (quando o sku vem sufixado -SH1..-SH4 p/ multi-variacao)
         titulo = data.get("titulo", "")
         preco = data.get("preco", 0)
-        descricao = data.get("descricao") or titulo  # Shopee exige descricao; se vazia, usa o titulo
+        descricao = _desc_sem_oem_generico(data.get("descricao") or titulo)  # Shopee exige descricao; se vazia, usa o titulo
         condicao_recebida = data.get("condicao", "new")
         categoria = data.get("categoria", "")
         fotos = data.get("fotos", [])
