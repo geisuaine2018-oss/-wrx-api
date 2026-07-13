@@ -12664,15 +12664,19 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             if not token:
                 resultado["ml"].append({"ok": False, "id": ml_id, "conta": conta, "erro": "conta sem token"})
                 continue
+            _url_item = f"https://api.mercadolibre.com/items/{ml_id}"
+            _h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             try:
-                r = requests.put(
-                    f"https://api.mercadolibre.com/items/{ml_id}",
-                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                    json={"status": "paused", "available_quantity": 0},
-                    timeout=15,
-                )
+                r = requests.put(_url_item, headers=_h,
+                                 json={"status": "paused", "available_quantity": 0}, timeout=15)
                 ok = r.status_code == 200
                 erro = "" if ok else f"ML {r.status_code}: {r.text[:180]}"
+                # Anuncios de catalogo/variacoes recusam mexer no available_quantity
+                # ("field_not_updatable"). Fallback: pausa sem tocar no estoque — tira da venda igual.
+                if not ok and "available_quantity" in r.text:
+                    r2 = requests.put(_url_item, headers=_h, json={"status": "paused"}, timeout=15)
+                    ok = r2.status_code == 200
+                    erro = "" if ok else f"ML {r2.status_code}: {r2.text[:180]}"
                 resultado["ml"].append({"ok": ok, "id": ml_id, "conta": conta, "erro": erro})
                 if ok:
                     requests.patch(
