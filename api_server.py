@@ -12398,15 +12398,19 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                         _shopee_pausar_por_sku(sku)
 
     def _shopee_pausar_por_sku(sku):
+        """Unlist (pausa, reversivel) os anuncios Shopee do SKU. Retorna lista de {shop_id,item_id,ok}.
+        Casa o SKU base exato OU base+sufixo de conta/variacao (ex 109767-SH1). Antes buscava so
+        'eq.{sku}', que NAO achava os anuncios sufixados -> nao pausava (causava venda duplicada)."""
         tokens = _shopee_load_tokens()
         if not tokens:
-            return
+            return []
         r = requests.get(
-            f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?sku=eq.{sku}&select=shop_id,item_id",
+            f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?select=shop_id,item_id&or=(sku.eq.{sku},sku.like.{sku}-*)",
             headers=_wrx_headers(), timeout=10
         )
         if r.status_code != 200:
-            return
+            return []
+        pausados = []
         for row in r.json():
             sid = row.get("shop_id", "")
             iid = row.get("item_id", "")
@@ -12414,18 +12418,25 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 continue
             access_token, shop_id_int = _shopee_get_token(sid)
             if not access_token:
+                pausados.append({"shop_id": sid, "item_id": iid, "ok": False, "erro": "loja sem token"})
                 continue
             ts = int(time.time())
             path = "/api/v2/product/unlist_item"
             sign = _shopee_sign(path, ts, access_token, shop_id_int)
-            requests.post(
-                f"{_SHOPEE_BASE}{path}",
-                params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
-                        "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
-                json={"item_list": [{"item_id": int(iid), "unlist": True}]},
-                timeout=15
-            )
-            print(f"[SHOPEE] SKU {sku} pausado shop {sid}")
+            try:
+                _r = requests.post(
+                    f"{_SHOPEE_BASE}{path}",
+                    params={"partner_id": SHOPEE_PARTNER_ID, "timestamp": ts,
+                            "access_token": access_token, "shop_id": shop_id_int, "sign": sign},
+                    json={"item_list": [{"item_id": int(iid), "unlist": True}]},
+                    timeout=15
+                )
+                _ok = _r.status_code == 200 and not (_r.json() or {}).get("error")
+            except Exception:
+                _ok = False
+            pausados.append({"shop_id": sid, "item_id": iid, "ok": _ok})
+            print(f"[SHOPEE] SKU {sku} unlist shop {sid} item {iid} ok={_ok}")
+        return pausados
 
     @app.route("/integracoes/finalizar-sku", methods=["POST", "OPTIONS"])
     def finalizar_sku_todas_plataformas():
@@ -12691,10 +12702,9 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
 
         # ── Shopee: unlist (pausar, reversivel) por SKU — reaproveita helper existente ──
         try:
-            _shopee_pausar_por_sku(sku)
-            resultado["shopee"].append({"ok": True, "via": "unlist_por_sku"})
+            resultado["shopee"] = _shopee_pausar_por_sku(sku) or []
         except Exception as e:
-            resultado["shopee"].append({"ok": False, "erro": str(e)})
+            resultado["shopee"] = [{"ok": False, "erro": str(e)}]
 
         # ── OLX: sem "pausar" na API -> delete (republicavel) ──
         try:
