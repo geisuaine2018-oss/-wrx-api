@@ -12568,6 +12568,148 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             "resultado": resultado,
         })
 
+    # ── GATILHO DE BAIXA: estoque zerou -> PAUSA (reversivel) os anuncios do SKU ──
+    # ML: status=paused + available_quantity=0 (reativavel). Shopee: unlist (reativavel).
+    # OLX: nao tem "pausar" na API do autoupload -> delete (republicavel). Criado 13/07.
+    def _olx_get_token():
+        """Carrega/renova o token OLX (mesma logica de olx_remover). Retorna access_token ou None."""
+        global _olx_token_mem
+        if not OLX_CLIENT_ID:
+            return None
+        if not _olx_token_mem.get("access_token"):
+            try:
+                with open(_OLX_TOKENS_FILE) as _f:
+                    _olx_token_mem = json.load(_f)
+            except Exception:
+                pass
+        if not _olx_token_mem.get("access_token"):
+            return None
+        if _olx_token_mem.get("expires_at", 0) - time.time() < 120 and _olx_token_mem.get("refresh_token"):
+            try:
+                _rt = requests.post("https://auth.olx.com.br/oauth/token", data={
+                    "grant_type": "refresh_token",
+                    "client_id": OLX_CLIENT_ID,
+                    "client_secret": OLX_CLIENT_SECRET,
+                    "refresh_token": _olx_token_mem.get("refresh_token", ""),
+                }, timeout=15)
+                if _rt.status_code == 200:
+                    _rd = _rt.json()
+                    _olx_token_mem = {
+                        "access_token": _rd.get("access_token", ""),
+                        "refresh_token": _rd.get("refresh_token", _olx_token_mem.get("refresh_token", "")),
+                        "expires_at": time.time() + _rd.get("expires_in", 3600),
+                    }
+                    try:
+                        with open(_OLX_TOKENS_FILE, "w") as _f:
+                            json.dump(_olx_token_mem, _f)
+                    except Exception:
+                        pass
+            except Exception as _e:
+                print(f"[OLX] erro refresh (pausar-sku): {_e}")
+        return _olx_token_mem.get("access_token")
+
+    def _olx_remover_por_sku(sku):
+        """Remove (delete) da OLX pelo SKU (id = SKU limpo, ate 19 chars). Retorna {ok, id/erro}."""
+        tok = _olx_get_token()
+        if not tok:
+            return {"ok": False, "erro": "OLX nao autorizada/config"}
+        _id = ("".join(c for c in str(sku) if (c.isalnum() or c in "_{}-")) or "0")[:19]
+        try:
+            _r = requests.put("https://apps.olx.com.br/autoupload/import",
+                              headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
+                              json={"access_token": tok, "ad_list": [{"id": _id, "operation": "delete"}]}, timeout=30)
+            if _r.status_code in (200, 201, 202):
+                _resp = _r.json()
+                _sc = _resp.get("statusCode")
+                if _sc is not None and _sc < 0:
+                    return {"ok": False, "erro": _resp.get("statusMessage") or "OLX recusou a remocao"}
+                return {"ok": True, "id": _id}
+            return {"ok": False, "erro": _r.text[:200]}
+        except Exception as _e:
+            return {"ok": False, "erro": str(_e)}
+
+    @app.route("/integracoes/pausar-sku", methods=["POST", "OPTIONS"])
+    def pausar_sku_todas_plataformas():
+        """Gatilho de baixa: quando o estoque de uma peca zera, PAUSA (reversivel) os anuncios
+           daquele SKU em todos os canais. NAO encerra de vez — isso e o /finalizar-sku manual."""
+        if request.method == "OPTIONS":
+            return _options_resp()
+        data = request.get_json(force=True, silent=True) or {}
+        sku = str(data.get("sku") or "").strip().upper()
+        if not sku:
+            return jsonify({"ok": False, "erro": "sku obrigatorio"}), 400
+
+        resultado = {"ml": [], "shopee": [], "olx": []}
+
+        # ── ML: pausa cada anuncio do SKU (base exato ou base-XXXn) ──
+        try:
+            r_ml = requests.get(
+                f"{_WRX_SB_URL}/rest/v1/ml_anuncios?select=ml_id,conta,status&or=(sku.eq.{sku},sku.like.{sku}-*)",
+                headers=_wrx_headers(), timeout=15,
+            )
+            anuncios_ml = r_ml.json() if r_ml.status_code == 200 else []
+        except Exception as e:
+            anuncios_ml = []
+            resultado["ml"].append({"ok": False, "erro": f"consulta: {e}"})
+
+        for anuncio in anuncios_ml:
+            ml_id = str(anuncio.get("ml_id") or "").strip()
+            conta = str(anuncio.get("conta") or "default").strip()
+            if not ml_id:
+                continue
+            if str(anuncio.get("status") or "").lower() in ("paused", "closed"):
+                resultado["ml"].append({"ok": True, "id": ml_id, "conta": conta, "ja": True})
+                continue
+            token = _ml_get_user_token(conta)
+            if not token:
+                resultado["ml"].append({"ok": False, "id": ml_id, "conta": conta, "erro": "conta sem token"})
+                continue
+            try:
+                r = requests.put(
+                    f"https://api.mercadolibre.com/items/{ml_id}",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json={"status": "paused", "available_quantity": 0},
+                    timeout=15,
+                )
+                ok = r.status_code == 200
+                erro = "" if ok else f"ML {r.status_code}: {r.text[:180]}"
+                resultado["ml"].append({"ok": ok, "id": ml_id, "conta": conta, "erro": erro})
+                if ok:
+                    requests.patch(
+                        f"{_WRX_SB_URL}/rest/v1/ml_anuncios",
+                        params={"ml_id": f"eq.{ml_id}", "conta": f"eq.{conta}"},
+                        headers=_wrx_headers(),
+                        json={"status": "paused", "estoque": 0},
+                        timeout=10,
+                    )
+            except Exception as e:
+                resultado["ml"].append({"ok": False, "id": ml_id, "conta": conta, "erro": str(e)})
+
+        # ── Shopee: unlist (pausar, reversivel) por SKU — reaproveita helper existente ──
+        try:
+            _shopee_pausar_por_sku(sku)
+            resultado["shopee"].append({"ok": True, "via": "unlist_por_sku"})
+        except Exception as e:
+            resultado["shopee"].append({"ok": False, "erro": str(e)})
+
+        # ── OLX: sem "pausar" na API -> delete (republicavel) ──
+        try:
+            resultado["olx"].append(_olx_remover_por_sku(sku))
+        except Exception as e:
+            resultado["olx"].append({"ok": False, "erro": str(e)})
+
+        todos = resultado["ml"] + resultado["shopee"] + resultado["olx"]
+        sucessos = sum(1 for item in todos if item.get("ok"))
+        falhas = sum(1 for item in todos if not item.get("ok"))
+        return jsonify({
+            "ok": True,
+            "sku": sku,
+            "total": len(todos),
+            "sucessos": sucessos,
+            "falhas": falhas,
+            "resultado": resultado,
+        })
+
     # ── Shopee: venda manual (cascata) ───────────────────────────────────────────
 
     @app.route("/integracoes/shopee/venda-cascata", methods=["POST", "OPTIONS"])
