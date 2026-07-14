@@ -920,6 +920,85 @@ def get_blueprint():
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
 
+    @bp.route("/integracoes/expedicao-emitir-notas-pendentes", methods=["GET", "POST", "OPTIONS"])
+    def expedicao_emitir_notas_pendentes():
+        """ROBO DE NOTA (cron/manual): le a fila de expedicao (ML, status != enviado/cancelado),
+        descobre quais estao SEM nota (shipment substatus 'invoice_pending') e EMITE a NF-e de
+        cada um pelo Faturador do ML -> a etiqueta de envio libera. Reusa ml-status-pedidos (achar
+        os pendentes) e ml-emitir-nota (emitir, ja testada em producao). O ML e o FREIO: recusa
+        nota sem dados fiscais ('Sku not found') -> conta em 'sem_dados_fiscais' e segue (a dona
+        completa no anuncio; o robo NUNCA emite nota errada). ?modo=teste NAO emite (so lista)."""
+        if request.method == "OPTIONS":
+            return _cors()
+        modo = (request.args.get("modo") or "armado").strip().lower()
+        so_lista = modo in ("teste", "observacao", "dry", "dry-run", "lista")
+        H = _sb_headers()
+        try:
+            rf = requests.get(
+                f"{SB_URL}/rest/v1/expedicao"
+                "?marketplace=eq.ml&status=not.in.(enviado,cancelado)"
+                "&select=id,pedido_mkt,conta&order=criado_em.asc&limit=200",
+                headers=H, timeout=30)
+            fila = rf.json() if rf.status_code == 200 else []
+        except Exception as e:
+            rr = jsonify({"ok": False, "erro": "fila: " + str(e)[:120]})
+            rr.headers["Access-Control-Allow-Origin"] = "*"
+            return rr
+        pedidos = [{"order_id": str(p.get("pedido_mkt")), "conta": p.get("conta") or "default"}
+                   for p in (fila if isinstance(fila, list) else []) if p.get("pedido_mkt")]
+        out = {"ok": True, "modo": ("teste" if so_lista else "armado"), "fila": len(pedidos),
+               "pendentes": 0, "emitidas": 0, "ja_tinha": 0, "sem_dados_fiscais": 0,
+               "falhou": 0, "detalhes": []}
+        if not pedidos:
+            r = jsonify(out); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+        # 1) status real no ML -> acha os SEM nota (shipment substatus 'invoice_pending')
+        try:
+            rs = requests.post(f"{SELF_BASE}/integracoes/ml-status-pedidos",
+                               json={"pedidos": pedidos}, timeout=180)
+            results = rs.json().get("results", []) if rs.status_code == 200 else []
+        except Exception as e:
+            rr = jsonify({"ok": False, "erro": "status: " + str(e)[:120]})
+            rr.headers["Access-Control-Allow-Origin"] = "*"
+            return rr
+        conta_by_oid = {str(p["order_id"]): p["conta"] for p in pedidos}
+        pend = [str(res.get("order_id")) for res in results
+                if (res.get("substatus") or "").lower() == "invoice_pending"]
+        out["pendentes"] = len(pend)
+        if so_lista:
+            out["detalhes"] = [{"order_id": oid, "conta": conta_by_oid.get(oid, "default")} for oid in pend]
+            print(f"[robo-nota] TESTE: {len(pend)} pendente(s) de {len(pedidos)} na fila")
+            r = jsonify(out); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+        # 2) emite cada pendente (reusa a rota testada ml-emitir-nota; o ML valida cada uma)
+        for oid in pend:
+            conta = conta_by_oid.get(oid, "default")
+            try:
+                em = requests.post(
+                    f"{SELF_BASE}/integracoes/ml-emitir-nota?order_id={oid}&conta={conta}",
+                    timeout=45)
+                d = em.json() if em.status_code == 200 else {}
+            except Exception as e:
+                out["falhou"] += 1
+                out["detalhes"].append({"order_id": oid, "res": "erro: " + str(e)[:100]})
+                time.sleep(0.5); continue
+            err = str(d.get("erro") or "").lower()
+            if d.get("ok"):
+                out["emitidas"] += 1
+                out["detalhes"].append({"order_id": oid, "res": "emitida", "invoice_id": d.get("invoice_id")})
+            elif any(k in err for k in ("already", "being processed", "linked to these invoices", "já")):
+                out["ja_tinha"] += 1
+                out["detalhes"].append({"order_id": oid, "res": "ja tinha nota"})
+            elif "not found by sku" in err or "sku not found" in err:
+                out["sem_dados_fiscais"] += 1
+                out["detalhes"].append({"order_id": oid, "res": "faltam dados fiscais no anuncio (a dona completa no ML)"})
+            else:
+                out["falhou"] += 1
+                out["detalhes"].append({"order_id": oid, "res": (d.get("erro") or ("http " + str(em.status_code)))[:120]})
+            time.sleep(0.5)   # respiro: nao martelar a API do ML
+        print(f"[robo-nota] ARMADO: fila={len(pedidos)} pendentes={len(pend)} "
+              f"emitidas={out['emitidas']} ja_tinha={out['ja_tinha']} "
+              f"sem_dados={out['sem_dados_fiscais']} falhou={out['falhou']}")
+        r = jsonify(out); r.headers["Access-Control-Allow-Origin"] = "*"; return r
+
     @bp.route("/integracoes/ml-nota", methods=["GET", "OPTIONS"])
     def ml_nota():
         """SERVE o DANFE (PDF) ou XML da nota fiscal emitida de um pedido ML.
