@@ -12171,9 +12171,39 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             json={"item_list": [{"item_id": int(item_id), "unlist": bool(pausar)}]},
             timeout=20
         )
-        d = r.json()
-        ok = r.status_code == 200 and not d.get("error")
+        try:
+            d = r.json()
+        except Exception:
+            d = {}
+        resp = d.get("response") or {}
         novo_status = "UNLIST" if pausar else "NORMAL"
+        # sucesso REAL = sem erro de topo E o item aparece na success_list
+        sucesso = (r.status_code == 200 and not d.get("error")
+                   and any(str(s.get("item_id")) == str(item_id)
+                           for s in (resp.get("success_list") or [])))
+        # motivo real por item (a Shopee devolve failure_list com failed_reason)
+        fl = resp.get("failure_list") or []
+        motivo = " | ".join(
+            str(f.get("failed_reason") or f.get("failed_message") or f) for f in fl
+        ) if fl else (d.get("message") or "")
+        # Se PAUSAR falhou, confere AO VIVO o status do anúncio. Se ele já está fora do
+        # ar (DELETED/UNLIST/BANNED/em revisão/inexistente) o objetivo já foi atingido →
+        # trata como sucesso (o "Unlist item all failed" é falso-negativo). NÃO faz isso
+        # ao REATIVAR (aí um erro real tem que aparecer, senão mascara overselling).
+        ja_fora = False
+        if pausar and not sucesso:
+            try:
+                dets = _shopee_get_item_details(access_token, shop_id_int, [int(item_id)])
+            except Exception:
+                dets = []
+            if not dets:
+                ja_fora = True  # item não existe mais na loja = fora do ar
+            else:
+                st = str((dets[0] or {}).get("item_status", "")).upper()
+                if st and st != "NORMAL":
+                    ja_fora = True
+                    novo_status = "DELETED" if st in ("DELETED", "SELLER_DELETE") else "UNLIST"
+        ok = sucesso or ja_fora
         if ok:
             requests.patch(
                 f"{_WRX_SB_URL}/rest/v1/shopee_anuncios?shop_id=eq.{shop_id}&item_id=eq.{item_id}",
@@ -12181,7 +12211,12 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                 json={"status": novo_status, "sync_at": _datetime.utcnow().isoformat() + "Z"},
                 timeout=10
             )
-        return jsonify({"ok": ok, "status": novo_status if ok else None, "erro": d.get("message", "") if not ok else ""})
+        return jsonify({
+            "ok": ok,
+            "status": novo_status if ok else None,
+            "ja_fora_do_ar": ja_fora,
+            "erro": "" if ok else (motivo or "falha ao pausar")
+        })
 
     # ── Shopee: vendas (pedidos) ──────────────────────────────────────────────────
 
