@@ -1,0 +1,38 @@
+name: Robo emitir NF-e ML (libera etiqueta)
+
+# ROBO DE NOTA (Fase 1, pedido pela dona): a cada 20 min chama o backend, que le a fila
+# de expedicao ML, acha as vendas SEM nota (shipment substatus 'invoice_pending') e EMITE
+# a NF-e de cada uma pelo Faturador do ML -> a etiqueta de envio libera sozinha.
+#
+# SEGURANCA: o ML e o freio. Se faltam dados fiscais no anuncio, o ML recusa
+# ("Sku not found") e o robo so CONTA (sem_dados_fiscais) e segue — a dona completa
+# esses no anuncio do ML. O robo NUNCA emite nota errada e NUNCA emite 2x (trata "ja tem nota").
+#
+# Pra rodar na mao: aba Actions -> este workflow -> Run workflow (modo 'teste' so lista, 'armado' emite).
+# Pra DESLIGAR o automatico: comente as 2 linhas de 'schedule' abaixo (ou desative o workflow no GitHub).
+
+on:
+  schedule:
+    - cron: '*/20 * * * *'    # a cada 20 min
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "armado (emite) ou teste (so lista, nao emite)"
+        required: false
+        default: 'armado'
+
+jobs:
+  emitir-notas:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Emitir NF-e das vendas ML sem nota
+        env:
+          API: https://wrx-api-production.up.railway.app
+          MODO: ${{ github.event.inputs.modo || 'armado' }}
+        run: |
+          set -euo pipefail
+          echo "Robo emitir NF-e — modo: $MODO"
+          resp=$(curl -s -m 240 -X POST "$API/integracoes/expedicao-emitir-notas-pendentes?modo=$MODO")
+          echo "$resp" | jq '{ok,modo,fila,pendentes,emitidas,ja_tinha,sem_dados_fiscais,falhou}' || echo "$resp"
+          emit=$(echo "$resp" | jq -r '.emitidas // 0' 2>/dev/null || echo 0)
+          echo "Notas emitidas nesta rodada: $emit"
