@@ -1484,6 +1484,27 @@ def _limpar_titulo_ml(titulo, maxlen=60):
     return t
 
 
+def _garantir_marca(titulo, marca, maxlen=60):
+    """Se a MARCA existe, NAO esta no titulo e CABE, insere depois da 1a palavra (o tipo da peca).
+    Ex: 'Cabecote C3 1.0 Turbo 2020' + 'Citroen' -> 'Cabecote Citroen C3 1.0 Turbo 2020'.
+    Comparacao ignora acento (Citroen == Citroën). Nunca ultrapassa maxlen (se nao cabe, mantem igual)."""
+    import unicodedata
+    m = (marca or "").strip()
+    t = (titulo or "").strip()
+    if not m or not t:
+        return t
+    def _na(s):  # normaliza: sem acento, minuscula
+        return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn").lower()
+    if _na(m) in _na(t):
+        return t                                   # marca ja presente (mesmo com/sem acento)
+    if len(t) + len(m) + 1 > maxlen:
+        return t                                   # nao cabe: deixa como esta
+    partes = t.split(" ", 1)
+    if len(partes) == 2:
+        return partes[0] + " " + m + " " + partes[1]  # depois do tipo da peca
+    return m + " " + t
+
+
 def _ajustar_titulos(data, codigo):
     def limpar(titulo, maxlen=60):
         if not titulo: return ""
@@ -2730,7 +2751,7 @@ if USE_FLASK:
                 except Exception as _e:
                     _diag["gemini_excecao"] = str(_e)
                 return jsonify(_diag), 502
-            return jsonify({"titulos": [_limpar_titulo_ml(str(t), 60) for t in titulos[:6]]})
+            return jsonify({"titulos": [_garantir_marca(_limpar_titulo_ml(str(t), 60), marca, 60) for t in titulos[:6]]})
         except Exception as e:
             return jsonify({"erro": str(e)}), 500
 
