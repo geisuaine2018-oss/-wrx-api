@@ -2695,22 +2695,18 @@ if USE_FLASK:
                 ctx.append("Descricao (use como apoio): " + descricao[:600])
             prompt = (
                 "Voce e especialista em titulos de anuncio de autopecas (Mercado Livre e Shopee). "
-                "Monte 6 titulos DIFERENTES entre si para a peca abaixo. TODOS os 6 devem ser o MAIS COMPLETOS possivel e "
-                "usar o MAXIMO dos 60 caracteres (mire 55-60 em CADA um) — NAO faca titulos curtos. Como sao 6 anuncios na "
-                "mesma conta e o ML barra titulos iguais, a diferenca entre eles vem de VARIAR a ordem das palavras, o formato "
-                "dos anos (um a um '2020 2021 2022' vs faixa '2020 a 2026'), abreviacoes (Citroen/Citroën) e termos extras "
-                "(Original, Turbo, Flex) — NUNCA de encurtar nem de remover a marca ou o motor.\n\n"
+                "Monte 6 titulos para a peca abaixo, do MAIS COMPLETO ao mais curto, TODOS DIFERENTES entre si "
+                "(varie a ordem/abreviacoes/anos por extenso) porque sao 6 anuncios na mesma conta e o ML barra titulos iguais.\n\n"
                 "DADOS:\n- " + "\n- ".join(ctx) + "\n\n"
                 "REGRAS OBRIGATORIAS:\n"
-                "1. O PRINCIPAL e MARCA + MODELO(S) + ANO (NAO o codigo). O titulo gira em torno disso.\n"
+                "1. O PRINCIPAL e MARCA + MODELO(S) + ANO (NAO o codigo). O titulo gira em torno disso. SEMPRE que houver espaco no titulo, inclua a MARCA do veiculo (ex Citroen); prefira ter a MARCA a encher so com anos repetidos.\n"
                 "2. ORDEM: Produto (tipo da peca) + Marca + Modelo(s) + [Motor, se mecanica/eletrica | Lado, se lataria/farol/lanterna/acabamento] + ANOS. Comece pelo tipo da peca.\n"
                 "3. Liste TODAS as MARCAS e TODOS os MODELOS compativeis (ex: Fiat Argo Cronos Pulse). Se ha mais de uma marca, inclua todas. NAO invente, NAO omita.\n"
                 "4. SEMPRE inclua os ANOS dos compativeis (faixa, ex '2016 a 2022' ou '2016 2022'). Escreva os anos SEMPRE em NUMEROS de 4 digitos (2018, 2019), NUNCA por palavras (proibido 'dois mil e dezoito'). Use SOMENTE anos reais dos veiculos compativeis. NUNCA invente. Se faltam anos e sobra espaco, ADICIONE os anos.\n"
                 "5. NAO coloque codigo, OEM nem SKU no titulo (nem numeros tipo 109053). O codigo NAO e o principal. Se a peca nao tem OEM real, pode usar a palavra 'Original'.\n"
-                "6. SEMPRE inclua a MARCA do veiculo (ex Citroen) E a MOTORIZACAO (ex 1.0 Turbo) em TODOS os 6 titulos quando existirem nos dados. NUNCA omita a marca nem o motor para encurtar; se faltar espaco, corte um ANO ou um modelo secundario, NUNCA a marca nem o motor.\n"
-                "7. APROVEITE O ESPACO: cada um dos 6 o MAIS COMPLETO possivel, entre 55 e 60 caracteres. Prefira SEMPRE completo a curto. NAO repita nem invente.\n"
-                "8. NUNCA corte uma palavra, uma marca ou um ANO no meio. Todo ano tem 4 digitos INTEIROS (2023, nunca '20' nem '202'). Se o proximo ano ou palavra NAO cabe inteiro dentro dos 60, PARE antes dele e termine no ultimo item completo. Melhor 54 caracteres com tudo inteiro do que 60 com um ano pela metade.\n"
-                "9. Cada titulo com ATE 60 caracteres (limite Mercado Livre). Sem aspas, sem numeracao no inicio.\n"
+                "6. APROVEITE O ESPACO: titulo o MAIS COMPLETO possivel dentro do limite. Se sobrar espaco, inclua mais modelos, os anos listados um a um em NUMEROS (ex 2018 2019 2020 2021 2022 2023), a palavra 'Original'. Prefira SEMPRE completo a curto. NAO repita nem invente.\n"
+                "7. NUNCA corte uma palavra nem um ANO no meio. Todo ano tem 4 digitos INTEIROS (2023, nunca '20' nem '202'). Se o proximo ano ou palavra NAO cabe inteiro dentro dos 60, PARE antes dele.\n"
+                "8. Cada titulo com ATE 60 caracteres (limite Mercado Livre) e use o MAXIMO desse limite. O 1o titulo entre 52 e 60 caracteres. Sem aspas, sem numeracao no inicio.\n"
                 'Responda SOMENTE em JSON: {"titulos":["t1","t2","t3","t4","t5","t6"]}'
             )
             # Claude e o motor PRINCIPAL (pago, rapido, confiavel). O Gemini fica de RESERVA
