@@ -1248,50 +1248,71 @@ def get_blueprint():
             return _cors()
         modo = request.args.get("modo", "observacao").strip()
         try:
-            # Supabase corta em 1000/req — pagina com Range pra pegar TODAS as zeradas.
-            skus_set, offset = set(), 0
-            while True:
-                r = requests.get(f"{SB_URL}/rest/v1/pecas_estoque",
-                                 params={"qtd": "lte.0", "select": "sku"},
-                                 headers={**_sb_headers(), "Range-Unit": "items",
-                                          "Range": f"{offset}-{offset+999}"}, timeout=30)
-                if r.status_code not in (200, 206):
-                    break
-                lote = r.json()
-                for p in lote:
-                    if p.get("sku"):
-                        skus_set.add(str(p["sku"]).strip())
-                if len(lote) < 1000:
-                    break
-                offset += 1000
-            skus = sorted(skus_set)
+            # Supabase corta em 1000/req — pagina com Range. Pegamos os SKUs COM
+            # estoque (qtd>0) e os ZERADOS (qtd<=0). So tratamos como REALMENTE
+            # zerado o SKU cujo estoque TOTAL e 0 (nenhuma linha com qtd>0): protege
+            # o SKU coringa que ainda tem estoque em outra peca do mesmo codigo.
+            def _skus_por_qtd(filtro_qtd):
+                s, offset = set(), 0
+                while True:
+                    r = requests.get(f"{SB_URL}/rest/v1/pecas_estoque",
+                                     params={"qtd": filtro_qtd, "select": "sku"},
+                                     headers={**_sb_headers(), "Range-Unit": "items",
+                                              "Range": f"{offset}-{offset+999}"}, timeout=30)
+                    if r.status_code not in (200, 206):
+                        break
+                    lote = r.json()
+                    for p in lote:
+                        if p.get("sku"):
+                            s.add(str(p["sku"]).strip().upper())
+                    if len(lote) < 1000:
+                        break
+                    offset += 1000
+                return s
+            com_estoque = _skus_por_qtd("gt.0")
+            zerados = _skus_por_qtd("lte.0") - com_estoque
         except Exception as e:
             rr = jsonify({"ok": False, "erro": str(e)}); rr.headers["Access-Control-Allow-Origin"] = "*"; return rr
 
-        risco_ml, risco_shopee = [], []
-        for i in range(0, len(skus), 80):  # chunks p/ não estourar a URL
-            lista = ",".join(skus[i:i+80])
-            try:
-                rm = requests.get(f"{SB_URL}/rest/v1/ml_anuncios",
-                                  params={"status": "eq.active", "sku": f"in.({lista})",
-                                          "select": "ml_id,conta,sku,titulo"},
-                                  headers=_sb_headers(), timeout=30)
-                if rm.status_code == 200:
-                    risco_ml += rm.json()
-            except Exception:
-                pass
-            try:  # Shopee (tabela pode não existir ainda)
-                rs = requests.get(f"{SB_URL}/rest/v1/shopee_anuncios",
-                                  params={"status": "neq.UNLIST", "sku": f"in.({lista})",
-                                          "select": "shop_id,item_id,sku,titulo"},
-                                  headers=_sb_headers(), timeout=30)
-                if rs.status_code == 200:
-                    risco_shopee += rs.json()
-            except Exception:
-                pass
+        # Os anuncios sao gravados com SKU SUFIXADO por conta/variacao (109776-DML1,
+        # 109776-GML2, -SH3...). O in.(sku) EXATO antigo NAO achava esses -> 2/3 dos
+        # anuncios ficavam ATIVOS apos a venda (overselling). Aqui varremos TODOS os
+        # ativos e casamos pelo SKU BASE normalizado (tira o sufixo).
+        def _base(sku):
+            return re.sub(r'-(SH|DML|GML)\d+$', '', str(sku or '').strip(), flags=re.I).upper()
+
+        def _ativos_em_risco(tabela, status_filtro, campos):
+            achados, offset = [], 0
+            while True:
+                try:
+                    r = requests.get(f"{SB_URL}/rest/v1/{tabela}",
+                                     params={"status": status_filtro, "select": campos},
+                                     headers={**_sb_headers(), "Range-Unit": "items",
+                                              "Range": f"{offset}-{offset+999}"}, timeout=30)
+                except Exception:
+                    break  # tabela pode nao existir ainda (Shopee)
+                if r.status_code not in (200, 206):
+                    break
+                lote = r.json()
+                for a in lote:
+                    if _base(a.get("sku")) in zerados:
+                        achados.append(a)
+                if len(lote) < 1000:
+                    break
+                offset += 1000
+            return achados
+
+        risco_ml = _ativos_em_risco("ml_anuncios", "eq.active", "ml_id,conta,sku,titulo")
+        risco_shopee = _ativos_em_risco("shopee_anuncios", "neq.UNLIST", "shop_id,item_id,sku,titulo")
+
+        # Salvaguarda anti-massa: se por um glitch o volume vier absurdo, NAO pausa
+        # (so observa e avisa). O normal e dezenas/poucas centenas.
+        teto = int(os.environ.get("RECONCILIAR_TETO", "800"))
+        em_risco = len(risco_ml) + len(risco_shopee)
+        estourou = em_risco > teto
 
         pausados = 0
-        if modo == "armado":
+        if modo == "armado" and not estourou:
             for a in risco_ml:
                 ok, _ = pausar_anuncio_ml(a.get("ml_id"), a.get("conta"))
                 pausados += 1 if ok else 0
@@ -1299,13 +1320,14 @@ def get_blueprint():
                 ok, _ = pausar_anuncio_shopee(a.get("shop_id"), a.get("item_id"))
                 pausados += 1 if ok else 0
 
-        skus_risco = sorted({a.get("sku") for a in (risco_ml + risco_shopee)})
+        skus_risco = sorted({_base(a.get("sku")) for a in (risco_ml + risco_shopee)})
         rr = jsonify({"ok": True, "modo": modo,
-                      "skus_zerados": len(skus),
-                      "anuncios_em_risco": len(risco_ml) + len(risco_shopee),
+                      "skus_zerados": len(zerados),
+                      "anuncios_em_risco": em_risco,
                       "ml": len(risco_ml), "shopee": len(risco_shopee),
                       "skus_em_risco": len(skus_risco),
                       "pausados": pausados,
+                      "estourou_teto": estourou, "teto": teto,
                       "amostra": [{"sku": a.get("sku"), "ml_id": a.get("ml_id"), "conta": a.get("conta"),
                                    "titulo": (a.get("titulo") or "")[:50]} for a in risco_ml[:20]]})
         rr.headers["Access-Control-Allow-Origin"] = "*"
