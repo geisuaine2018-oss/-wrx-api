@@ -7521,6 +7521,14 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
                     print(f"[OLX] payload sem foto http; usei {len(fotos)} fotos do estoque (sku {_sku})")
             except Exception as _ef:
                 print(f"[OLX] fallback fotos estoque falhou: {_ef}")
+        # Banner fixo "TEM EM ESTOQUE" como 2ª foto — SÓ na OLX (pedido da dona 17/07). A OLX não sincroniza
+        # estoque como o ML, então o aviso reduz compra de peça já vendida. Entra em TODA publicação OLX
+        # (editor E massa), pois ambas passam por esta rota. Nunca afeta ML/Shopee (rotas separadas).
+        # Só entra se houver ao menos 1 foto real (não deixa o anúncio ir só com o aviso).
+        _BANNER_OLX = "https://www.dominiodaspecas.com.br/aviso-estoque-olx.jpg"
+        if fotos:
+            fotos = [f for f in fotos if f != _BANNER_OLX]   # evita duplicar se re-publicar a mesma peça
+            fotos.insert(1, _BANNER_OLX)                      # 2ª posição
         preco = float(data.get("preco") or data.get("price") or 0)
         if preco < 180:
             return jsonify({"ok": False, "erro": f"OLX exige preco minimo de R$ 180. Valor enviado: R$ {preco:.2f}"}), 400
