@@ -7560,6 +7560,10 @@ CREATE INDEX IF NOT EXISTS idx_ml_anuncios_sku ON ml_anuncios(sku);
             # parts_name_cars=4 (Peças automotivas) e exchange=2 (não aceita troca) são opcionais.
             "params": {"condition": _condition, "parts_name_cars": "4", "exchange": "2"},
         }
+        # MODO TESTE (_teste_fotos): NÃO publica na OLX — só devolve as fotos que iriam,
+        # com o banner "TEM EM ESTOQUE" já na 2ª posição. Pra conferir a ordem sem criar anúncio.
+        if data.get("_teste_fotos"):
+            return jsonify({"ok": True, "teste": True, "total": len(payload["images"]), "fotos_que_vao_pra_olx": payload["images"]})
         try:
             # A OLX exige o access_token DENTRO do corpo JSON, no mesmo nível do ad_list
             # (não basta o header Authorization). Sem isso a API responde -6 "Without
