@@ -5414,6 +5414,41 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
                     if _alvo in (_v.get("name") or "").lower():
                         return _v
                 return None
+            # ── Casar MATERIAL com o vocabulário da categoria do ML ────────────────────
+            # O ML NÃO fala "Ferro"/"Plástico" genérico: cada categoria tem seu vocabulário
+            # (capô=Aço inox/Alumínio; lente de farol=Acrílico/PVC/ABS; "Ferro" nem existe).
+            # O editor manda material genérico (Ferro/Plástico/Alumínio/Borracha/Vidro) e aqui
+            # a gente traduz pro valor que EXISTE na categoria, por ordem de prioridade de sinônimo.
+            _MAT_SINONIMOS = {
+                "ferro":    ["aco inox", "aco carbono", "aco", "ferro fundido", "ferro", "metalico", "metal"],
+                "aco":      ["aco inox", "aco carbono", "aco", "metalico", "metal", "ferro"],
+                "aluminio": ["aluminio", "liga leve", "metal"],
+                "plastico": ["plastico", "abs", "pvc", "acrilico", "polipropileno", "poliuretano", "nailon", "nylon", "polietileno", "fibra"],
+                "borracha": ["borracha", "silicone", "epdm", "poliuretano"],
+                "vidro":    ["vidro", "cristal", "temperado"],
+                "metal":    ["metal", "aco inox", "aco", "aluminio", "ferro", "metalico"],
+                "acrilico": ["acrilico", "abs", "pvc", "plastico"],
+                "fibra":    ["fibra de vidro", "fibra", "plastico"],
+            }
+            def _txt_norm(_s):
+                import unicodedata as _ud
+                _s = _ud.normalize("NFD", str(_s or "")).encode("ascii", "ignore").decode("ascii")
+                return _s.lower().strip()
+            def _casar_material(_a, _alvo):
+                # Sem lista de valores -> None (quem chama manda texto livre).
+                # Tem lista -> tenta o próprio nome e depois os sinônimos; não casou -> None (não força).
+                _vals = _a.get("values") or []
+                if not _vals:
+                    return None
+                _an = _txt_norm(_alvo)
+                _cands = [_an] + _MAT_SINONIMOS.get(_an, [])
+                for _termo in _cands:
+                    if not _termo:
+                        continue
+                    for _v in _vals:
+                        if _termo in _txt_norm(_v.get("name")):
+                            return _v
+                return None
             _orig = str(data.get("origem") or "Brasil").strip() or "Brasil"
             _ao = _cat_om.get("ORIGIN")
             if _ao and "ORIGIN" not in _ja3 and not (_ao.get("tags") or {}).get("read_only"):
@@ -5424,18 +5459,18 @@ CREATE INDEX IF NOT EXISTS idx_revisao_prioridade ON revisao_precos(prioridade);
                     attrs.append({"id": "ORIGIN", "value_name": _orig})
             _mat = str(data.get("material") or "").strip()
             if _mat:
+                # Preenche TODOS os atributos de material da categoria (MATERIAL + a lente + a carcaça),
+                # não só o primeiro — assim farol enche a LENS_MATERIAL e capô enche a MATERIAL.
                 for _mid in ("MATERIAL", "LENS_MATERIAL", "HOUSING_MATERIAL"):
                     _am = _cat_om.get(_mid)
                     if not _am or _mid in _ja3 or (_am.get("tags") or {}).get("read_only"):
                         continue
-                    _vm = _casar_nome(_am, _mat)
+                    _vm = _casar_material(_am, _mat)
                     if _vm and _vm.get("id"):
                         attrs.append({"id": _mid, "value_id": _vm["id"], "value_name": _vm.get("name")})
                     elif not (_am.get("values") or []):
                         attrs.append({"id": _mid, "value_name": _mat})
-                    else:
-                        continue   # tem lista mas o material nao casou -> nao forca valor errado
-                    break
+                    # tem lista mas não casou nem por sinônimo -> não força (deixa sem material)
         except Exception:
             pass
         # ── BLOCO ISOLADO: atributos OBRIGATÓRIOS da categoria que ainda faltam ──
