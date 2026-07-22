@@ -30,6 +30,17 @@ jobs:
           DIAS: ${{ github.event.inputs.dias || '2' }}
         run: |
           set -euo pipefail
-          echo "Processar cancelamentos — modo: $MODO (dias: $DIAS)"
+          echo "ML — modo: $MODO (dias: $DIAS)"
           resp=$(curl -s -m 150 -X POST "$API/integracoes/processar-cancelamentos?modo=$MODO&dias=$DIAS")
+          echo "$resp" | jq '{ok,modo,cancelamentos,resultados}' || echo "$resp"
+
+      - name: Processar canceladas da Shopee
+        env:
+          API: https://wrx-api-production.up.railway.app
+          MODO: ${{ github.event.inputs.modo || 'armado' }}
+          DIAS: ${{ github.event.inputs.dias || '2' }}
+        run: |
+          set -euo pipefail
+          echo "Shopee — modo: $MODO (dias: $DIAS)"
+          resp=$(curl -s -m 150 -X POST "$API/integracoes/processar-cancelamentos-shopee?modo=$MODO&dias=$DIAS")
           echo "$resp" | jq '{ok,modo,cancelamentos,resultados}' || echo "$resp"

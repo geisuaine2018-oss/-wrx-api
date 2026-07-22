@@ -123,6 +123,23 @@ def _salvar_canc(s):
     except Exception as e:
         print(f"[B5] nao salvou cancelamentos: {e}")
 
+# B5 Shopee: cancelamentos da Shopee (idempotência por order_sn, separada do ML)
+_CANC_SHOPEE_FILE = os.path.join(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp"), "wrx_cancelamentos_shopee.json")
+
+def _carregar_canc_shopee():
+    try:
+        with open(_CANC_SHOPEE_FILE, encoding="utf-8") as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+
+def _salvar_canc_shopee(s):
+    try:
+        with open(_CANC_SHOPEE_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(s)[-5000:], f)
+    except Exception as e:
+        print(f"[B5-SH] nao salvou cancelamentos shopee: {e}")
+
 # Serializa a baixa de estoque do webhook: o ML reenvia a MESMA venda várias vezes
 # (em threads), e a baixa de qtd não é idempotente. O lock + dedup por order_id
 # garantem que cada pedido baixa o estoque uma única vez.
@@ -468,6 +485,44 @@ def pausar_anuncio_shopee(shop_id, item_id):
         return False, f"shopee unlist falhou: {motivo}"
     except Exception as e:
         return False, str(e)
+
+def reativar_anuncio_shopee(shop_id, item_id):
+    """Reativa (relist) um anúncio Shopee — o oposto do unlist. Usado no cancelamento
+    quando o comprador desiste. Retorna (ok, detalhe)."""
+    rj = _shopee_post(shop_id, "/api/v2/product/unlist_item",
+                      {"item_list": [{"item_id": int(item_id), "unlist": False}]})
+    if rj is None:
+        return False, "sem token Shopee (dry-run)"
+    resp = rj.get("response") or {}
+    sucesso = (not rj.get("error")
+               and any(str(s.get("item_id")) == str(item_id) for s in (resp.get("success_list") or [])))
+    fl = resp.get("failure_list") or []
+    motivo = " | ".join(
+        f"{f.get('item_id')}: {f.get('failed_reason') or f.get('failed_message') or f}"
+        for f in fl) if fl else (rj.get("message") or "")
+    if sucesso:
+        try:
+            requests.patch(f"{SB_URL}/rest/v1/shopee_anuncios?shop_id=eq.{shop_id}&item_id=eq.{item_id}",
+                           headers={**_sb_headers(), "Content-Type": "application/json"},
+                           json={"status": "NORMAL"}, timeout=10)
+        except Exception:
+            pass
+        return True, "relist"
+    return False, f"shopee relist falhou: {motivo}"
+
+def _anuncios_unlist_shopee_do_sku_base(base):
+    """Anúncios Shopee UNLIST do SKU base (candidatos a relist no cancelamento).
+    Casa por SKU base (tira sufixo -SH#), corrigindo o furo do match exato."""
+    try:
+        r = requests.get(f"{SB_URL}/rest/v1/shopee_anuncios",
+                         params={"status": "eq.UNLIST", "sku": f"like.{base}*",
+                                 "select": "shop_id,item_id,titulo,sku"},
+                         headers=_sb_headers(), timeout=12)
+        if r.status_code == 200:
+            return [a for a in r.json() if _sku_base(a.get("sku")) == base]
+    except Exception as e:
+        print(f"[B5-SH] shopee unlist_base erro: {e}")
+    return []
 
 def executar_sincronizacao(sku, origem, dry_run=False):
     """
@@ -1635,6 +1690,74 @@ def get_blueprint():
                     proc.add(oid)
         if armado and not forcar:
             _salvar_canc(proc)
+        r = jsonify({"ok": True, "modo": modo, "cancelamentos": len(novos), "resultados": resultados})
+        r.headers["Access-Control-Allow-Origin"] = "*"
+        return r
+
+    @bp.route("/integracoes/processar-cancelamentos-shopee", methods=["POST", "GET", "OPTIONS"])
+    def processar_cancelamentos_shopee():
+        """B5 Shopee — pedido CANCELLED na Shopee. SE o COMPRADOR cancelou (cancel_by=buyer),
+        devolve a peça ao estoque (pecas_estoque) e reativa (relist) os anúncios Shopee do SKU.
+        Se foi a loja/Shopee/sistema, NÃO mexe — só reporta. Idempotente por order_sn.
+        ?modo=observacao (padrão) | armado. ?dias=N (default 2). ?forcar=1."""
+        if request.method == "OPTIONS":
+            return _cors()
+        modo = request.args.get("modo", "observacao").strip()
+        dias = int(request.args.get("dias", "2"))
+        forcar = request.args.get("forcar") == "1"
+        armado = (modo == "armado")
+        proc = _carregar_canc_shopee()
+        agora = int(time.time())
+        t_from = agora - dias * 86400
+        novos, resultados = [], []
+        for shop in SHOPS_SHOPEE:
+            d = _shopee_call(shop, "/api/v2/order/get_order_list", {
+                "order_status": "CANCELLED", "page_size": 50,
+                "time_range_field": "update_time", "time_from": t_from, "time_to": agora})
+            lista = ((d or {}).get("response") or {}).get("order_list") or []
+            order_sns = [o.get("order_sn") for o in lista if o.get("order_sn")]
+            for osn in order_sns:
+                if osn in proc and not forcar:
+                    continue
+                dd = _shopee_call(shop, "/api/v2/order/get_order_detail", {
+                    "order_sn_list": osn,
+                    "response_optional_fields": "order_status,cancel_by,cancel_reason,item_list"})
+                ol = ((dd or {}).get("response") or {}).get("order_list") or []
+                od = ol[0] if ol else {}
+                cancel_by = str(od.get("cancel_by") or "").lower()
+                quem = ("comprador" if cancel_by == "buyer"
+                        else "vendedor" if cancel_by in ("seller", "shopee", "system", "channel", "admin")
+                        else "desconhecido")
+                agir = (quem == "comprador")
+                for it in (od.get("item_list") or []):
+                    sku_raw = str(it.get("item_sku") or "").strip()
+                    base = _sku_base(sku_raw)
+                    qty = int(it.get("model_quantity_purchased") or it.get("quantity_purchased") or 1)
+                    item_res = {"order_sn": osn, "shop": shop, "sku": base, "sku_raw": sku_raw,
+                                "quem_cancelou": quem, "cancel_by": cancel_by}
+                    if not base:
+                        item_res["acao"] = "sem SKU no item"
+                        resultados.append(item_res); continue
+                    unlisted = _anuncios_unlist_shopee_do_sku_base(base)
+                    atual = _estoque_atual(base)
+                    item_res.update({"estoque_antes": atual, "anuncios_unlist": len(unlisted)})
+                    if not armado:
+                        item_res["cancel_reason"] = od.get("cancel_reason")
+                        item_res["faria"] = ("devolver estoque + relist %d anuncio(s)" % len(unlisted)
+                                             if agir else f"nada (cancelou: {quem})")
+                    elif agir:
+                        nova = _devolver_estoque_local(base, qty)
+                        relistados = [a["item_id"] for a in unlisted
+                                      if reativar_anuncio_shopee(a["shop_id"], a["item_id"])[0]]
+                        item_res.update({"estoque_depois": nova, "relistados": len(relistados)})
+                    else:
+                        item_res["acao"] = f"ignorado (cancelou: {quem}) — nao mexe no estoque"
+                    resultados.append(item_res)
+                novos.append(osn)
+                if armado and not forcar and quem in ("comprador", "vendedor"):
+                    proc.add(osn)
+        if armado and not forcar:
+            _salvar_canc_shopee(proc)
         r = jsonify({"ok": True, "modo": modo, "cancelamentos": len(novos), "resultados": resultados})
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
