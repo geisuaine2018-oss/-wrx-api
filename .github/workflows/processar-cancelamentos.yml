@@ -1,0 +1,35 @@
+name: Cancelamento -> devolve estoque + reativa anuncio
+
+# Quando o COMPRADOR cancela uma venda no ML (arrependimento/desistencia), a peca
+# volta ao estoque (pecas_estoque) e os anuncios pausados dessa peca reativam.
+# Se foi a LOJA/ML que cancelou (peca pode ter quebrado/sumido), NAO mexe — so reporta.
+# Idempotente por order_id. Roda de hora em hora (minuto 20, longe do sync do minuto 5).
+
+on:
+  schedule:
+    - cron: '20 * * * *'    # todo minuto 20 de cada hora
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: 'observacao (so mostra) ou armado (devolve + reativa)'
+        required: false
+        default: 'armado'
+      dias:
+        description: 'janela de dias pra buscar canceladas'
+        required: false
+        default: '2'
+
+jobs:
+  cancelamentos:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Processar canceladas do ML
+        env:
+          API: https://wrx-api-production.up.railway.app
+          MODO: ${{ github.event.inputs.modo || 'armado' }}
+          DIAS: ${{ github.event.inputs.dias || '2' }}
+        run: |
+          set -euo pipefail
+          echo "Processar cancelamentos — modo: $MODO (dias: $DIAS)"
+          resp=$(curl -s -m 150 -X POST "$API/integracoes/processar-cancelamentos?modo=$MODO&dias=$DIAS")
+          echo "$resp" | jq '{ok,modo,cancelamentos,resultados}' || echo "$resp"

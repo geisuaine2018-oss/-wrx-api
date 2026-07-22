@@ -195,6 +195,97 @@ def _anuncios_paused_do_sku(sku):
         print(f"[B5] paused_do_sku erro: {e}")
     return []
 
+# ─── B5 cancelamento: helpers (devolver estoque + reativar só se comprador cancelou) ──
+def _sku_base(sku):
+    """Tira o sufixo por conta/variação (-DML#/-GML#/-SH#): 110106-DML3 -> 110106.
+    O estoque (pecas_estoque) usa o SKU base; os anúncios vêm sufixados."""
+    return re.sub(r'-(SH|DML|GML)\d+$', '', str(sku or '').strip(), flags=re.I)
+
+def _anuncios_paused_do_sku_base(base):
+    """Anúncios ML pausados do SKU base — inclui as variações sufixadas
+    (-DML#/-GML#). Corrige o furo do match exato (66% dos anúncios têm sufixo)."""
+    try:
+        r = requests.get(f"{SB_URL}/rest/v1/ml_anuncios",
+                         params={"status": "eq.paused", "sku": f"like.{base}*",
+                                 "select": "ml_id,conta,titulo,sku"},
+                         headers=_sb_headers(), timeout=12)
+        if r.status_code == 200:
+            return [a for a in r.json() if _sku_base(a.get("sku")) == base]
+    except Exception as e:
+        print(f"[B5] paused_base erro: {e}")
+    return []
+
+def _ml_order_detail(oid, conta):
+    """Detalhe completo do pedido no ML (pra ler cancel_detail/tags = quem cancelou)."""
+    if not _ml_token_provider:
+        return None
+    token = _ml_token_provider(conta or "default")
+    if not token:
+        return None
+    try:
+        r = requests.get(f"https://api.mercadolibre.com/orders/{oid}",
+                         headers={"Authorization": f"Bearer {token}"}, timeout=15)
+        if r.status_code == 200:
+            return r.json()
+        print(f"[B5] order_detail {oid} HTTP {r.status_code}")
+    except Exception as e:
+        print(f"[B5] order_detail {oid} erro: {e}")
+    return None
+
+def _quem_cancelou(od):
+    """Interpreta quem cancelou a venda a partir do pedido do ML.
+    Retorna ('comprador' | 'vendedor' | 'desconhecido', detalhe_bruto).
+    Conservador: só devolve 'comprador' com sinal claro de arrependimento/desistência
+    do COMPRADOR. Qualquer dúvida -> 'desconhecido' (em modo armado NÃO age)."""
+    od = od or {}
+    cd = od.get("cancel_detail") or {}
+    tags = [str(t).lower() for t in (od.get("tags") or [])]
+    code = str(cd.get("code") or "").lower()
+    group = str(cd.get("group") or "").lower()
+    desc = str(cd.get("description") or "").lower()
+    reqby = str(cd.get("requested_by") or cd.get("requester") or "").lower()
+    status_detail = str(od.get("status_detail") or "").lower()
+    blob = " ".join([code, group, desc, reqby, status_detail, " ".join(tags)])
+    sinais_comprador = ["buyer", "comprador", "repent", "arrepend", "regret",
+                        "desist", "cancel_purchase", "changed_mind", "not_paid",
+                        "payment_required", "expired"]
+    sinais_vendedor = ["seller", "vendedor", "out_of_stock", "sem estoque",
+                       "no_stock", "shipping", "fraud", "melistop", "ml_cancel"]
+    quem = "desconhecido"
+    # prioridade ao comprador (regret é o caso mais comum e seguro)
+    if any(s in blob for s in sinais_comprador):
+        quem = "comprador"
+    elif any(s in blob for s in sinais_vendedor):
+        quem = "vendedor"
+    detalhe = {"cancel_detail": cd, "tags": od.get("tags"),
+               "status_detail": od.get("status_detail")}
+    return quem, detalhe
+
+def _devolver_estoque_local(sku, qty=1):
+    """Cancelamento: devolve a peça ao estoque em pecas_estoque. Peça de desmonte
+    é única — garante pelo menos `qty` (0 -> 1), nunca infla acima do já existente.
+    Retorna a nova qtd, ou None se o SKU não está em pecas_estoque."""
+    try:
+        r = requests.get(f"{SB_URL}/rest/v1/pecas_estoque",
+                         params={"sku": f"eq.{sku}", "select": "sku,qtd,origem"},
+                         headers=_sb_headers(), timeout=10)
+        if r.status_code != 200 or not r.json():
+            return None
+        atual = int(r.json()[0].get("qtd") or 0)
+        nova = max(atual, max(1, int(qty or 1)))
+        if nova == atual:
+            return atual
+        hdr = {**_sb_headers(), "Content-Type": "application/json", "Prefer": "return=minimal"}
+        requests.patch(f"{SB_URL}/rest/v1/pecas_estoque",
+                       params={"sku": f"eq.{sku}"}, headers=hdr,
+                       json={"qtd": nova, "atualizado": datetime.utcnow().isoformat() + "Z"},
+                       timeout=10)
+        print(f"[B5-CANCEL] estoque {sku}: {atual} -> {nova}")
+        return nova
+    except Exception as e:
+        print(f"[B5-CANCEL] falha devolver estoque {sku}: {e}")
+        return None
+
 # ─── Provedores injetados pelo api_server (None = dry-run) ────────────────────────
 _ml_token_provider = None       # fn(conta) -> access_token | None
 _shopee_token_provider = None   # fn(shop_id) -> (access_token, shop_id_int) | (None, 0)
@@ -781,6 +872,101 @@ def get_blueprint():
                                               for it in (v.get("itens") or [])]})
                 except Exception:
                     continue
+        r = jsonify({"ok": True, "total": len(pedidos), "pedidos": pedidos, "contas_ok": contas_ok})
+        r.headers["Access-Control-Allow-Origin"] = "*"
+        return r
+
+    @bp.route("/integracoes/ml-a-despachar", methods=["GET", "OPTIONS"])
+    def ml_a_despachar():
+        """Pedidos ML A DESPACHAR pela loja — HOJE (ready_to_ship) + AGENDADOS dos próximos
+        dias (pending/handling 'buffered'), pra tela de expedição AGRUPAR POR DATA.
+        Cada item traz `enviar_ate` (data que o ML libera/coleta o envio) e `liberado`
+        (True = já dá pra imprimir etiqueta agora). EXCLUI o que a loja NÃO despacha:
+        FULL/no_shipping (o ML envia), já enviados/entregues e cancelados.
+        Query: ?dias=10&max=60&conta=... (sem conta = todas)."""
+        if request.method == "OPTIONS":
+            return _cors()
+        from datetime import timedelta
+        try:
+            dias = int(request.args.get("dias", "10") or "10")
+        except Exception:
+            dias = 10
+        try:
+            max_check = int(request.args.get("max", "60") or "60")
+        except Exception:
+            max_check = 60
+        contas = [request.args.get("conta")] if request.args.get("conta") else CONTAS_ML
+        date_from = (datetime.utcnow() - timedelta(days=dias)).strftime("%Y-%m-%dT00:00:00.000-00:00")
+        _saiu = {"picked_up", "in_hub", "soon_deliver", "out_for_delivery", "out_for_deliver",
+                 "delivered", "dropped_off", "in_route", "arrived"}
+        pedidos = []
+        contas_ok = []
+        for conta in contas:
+            token = _ml_token_provider(conta) if _ml_token_provider else None
+            if not token:
+                continue
+            H = {"Authorization": f"Bearer {token}"}
+            try:
+                me = requests.get("https://api.mercadolibre.com/users/me", headers=H, timeout=12)
+                uid = str(me.json().get("id", "")) if me.status_code == 200 else ""
+            except Exception:
+                uid = ""
+            if not uid:
+                continue
+            contas_ok.append(conta)
+            try:
+                rs = requests.get("https://api.mercadolibre.com/orders/search",
+                                  params={"seller": uid, "sort": "date_desc", "limit": 50,
+                                          "date_created.from": date_from},
+                                  headers=H, timeout=20)
+                orders = rs.json().get("results", []) if rs.status_code == 200 else []
+            except Exception:
+                orders = []
+            checked = 0
+            for o in orders:
+                if checked >= max_check:
+                    break
+                if (o.get("status") or "") != "paid":
+                    continue
+                tags = o.get("tags") or []
+                # FULL / retirada / sem despacho pela loja e já entregues → não é pra ela separar
+                if "no_shipping" in tags or "delivered" in tags:
+                    continue
+                ship_id = (o.get("shipping") or {}).get("id")
+                if not ship_id:
+                    continue
+                checked += 1
+                try:
+                    sr = requests.get(f"https://api.mercadolibre.com/shipments/{ship_id}", headers=H, timeout=12)
+                    if sr.status_code != 200:
+                        continue
+                    sj = sr.json()
+                except Exception:
+                    continue
+                sstatus = (sj.get("status") or "").lower()
+                ssub = (sj.get("substatus") or "").lower()
+                # já saiu da loja (mesmo que o order ainda diga paid) → fora
+                if sstatus in ("shipped", "delivered", "cancelled") or ssub in _saiu:
+                    continue
+                # a despachar = pronto AGORA (ready_to_ship) OU aguardando liberação (agendado)
+                if sstatus not in ("ready_to_ship", "pending", "handling"):
+                    continue
+                so = sj.get("shipping_option") or {}
+                ehl = so.get("estimated_handling_limit") or sj.get("estimated_handling_limit") or {}
+                enviar_ate = ((ehl or {}).get("date") if isinstance(ehl, dict) else "") \
+                    or (so.get("buffering") or {}).get("date") or ""
+                itens = [{"titulo": (i.get("item") or {}).get("title", ""),
+                          "sku": (i.get("item") or {}).get("seller_sku", "")}
+                         for i in (o.get("order_items") or [])]
+                pedidos.append({
+                    "order_id": o.get("id"), "conta": conta, "marketplace": "ml",
+                    "cliente": (o.get("buyer") or {}).get("nickname", ""),
+                    "data_venda": o.get("date_created", ""),
+                    "shipment_id": str(ship_id), "itens": itens,
+                    "enviar_ate": enviar_ate,
+                    "ship_status": sstatus, "ship_sub": ssub,
+                    "liberado": (sstatus == "ready_to_ship"),
+                })
         r = jsonify({"ok": True, "total": len(pedidos), "pedidos": pedidos, "contas_ok": contas_ok})
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
@@ -1390,19 +1576,24 @@ def get_blueprint():
 
     @bp.route("/integracoes/processar-cancelamentos", methods=["POST", "GET", "OPTIONS"])
     def processar_cancelamentos():
-        """B5 — CANCELAMENTO: venda cancelada no ML → devolve a peça ao estoque e
-        reativa os anúncios que tinham sido pausados. Idempotente por order_id.
-        ?modo=observacao (padrão, só lista) | armado (executa)."""
+        """B5 — CANCELAMENTO: venda cancelada no ML. SE o COMPRADOR cancelou
+        (arrependimento/desistência), devolve a peça ao estoque (pecas_estoque) e
+        reativa os anúncios pausados do SKU. Se foi a loja/ML que cancelou (peça pode
+        ter quebrado/sumido), NÃO mexe — só reporta. Idempotente por order_id.
+        ?modo=observacao (padrão, só mostra, inclui cancel_detail cru) | armado (executa).
+        ?dias=N janela de busca (default 2). ?forcar=1 ignora idempotência (não marca)."""
         if request.method == "OPTIONS":
             return _cors()
         modo = request.args.get("modo", "observacao").strip()
-        forcar = request.args.get("forcar") == "1"  # ignora idempotência e NÃO marca
+        dias = int(request.args.get("dias", "2"))
+        forcar = request.args.get("forcar") == "1"
+        armado = (modo == "armado")
         proc = _carregar_canc()
         novos, resultados = [], []
         for conta in CONTAS_ML:
             try:
                 rv = requests.get(f"{SELF_BASE}/integracoes/mercadolivre/vendas-recentes",
-                                  params={"conta": conta, "dias": 1}, timeout=90)
+                                  params={"conta": conta, "dias": dias}, timeout=90)
                 vendas = rv.json().get("vendas", []) if rv.status_code == 200 else []
             except Exception as e:
                 resultados.append({"conta": conta, "erro": str(e)}); continue
@@ -1410,31 +1601,41 @@ def get_blueprint():
                 oid = str(v.get("order_id") or "")
                 if not oid or v.get("status") != "cancelled" or (oid in proc and not forcar):
                     continue
+                od = _ml_order_detail(oid, conta)
+                quem, detalhe = _quem_cancelou(od)
+                agir = (quem == "comprador")   # decisão da dona: só devolve se o comprador cancelou
                 for it in (v.get("itens") or []):
-                    sku = str(it.get("sku") or "").strip()
-                    if not sku:
-                        continue
-                    paused = _anuncios_paused_do_sku(sku)
-                    atual = _estoque_atual(sku)
-                    # NÃO devolve estoque: o PartsHub já devolve no cancelamento (sincronizado).
-                    # Só reativa os anúncios pausados SE a peça realmente voltou (qtd>0).
-                    tem_estoque = atual is not None and atual > 0
-                    if modo == "armado":
-                        reativados = []
-                        if tem_estoque:
-                            reativados = [a["ml_id"] for a in paused
-                                          if reativar_anuncio_ml(a["ml_id"], a["conta"])[0]]
-                        resultados.append({"order_id": oid, "conta": conta, "sku": sku,
-                                           "estoque": atual, "reativados": len(reativados)})
+                    sku_raw = str(it.get("sku") or "").strip()
+                    base = _sku_base(sku_raw)
+                    qty = int(it.get("qty") or it.get("quantity") or 1)
+                    item_res = {"order_id": oid, "conta": conta, "sku": base, "sku_raw": sku_raw,
+                                "quem_cancelou": quem}
+                    if not base:
+                        item_res["acao"] = "sem SKU no item"
+                        resultados.append(item_res); continue
+                    paused = _anuncios_paused_do_sku_base(base)
+                    atual = _estoque_atual(base)
+                    item_res.update({"estoque_antes": atual, "anuncios_pausados": len(paused)})
+                    if not armado:
+                        item_res["cancel_detail"] = detalhe
+                        item_res["faria"] = ("devolver estoque + reativar %d anuncio(s)" % len(paused)
+                                             if agir else f"nada (cancelou: {quem})")
+                    elif agir:
+                        nova = _devolver_estoque_local(base, qty)
+                        reativados = [a["ml_id"] for a in paused
+                                      if reativar_anuncio_ml(a["ml_id"], a["conta"])[0]]
+                        item_res.update({"estoque_depois": nova, "reativados": len(reativados)})
                     else:
-                        resultados.append({"order_id": oid, "conta": conta, "sku": sku,
-                                           "estoque": atual, "reativaria": len(paused) if tem_estoque else 0})
+                        item_res["acao"] = f"ignorado (cancelou: {quem}) — nao mexe no estoque"
+                    resultados.append(item_res)
                 novos.append(oid)
-                if not forcar:
+                # marca como processado só quando decidiu de fato (comprador OU vendedor);
+                # 'desconhecido' fica pra reprocessar depois (o cancel_detail pode preencher)
+                if armado and not forcar and quem in ("comprador", "vendedor"):
                     proc.add(oid)
-        if not forcar:
+        if armado and not forcar:
             _salvar_canc(proc)
-        r = jsonify({"ok": True, "modo": modo, "cancelamentos_novos": len(novos), "resultados": resultados})
+        r = jsonify({"ok": True, "modo": modo, "cancelamentos": len(novos), "resultados": resultados})
         r.headers["Access-Control-Allow-Origin"] = "*"
         return r
 
